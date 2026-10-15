@@ -182,6 +182,25 @@ pub fn with_index_store(mut commands: Vec<CompileCommand>, store: &Path) -> Vec<
     commands
 }
 
+/// Adds an entry under each file's resolved path. xcodebuild reports paths as
+/// it was given them (e.g. `/tmp/...`), while editors open the real path
+/// (`/private/tmp/...`); sourcekit-lsp matches entries by exact path, so files
+/// reached through a symlink would otherwise get no build settings.
+pub fn with_canonical_paths(commands: Vec<CompileCommand>) -> Vec<CompileCommand> {
+    let mut out = Vec::with_capacity(commands.len());
+    for command in commands {
+        let canonical = std::fs::canonicalize(&command.file)
+            .ok()
+            .map(|p| p.display().to_string())
+            .filter(|p| *p != command.file);
+        if let Some(file) = canonical {
+            out.push(CompileCommand { file, ..command.clone() });
+        }
+        out.push(command);
+    }
+    out
+}
+
 /// The index store maintained by zcode's background index build.
 pub fn index_store_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join("IndexDerivedData/Index.noindex/DataStore")
@@ -220,6 +239,26 @@ pub fn database_path(cache_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adds_resolved_paths() {
+        let dir = std::env::temp_dir().join(format!("zcode-canon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("A.swift");
+        std::fs::write(&real, "").unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&dir, &link).ok();
+        let via_link = link.join("A.swift").display().to_string();
+        let out = with_canonical_paths(vec![CompileCommand {
+            directory: "/".into(),
+            file: via_link.clone(),
+            arguments: vec![],
+        }]);
+        let files: Vec<_> = out.iter().map(|c| c.file.clone()).collect();
+        assert!(files.contains(&via_link));
+        assert!(files.contains(&real.canonicalize().unwrap().display().to_string()));
+        std::fs::remove_dir_all(dir).ok();
+    }
 
     #[test]
     fn normalizes_index_store() {

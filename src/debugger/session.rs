@@ -137,7 +137,34 @@ impl Debugger {
         cx.notify();
     }
 
-    fn breakpoint_args(&self, path: &Path) -> Value {
+    /// The paths a file may appear under in debug info. xcodebuild records
+    /// `/var/...`/`/tmp/...` where the editor has the real `/private/...`
+    /// path, while SwiftPM records the real path; lldb matches either one.
+    fn source_paths(path: &Path) -> Vec<PathBuf> {
+        let mut paths = vec![path.to_path_buf()];
+        if let Ok(rest) = path.strip_prefix("/private")
+            && ["var", "tmp", "etc"].iter().any(|p| rest.starts_with(p))
+        {
+            paths.push(Path::new("/").join(rest));
+        }
+        paths
+    }
+
+    fn breakpoint_requests(
+        &self,
+        client: &DapClient,
+        path: &Path,
+    ) -> Vec<futures::future::BoxFuture<'static, anyhow::Result<Value>>> {
+        Self::source_paths(path)
+            .into_iter()
+            .map(|source| {
+                let request = client.request("setBreakpoints", self.breakpoint_args_for(path, &source));
+                Box::pin(request) as futures::future::BoxFuture<'static, _>
+            })
+            .collect()
+    }
+
+    fn breakpoint_args_for(&self, path: &Path, source: &Path) -> Value {
         let lines: Vec<Value> = if self.breakpoints_active {
             self.breakpoints
                 .get(path)
@@ -146,16 +173,18 @@ impl Debugger {
         } else {
             vec![]
         };
-        json!({ "source": { "path": path }, "breakpoints": lines })
+        json!({ "source": { "path": source }, "breakpoints": lines })
     }
 
     fn sync_breakpoints(&self, path: &Path, cx: &mut Context<Self>) {
         if let Some(client) = &self.client
             && self.state.is_active()
         {
-            let request = client.request("setBreakpoints", self.breakpoint_args(path));
+            let requests = self.breakpoint_requests(client, path);
             cx.background_spawn(async move {
-                request.await.ok();
+                for request in requests {
+                    request.await.ok();
+                }
             })
             .detach();
         }
@@ -237,7 +266,7 @@ impl Debugger {
                     let requests: Vec<_> = self
                         .breakpoints
                         .keys()
-                        .map(|path| client.request("setBreakpoints", self.breakpoint_args(path)))
+                        .flat_map(|path| self.breakpoint_requests(&client, path))
                         .collect();
                     let done = client.clone();
                     cx.background_spawn(async move {
@@ -392,7 +421,10 @@ impl Debugger {
                         .map(|f| Frame {
                             id: f.get("id").and_then(Value::as_i64).unwrap_or(0),
                             name: f.get("name").and_then(Value::as_str).unwrap_or("?").to_string(),
-                            path: f.pointer("/source/path").and_then(Value::as_str).map(PathBuf::from),
+                            path: f
+                                .pointer("/source/path")
+                                .and_then(Value::as_str)
+                                .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p))),
                             line: f.get("line").and_then(Value::as_u64).unwrap_or(0) as u32,
                         })
                         .collect()

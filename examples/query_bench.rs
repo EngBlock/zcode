@@ -52,7 +52,7 @@ fn main() {
             (t.elapsed(), ok, p)
         })
         .collect();
-    timings.sort_by(|a, b| b.0.cmp(&a.0));
+    timings.sort_by_key(|t| std::cmp::Reverse(t.0));
     for (d, ok, p) in timings.iter().take(8) {
         println!("{d:?} ok={ok} :: {}", p.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(160).collect::<String>());
     }

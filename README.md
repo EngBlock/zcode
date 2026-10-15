@@ -31,7 +31,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | Build, Run, Test, Stop and Clean. Files are saved first. | ⌘B, ⌘R, ⌘U, ⌘., ⇧⌘K |
 | | Running on a simulator boots it, opens Simulator.app, installs and launches the app, and streams the app's stdout/stderr into the console. Mac executables and Swift packages run directly. | — |
 | | Build output streams into the debug area as a condensed Xcode-style activity log, or as the raw `xcodebuild` log. Errors and warnings appear inline, in the Issue navigator and with next/previous issue keys. | ⇧⌘Y, ⇧⌘C, ⌘K, ⌘' ⌘" |
-| | Test results from XCTest and Swift Testing populate the Test navigator. | ⌘U |
+| | Test results from XCTest and Swift Testing populate the Test navigator, and Swift Testing failures appear as issues at the failing line. On a simulator, unit tests run inside the host app by injecting the test bundle (XCTest's own hosted-test mechanism). That is faster than `xcodebuild test` and doesn't depend on its test-runner service. | ⌘U |
 | **Debugging** (lldb-dap) | Breakpoints (toggle, deactivate all, persisted per project). ⌘R runs under the debugger whenever breakpoints are active, as in Xcode. Simulator apps launch with `--wait-for-debugger` and lldb attaches to them. | ⌘\\, ⌘Y |
 | | Pause/continue, step over/into/out, the stopped line highlighted in green, threads and frames in the Debug navigator, and an expandable Variables view next to the console. | ⌃⌘Y, F6, F7, F8 |
 | **Monitoring** | The status bar shows zcode's memory and the language server's memory (including `SourceKitService` XPC helpers). View ▸ Performance shows startup timings and memory history. `zcode --startup-bench` prints the same data as JSON and quits. | — |
@@ -42,20 +42,25 @@ The full Xcode 27 menu and shortcut inventory this was matched against is in
 
 ## Performance
 
-Measured on an M4 Max with macOS 27.2 and a release build. These are warm launches; the first launch after
-every rebuild includes macOS scanning the new binary.
+Measured on an M4 Max with macOS 27.2 and a release build.
 
-| | Welcome window | Project with 2 Swift tabs restored |
-|---|---|---|
-| exec → `main()` | ~8 ms | ~10 ms |
-| `main()` → first frame | ~355 ms | ~370–410 ms |
-| Resident memory at first frame | ~106 MB | ~124 MB |
+| | Time to first frame |
+|---|---|
+| `zcode <project>` while zcode is running (the usual case) | **~70 ms**; the CLI itself returns in ~50 ms |
+| Cold launch, welcome window | ~360 ms (8 ms of it before `main()`) |
+| Cold launch, project with 2 Swift tabs restored | ~370–410 ms |
 
-* zcode adds close to nothing on top of GPUI. A bare GPUI Kit window
+* **Single instance.** zcode keeps running when its last window closes, as Xcode and other Mac document apps do. `zcode <path>` hands the path to the running instance over a Unix socket and exits, and the warm instance opens the project window in ~70 ms. `ZCODE_NEW_INSTANCE=1` forces a separate process.
+* Resident memory at first frame is ~106 MB for the welcome window and ~124 MB with a project open.
+* The first launch after each rebuild also includes macOS scanning the new binary.
+
+* zcode adds close to nothing to cold start. A bare GPUI Kit window
   (`cargo run --release --example gpui_baseline -- --quit --activate`) also
   takes ~340–360 ms to its first frame. Most of that is framework
   initialization (~55 ms platform setup, ~40 ms component init, ~150 ms
-  creating the Metal window).
+  creating the Metal window). Profiling with `ZCODE_PAUSE_AT_START=<ms>` plus
+  `sample` shows that time is in AppKit and GPUI: keyboard layout, font
+  enumeration, window and display-link setup.
 * sourcekit-lsp, scheme listing, simulator discovery, file scanning and git
   status all start after the window appears, on background threads.
 * Swift highlighting uses a compact tree-sitter query
@@ -101,11 +106,13 @@ cargo build --release && python3 scripts/e2e.py [--simulator]   # drives the rea
 ```
 
 `scripts/e2e.py` launches zcode with `ZCODE_DEBUG_DIR` set and checks against
-the sample projects in `samples/`:
+a temporary copy of `samples/` taken from git `HEAD`, so local edits and
+saved breakpoints can't leak in. It covers:
 * Open Quickly, definition, completion with placeholders, comment and undo, Document Items, find and references
 * the build-error → issue flow
 * run, test and debug for a Swift package
-* with `--simulator`: run and debug on an iOS simulator
+* opening a project through an already-running instance (< 150 ms to first frame)
+* with `--simulator`: unit tests, run and debug on an iOS simulator
 
 The control channel also takes window screenshots
 (`screenshot <path>`), which doesn't need Screen Recording permission.
@@ -118,6 +125,7 @@ The control channel also takes window screenshots
   automatically.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas, Instruments or
   physical-device deployment.
-* In this environment the simulator's XCTest runner couldn't connect
-  (`xcodebuild test` hangs identically outside zcode). zcode reports the
-  runner's failure in the Issue navigator. Swift package tests run normally.
+* UI test bundles are skipped by the in-simulator unit-test runner and still
+  need `xcodebuild test`. On this machine that fails ("The test runner hung
+  before establishing connection") because of the simulator runtime, with
+  either installed Xcode, independent of zcode.

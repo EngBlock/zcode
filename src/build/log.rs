@@ -122,6 +122,19 @@ pub fn parse_issue(line: &str) -> Option<Issue> {
             source: IssueSource::Build,
         });
     }
+    // Swift Testing: "✘ Test foo() recorded an issue at File.swift:8:9: Expectation failed: …".
+    // Only the file name is printed; the workspace resolves it to a path.
+    static TEST_ISSUE: OnceLock<Regex> = OnceLock::new();
+    if let Some(c) = re(&TEST_ISSUE, r"recorded an issue at ([^:/]+):(\d+):(\d+): (.+)$").captures(line) {
+        return Some(Issue {
+            severity: Severity::Error,
+            message: c[4].to_string(),
+            path: Some(PathBuf::from(&c[1])),
+            line: c[2].parse().ok(),
+            column: c[3].parse().ok(),
+            source: IssueSource::Build,
+        });
+    }
     // xcodebuild's "Testing failed:" summary: "\tApp (123) encountered an error (...)".
     if line.starts_with('\t') && line.contains(" encountered an error ") {
         return Some(Issue {
@@ -362,6 +375,14 @@ mod tests {
         assert_eq!(issue.line, Some(12));
         assert_eq!(issue.column, Some(5));
         assert_eq!(issue.message, "cannot find 'foo' in scope");
+    }
+
+    #[test]
+    fn parses_swift_testing_issues() {
+        let issue = parse_issue("✘ Test incrementAddsOne() recorded an issue at CounterTests.swift:8:9: Expectation failed: counter.count == 2").unwrap();
+        assert_eq!(issue.path.as_deref(), Some(std::path::Path::new("CounterTests.swift")));
+        assert_eq!((issue.line, issue.column), (Some(8), Some(9)));
+        assert_eq!(issue.message, "Expectation failed: counter.count == 2");
     }
 
     #[test]

@@ -1158,6 +1158,18 @@ impl Workspace {
             .update(cx, |d, cx| d.toggle_breakpoint(path, line, cx));
     }
 
+    /// Test failures name only the file; map such paths into the project.
+    fn resolve_issue_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            return path.to_path_buf();
+        }
+        self.files
+            .iter()
+            .find(|f| f.file_name() == path.file_name())
+            .map(|f| self.project.root.join(f))
+            .unwrap_or_else(|| path.to_path_buf())
+    }
+
     /// Combined, de-duplicated issues: live (LSP) diagnostics plus the last
     /// build's issues.
     pub fn all_issues(&self, cx: &App) -> Vec<Issue> {
@@ -1183,6 +1195,9 @@ impl Workspace {
             if issue.severity == Severity::Note {
                 continue;
             }
+            let mut issue = issue.clone();
+            issue.path = issue.path.as_deref().map(|p| self.resolve_issue_path(p));
+            let issue = &issue;
             let duplicate = issues.iter().any(|i| {
                 i.path == issue.path && i.line == issue.line && i.message == issue.message
             });
@@ -1207,7 +1222,7 @@ impl Workspace {
             .read(cx)
             .issues
             .iter()
-            .filter(|i| i.path.as_deref() == Some(path))
+            .filter(|i| i.path.as_deref().map(|p| self.resolve_issue_path(p)).as_deref() == Some(path))
             .cloned()
             .collect();
         buffer.editor.update(cx, |state, cx| {

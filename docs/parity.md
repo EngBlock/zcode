@@ -24,7 +24,7 @@ which was extracted from Xcode 27's own command definitions.
 | Item | Status | Notes |
 |---|---|---|
 | Debugging with lldb-dap: breakpoints (⌘\\, ⌘Y), pause/continue (⌃⌘Y), step (F6/F7/F8), Debug navigator, Variables view, Breakpoints navigator | ✅ | Attaches to simulator apps and launches Mac executables; breakpoints are persisted. No LLDB REPL or conditional breakpoints yet |
-| Test (⌘U), Tests navigator | 🟡 | XCTest and Swift Testing results are parsed. No run-single-test or inline failure markers |
+| Test (⌘U), Tests navigator | ✅ | Unit tests run in the simulator by injecting the bundle into the host app; XCTest and Swift Testing results; failures shown as issues. No run-single-test yet; UI tests need `xcodebuild test` |
 | Navigation history ⌃⌘← ⌃⌘→, counterpart ⌃⌘↑, reveal ⇧⌘J | ✅ | |
 | Rename, Edit All in Scope (⌃⌘E), fix-its (⌃⌥⌘F) | ✅ | Rename opens affected files as unsaved tabs for review; the index refreshes in the background after save |
 | Re-indent (⌃I), Format File (⌃⇧I) | ✅ | Via sourcekit-lsp (swift-format) |

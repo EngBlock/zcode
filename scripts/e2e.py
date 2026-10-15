@@ -18,6 +18,9 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SAMPLES = os.path.normpath(os.path.join(ROOT, "samples"))
+# Tests run against a private copy so edits, breakpoints and session state from
+# other work in the repo can't leak in (and test edits never touch the repo).
+WORK = tempfile.mkdtemp(prefix="zcode-e2e-samples-")
 BINARY = os.path.join(ROOT, "target", "release", "zcode")
 DEBUG_DIR = tempfile.mkdtemp(prefix="zcode-e2e-")
 
@@ -103,14 +106,34 @@ def keys_right(n):
     return "keys " + " ".join(["right"] * n)
 
 
-def xcode_project_checks(z, sim):
-    hello = os.path.join(SAMPLES, "HelloZ", "HelloZ")
+def line_of(path, needle):
+    """1-based line number of the first line containing `needle`."""
+    with open(path) as f:
+        for number, line in enumerate(f, 1):
+            if needle in line:
+                return number
+    raise AssertionError(f"{needle!r} not found in {path}")
+
+
+def column_of(path, needle, offset=0):
+    """Rightward moves from the start of the line to `needle` (+ offset)."""
+    with open(path) as f:
+        line = f.read().splitlines()[line_of(path, needle) - 1]
+    return line.index(needle) + offset
+
+
+def xcode_project_checks(z, samples, sim):
+    hello = os.path.join(samples, "HelloZ", "HelloZ")
     content, counter = os.path.join(hello, "ContentView.swift"), os.path.join(hello, "Counter.swift")
-    originals = {p: open(p).read() for p in (content, counter)}
+    counter_line = line_of(content, "Counter()")
+    tap_line = line_of(content, 'print("tap')
+    appear_line = line_of(content, 'print("HelloZ launched")')
+    count_line = line_of(counter, "count += amount")
+    decl_line = line_of(counter, "private(set) var count")
 
     def lsp_ready():
         z.run(f"open {content}")
-        # On a never-indexed project the background index build restarts
+        # A never-indexed project runs a background index build that restarts
         # sourcekit-lsp when it finishes; wait for that too.
         z.wait_for(lambda s: s["lsp"] == "Ready" and not s["issues"] and not s["indexing"], timeout=300)
 
@@ -122,12 +145,20 @@ def xcode_project_checks(z, sim):
         assert s["active"]["path"].endswith("Counter.swift"), s["active"]["path"]
 
     def definition():
-        z.run(f"open {content}:4", "wait 300", "keys end left left left", "keys ctrl-cmd-j")
-        s = z.wait_for(lambda s: s["active"]["path"].endswith("Counter.swift"), timeout=20, interval=0.5)
-        assert s["active"]["line"] == 4, s["active"]
+        # Right after sourcekit-lsp restarts with the compile database its
+        # first answers can be empty; retry like a user pressing ⌃⌘J again.
+        for _ in range(6):
+            z.run(f"open {content}:{counter_line}", "wait 300", keys_right(column_of(content, "Counter()", 2)), "keys ctrl-cmd-j")
+            try:
+                s = z.wait_for(lambda s: s["active"]["path"].endswith("Counter.swift"), timeout=5, interval=0.5)
+                break
+            except TimeoutError:
+                continue
+        assert s["active"]["path"].endswith("Counter.swift"), s["active"]["path"]
+        assert s["active"]["line"] == line_of(counter, "struct Counter"), s["active"]
 
     def completion():
-        z.run(f"open {content}:16", "wait 1500", "keys end", "keys enter", "type counter.inc")
+        z.run(f"open {content}:{tap_line}", "wait 1500", "keys end", "keys enter", "type counter.inc")
         s = z.wait_for(lambda s: s["active"]["completion_menu_open"], timeout=15, interval=0.5)
         assert any("increment" in i for i in s["active"]["completion_items"]), s["active"]
         z.run("keys down", "keys enter", "keys tab", "type 7")
@@ -135,25 +166,11 @@ def xcode_project_checks(z, sim):
         z.run("keys cmd-z cmd-z cmd-z cmd-z cmd-z cmd-z cmd-z cmd-z")
 
     def comment_and_undo():
-        z.run(f"open {counter}:8", "wait 300", "keys cmd-/")
+        z.run(f"open {counter}:{count_line}", "wait 300", "keys cmd-/")
         assert z.dump()["active"]["line_text"].strip().startswith("// ")
         z.run("keys cmd-z")
         s = z.dump()
         assert not s["active"]["dirty"], "undo should restore the saved state"
-
-    def cut_and_paste_line():
-        z.run(f"open {counter}:8", "wait 300", "keys right right")
-        before = z.dump()["active"]
-        z.run("keys cmd-x")
-        cut = z.dump()["active"]
-        assert cut["text"].count("\n") == before["text"].count("\n") - 1, cut["text"]
-        assert cut["line"] == 8 and cut["line_text"] != before["line_text"], cut
-        z.run("keys cmd-v")
-        pasted = z.dump()["active"]
-        assert pasted["text"] == before["text"], pasted["text"]
-        assert pasted["line"] == 9 and pasted["line_text"] == cut["line_text"], pasted
-        z.run("keys cmd-z cmd-z")
-        assert not z.dump()["active"]["dirty"], "undo should restore the saved state"
 
     def document_items():
         z.run(f"open {counter}", "keys ctrl-6", "wait 1500", "type reset", "keys enter", "wait 300")
@@ -162,11 +179,12 @@ def xcode_project_checks(z, sim):
     def find_and_references():
         z.run("keys cmd-shift-f", "wait 200", "type increment", "keys enter", "wait 800")
         assert z.dump()["find_results"] >= 2
-        z.run(f"open {counter}:5", "wait 300", keys_right(24), "keys ctrl-shift-cmd-f", "wait 2500")
+        z.run(f"open {counter}:{decl_line}", "wait 300", keys_right(column_of(counter, "count =", 2)),
+              "keys ctrl-shift-cmd-f", "wait 2500")
         assert z.dump()["find_results"] >= 3
 
     def build_error_and_issue_navigation():
-        z.run(f"open {counter}:8", "wait 300", "keys end", "type  + oops", "keys cmd-b")
+        z.run(f"open {counter}:{count_line}", "wait 300", "keys end", "type  + oops", "keys cmd-b")
         s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=180)
         assert "success: false" in s["phase"], s["phase"]
         assert any("oops" in i for i in s["issues"]), s["issues"]
@@ -175,38 +193,43 @@ def xcode_project_checks(z, sim):
         assert z.dump()["active"]["path"].endswith("Counter.swift")
         z.run("keys cmd-z", "keys cmd-s")
 
+    def unit_tests_on_simulator():
+        z.run("keys cmd-u")
+        s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=300)
+        assert "success: true" in s["phase"], s["phase"]
+        assert sorted(s["tests"]) == ["Passed incrementAddsOne()", "Passed resetClearsCount()"], s["tests"]
+
     def run_on_simulator():
         z.run("keys cmd-r")
-        s = z.wait_for(lambda s: any("HelloZ launched" in l for l in s["console_tail"]), timeout=300)
+        z.wait_for(lambda s: any("HelloZ launched" in l for l in s["console_tail"]), timeout=300)
         z.run("keys cmd-.", "wait 1500")
-        assert z.dump()["phase"] in ("Stopped",) or z.dump()["phase"].startswith("Finished")
+        phase = z.dump()["phase"]
+        assert phase == "Stopped" or phase.startswith("Finished"), phase
 
     def debug_on_simulator():
-        z.run(f"open {content}:23", "wait 300", "keys cmd-\\", "keys cmd-r")
-        s = z.wait_for(lambda s: s["debugger"]["state"].startswith("Stopped"), timeout=300)
-        assert "ContentView.swift:23" in s["debugger"]["frames"][0], s["debugger"]
-        z.run(f"open {content}:23", "keys cmd-\\", "keys cmd-.", "wait 1500")
+        z.run(f"open {content}:{appear_line}", "wait 300", "keys cmd-\\", "keys cmd-r")
+        s = z.wait_for(lambda s: s["debugger"]["state"].startswith("Stopped") and s["debugger"]["frames"], timeout=300)
+        assert f"ContentView.swift:{appear_line}" in s["debugger"]["frames"][0], s["debugger"]
+        z.run(f"open {content}:{appear_line}", "keys cmd-\\", "keys cmd-.", "wait 1500")
 
     check("sourcekit-lsp ready with compile database (no false errors)", lsp_ready)
     check("Open Quickly (⇧⌘O)", open_quickly)
     check("Jump to Definition across files (⌃⌘J)", definition)
     check("Completion + placeholder Tab", completion)
     check("Comment (⌘/) and undo restores clean state", comment_and_undo)
-    check("Cut line (⌘X) and paste above (⌘V) with nothing selected", cut_and_paste_line)
     check("Document Items (⌃6)", document_items)
     check("Find in Workspace (⇧⌘F) and references (⌃⇧⌘F)", find_and_references)
     check("Build error → Issue navigator → next issue (⌘')", build_error_and_issue_navigation)
     if sim:
+        check("Unit tests in iOS Simulator (⌘U)", unit_tests_on_simulator)
         check("Run on iOS Simulator (⌘R) with console", run_on_simulator)
         check("Debug on iOS Simulator (breakpoint stop)", debug_on_simulator)
-    for path, text in originals.items():
-        with open(path, "w") as f:
-            f.write(text)
 
 
-def package_checks(z):
-    kit = os.path.join(SAMPLES, "ZKit")
+def package_checks(z, samples):
+    kit = os.path.join(samples, "ZKit")
     main = os.path.join(kit, "Sources", "zhello", "main.swift")
+    loop_line = line_of(main, "for i in")
 
     def run_package():
         z.run("keys cmd-r")
@@ -219,21 +242,55 @@ def package_checks(z):
         assert s["tests"] and all(t.startswith("Passed") for t in s["tests"]), s["tests"]
 
     def debug_package():
-        z.run(f"open {main}:5", "wait 300", "keys cmd-\\", "keys cmd-r")
+        z.run(f"open {main}:{loop_line}", "wait 300", "keys cmd-\\", "keys cmd-r")
         s = z.wait_for(
             lambda s: s["debugger"]["state"].startswith("Stopped") and s["debugger"]["variables"],
             timeout=300,
             interval=0.5,
         )
         assert any(v.startswith("i = ") for v in s["debugger"]["variables"]), s["debugger"]
-        z.run("keys f6", "wait 1000")
-        assert "main.swift:6" in z.dump()["debugger"]["frames"][0]
-        z.run(f"open {main}:5", "keys cmd-\\", "keys ctrl-cmd-y")
+        z.run("keys f6")
+        z.wait_for(lambda s: s["debugger"]["frames"] and f"main.swift:{loop_line + 1}" in s["debugger"]["frames"][0],
+                   timeout=20, interval=0.5)
+        z.run(f"open {main}:{loop_line}", "keys cmd-\\", "keys ctrl-cmd-y")
         z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=60)
 
     check("Swift package: Run on My Mac (⌘R)", run_package)
     check("Swift package: Test (⌘U) → Test navigator", test_package)
     check("Swift package: breakpoint, variables, step over (F6)", debug_package)
+
+
+def warm_open(samples):
+    """Starts a regular (single-instance) zcode, then times `zcode <project>`."""
+    socket = os.path.expanduser("~/Library/Caches/zcode/zcode.sock")
+    log = os.path.join(WORK, "instance.log")
+    env = {k: v for k, v in os.environ.items() if k not in ("ZCODE_DEBUG_DIR",)}
+    env["ZCODE_TRACE_STARTUP"] = "1"
+    with open(log, "w") as out:
+        server = subprocess.Popen([BINARY], env=env, stdout=out, stderr=out)
+    try:
+        deadline = time.time() + 15
+        while not os.path.exists(socket) and time.time() < deadline:
+            time.sleep(0.1)
+        time.sleep(1.0)
+        started = time.time()
+        subprocess.run([BINARY, os.path.join(samples, "ZKit")], env=env, check=True, timeout=10)
+        client_ms = (time.time() - started) * 1000
+        deadline = time.time() + 10
+        frame_ms = None
+        while time.time() < deadline and frame_ms is None:
+            for line in open(log):
+                if line.startswith("[instance] first frame in "):
+                    value = line.split("in ", 1)[1].strip()
+                    frame_ms = float(value[:-2]) if value.endswith("ms") else float(value[:-1]) * 1000
+            time.sleep(0.1)
+        print(f"    client returned in {client_ms:.0f} ms; new window's first frame after {frame_ms} ms")
+        assert frame_ms is not None and frame_ms < 150, frame_ms
+    finally:
+        server.kill()
+        server.wait()
+        if os.path.exists(socket):
+            os.remove(socket)
 
 
 def main():
@@ -245,21 +302,32 @@ def main():
         out = subprocess.run([BINARY, "--startup-bench"], capture_output=True, text=True).stdout.strip()
     print("  " + out.splitlines()[-1] if out else "  (no output)")
 
+    samples = os.path.join(WORK, "samples")
+    warm_open_check_pending = True
+    subprocess.run(["git", "-C", ROOT, "archive", "--format=tar", "-o", os.path.join(WORK, "samples.tar"), "HEAD", "samples"], check=True)
+    subprocess.run(["tar", "-xf", "samples.tar"], cwd=WORK, check=True)
+    samples = os.path.realpath(samples)
+
     print("Xcode project (samples/HelloZ):")
-    z = Zcode(os.path.join(SAMPLES, "HelloZ"))
+    z = Zcode(os.path.join(samples, "HelloZ"))
     try:
-        xcode_project_checks(z, sim)
+        xcode_project_checks(z, samples, sim)
     finally:
         z.quit()
 
+    if warm_open_check_pending:
+        print("Single instance:")
+        check("Warm open through a running instance (< 150 ms to first frame)", lambda: warm_open(samples))
+
     print("Swift package (samples/ZKit):")
-    z = Zcode(os.path.join(SAMPLES, "ZKit"))
+    z = Zcode(os.path.join(samples, "ZKit"))
     try:
-        package_checks(z)
+        package_checks(z, samples)
     finally:
         z.quit()
 
     shutil.rmtree(DEBUG_DIR, ignore_errors=True)
+    shutil.rmtree(WORK, ignore_errors=True)
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
 

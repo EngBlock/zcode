@@ -3,6 +3,7 @@
 pub mod compiledb;
 pub mod log;
 pub mod process;
+pub mod sim_tests;
 pub mod xcode;
 
 use std::collections::HashMap;
@@ -404,7 +405,7 @@ impl BuildController {
                     let db = db.clone();
                     let store = compiledb::index_store_path(&cache_dir);
                     async move {
-                        let commands = compiledb::with_index_store(compiledb::extract(&raw), &store);
+                        let commands = compiledb::with_index_store(compiledb::with_canonical_paths(compiledb::extract(&raw)), &store);
                         compiledb::merge_into(&db, commands).unwrap_or(false)
                     }
                 })
@@ -515,7 +516,16 @@ impl BuildController {
             } else {
                 action
             };
-            let cmd = build_command(&project, &scheme, &configuration, &destination, tool_action);
+            // Unit tests on a simulator run in-process (see `sim_tests`):
+            // build-for-testing here, then inject each bundle into its host.
+            let direct_tests = action == BuildAction::Test
+                && project.kind.is_xcode()
+                && destination.platform.is_simulator();
+            let cmd = if direct_tests {
+                xcodebuild_command(&project, &scheme, &configuration, &destination, "build-for-testing")
+            } else {
+                build_command(&project, &scheme, &configuration, &destination, tool_action)
+            };
 
             // Resolve run settings concurrently with the build.
             let settings_task = (action == BuildAction::Run && project.kind.is_xcode()).then(|| {
@@ -546,8 +556,14 @@ impl BuildController {
             })
             .ok();
 
-            let (code, raw_log) = stream_into(&this, cx, cmd, handle.clone(), Sink::Log).await;
-            let success = code == Some(0);
+            let (code, mut raw_log) = stream_into(&this, cx, cmd, handle.clone(), Sink::Log).await;
+            let mut success = code == Some(0);
+            if direct_tests && success && this.read_with(cx, |this, _| this.phase != Phase::Stopped).unwrap_or(false) {
+                let (ok, output) =
+                    run_simulator_tests(&this, cx, &project, &scheme, &configuration, &destination, &handle).await;
+                success = ok;
+                raw_log.push_str(&output);
+            }
             let duration = started.elapsed();
 
             // Persist the log and extract compiler invocations for the LSP.
@@ -573,7 +589,7 @@ impl BuildController {
                         if is_xcode && tool_action != BuildAction::Clean {
                             let commands = compiledb::extract(&raw_log);
                             let store = compiledb::index_store_path(&cache_dir);
-                            let commands = compiledb::with_index_store(commands, &store);
+                            let commands = compiledb::with_index_store(compiledb::with_canonical_paths(commands), &store);
                             compiledb::merge_into(&db_path, commands).unwrap_or(false)
                         } else {
                             false
@@ -892,6 +908,106 @@ fn display_command(cmd: &Command) -> String {
         .join(" ")
 }
 
+/// Runs the unit-test bundles of a just-built scheme inside the simulator and
+/// streams their output into the build log. Returns (success, raw output).
+async fn run_simulator_tests(
+    this: &gpui_kit::WeakEntity<BuildController>,
+    cx: &mut gpui_kit::AsyncApp,
+    project: &ProjectInfo,
+    scheme: &str,
+    configuration: &str,
+    destination: &Destination,
+    handle: &ProcessHandle,
+) -> (bool, String) {
+    let say = |this: &gpui_kit::WeakEntity<BuildController>, cx: &mut gpui_kit::AsyncApp, line: String| {
+        this.update(cx, |this, cx| {
+            this.push_log_line(line);
+            cx.emit(BuildEvent::LogUpdated);
+            cx.emit(BuildEvent::IssuesChanged);
+            cx.notify();
+        })
+        .ok();
+    };
+    let targets = {
+        let (project, scheme, configuration, destination) =
+            (project.clone(), scheme.to_string(), configuration.to_string(), destination.clone());
+        cx.background_spawn(async move {
+            let settings = xcode::show_build_settings(&project, &scheme, &configuration, Some(&destination))?;
+            let build_dir = settings
+                .iter()
+                .find_map(|s| s.get("BUILD_DIR").map(PathBuf::from))
+                .ok_or_else(|| anyhow::anyhow!("BUILD_DIR not found"))?;
+            let xctestrun = sim_tests::find_xctestrun(&build_dir, &scheme)
+                .ok_or_else(|| anyhow::anyhow!("no .xctestrun in {}", build_dir.display()))?;
+            // Boot the simulator if needed (an error just means it's booted).
+            let mut boot = Command::new("/usr/bin/xcrun");
+            boot.args(["simctl", "boot", &destination.id]);
+            boot.output().ok();
+            sim_tests::parse_xctestrun(&xctestrun)
+        })
+        .await
+    };
+    let targets = match targets {
+        Ok(targets) => targets,
+        Err(err) => {
+            say(this, cx, format!("error: Could not prepare tests: {err:#}"));
+            return (false, String::new());
+        }
+    };
+    let mut ok = true;
+    let mut raw = String::new();
+    for target in targets {
+        if target.is_ui_test {
+            say(this, cx, format!("note: Skipping UI test bundle {} (UI tests run through xcodebuild test)", target.name));
+            continue;
+        }
+        say(this, cx, format!("Testing {}…", target.name));
+        let udid = destination.id.clone();
+        let prepared = cx
+            .background_spawn({
+                let target = target.clone();
+                async move { sim_tests::test_command(&udid, &target) }
+            })
+            .await;
+        let cmd = match prepared {
+            Ok(cmd) => cmd,
+            Err(err) => {
+                say(this, cx, format!("error: {}: {err:#}", target.name));
+                ok = false;
+                continue;
+            }
+        };
+        let (code, output) = stream_into(this, cx, cmd, handle.clone(), Sink::Log).await;
+        raw.push_str(&output);
+        let finished = output.contains("Test run with") || output.contains("Test Suite 'All tests'");
+        if code != Some(0) || !finished {
+            ok = false;
+            say(this, cx, format!("error: {} did not finish running tests", target.name));
+        }
+    }
+    let failed = this.read_with(cx, |this, _| this.failed_tests()).unwrap_or(0);
+    ok &= failed == 0;
+    say(this, cx, if ok { "** TEST SUCCEEDED **".into() } else { "** TEST FAILED **".into() });
+    (ok, raw)
+}
+
+fn xcodebuild_command(
+    project: &ProjectInfo,
+    scheme: &str,
+    configuration: &str,
+    destination: &Destination,
+    verb: &str,
+) -> Command {
+    let mut cmd = Command::new("/usr/bin/xcodebuild");
+    cmd.current_dir(&project.root)
+        .args(project.kind.xcodebuild_args())
+        .args(["-scheme", scheme, "-configuration", configuration])
+        .args(["-destination", &destination.xcodebuild_specifier()])
+        .args(["-skipMacroValidation", "-skipPackagePluginValidation"])
+        .arg(verb);
+    cmd
+}
+
 pub fn build_command(
     project: &ProjectInfo,
     scheme: &str,
@@ -919,20 +1035,17 @@ pub fn build_command(
             }
             cmd
         }
-        _ => {
-            let mut cmd = Command::new("/usr/bin/xcodebuild");
-            cmd.current_dir(&project.root)
-                .args(project.kind.xcodebuild_args())
-                .args(["-scheme", scheme, "-configuration", configuration])
-                .args(["-destination", &destination.xcodebuild_specifier()])
-                .args(["-skipMacroValidation", "-skipPackagePluginValidation"])
-                .arg(match action {
-                    BuildAction::Build | BuildAction::Run => "build",
-                    BuildAction::Test => "test",
-                    BuildAction::Clean => "clean",
-                });
-            cmd
-        }
+        _ => xcodebuild_command(
+            project,
+            scheme,
+            configuration,
+            destination,
+            match action {
+                BuildAction::Build | BuildAction::Run => "build",
+                BuildAction::Test => "test",
+                BuildAction::Clean => "clean",
+            },
+        ),
     }
 }
 

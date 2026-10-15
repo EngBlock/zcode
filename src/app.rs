@@ -135,7 +135,7 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
     }
 }
 
-fn open_welcome(cx: &mut App) {
+pub fn open_welcome(cx: &mut App) {
     let result = gpui_kit::open_window(
         window_options("Welcome to zcode", size(px(820.), px(480.)), cx),
         cx,
@@ -187,15 +187,30 @@ fn quit(cx: &mut App) {
         let all = futures::future::join_all(shutdowns);
         let timeout = cx.background_executor().timer(Duration::from_millis(600));
         futures::future::select(Box::pin(all), Box::pin(timeout)).await;
+        crate::instance::cleanup();
         cx.update(|cx| cx.quit());
     })
     .detach();
 }
 
 pub fn run() {
+    // Lets a sampling profiler attach before startup work begins
+    // (`ZCODE_PAUSE_AT_START=1500 zcode & sample <pid> 3`).
+    if let Some(ms) = std::env::var("ZCODE_PAUSE_AT_START").ok().and_then(|v| v.parse().ok()) {
+        std::thread::sleep(Duration::from_millis(ms));
+    }
     let main_started = Instant::now();
     let args = parse_args();
     init_logging();
+
+    // Hand off to an already-running zcode when there is one (scripted and
+    // benchmark runs always start their own process).
+    let single_instance = !args.startup_bench
+        && std::env::var_os("ZCODE_DEBUG_DIR").is_none()
+        && std::env::var_os("ZCODE_NEW_INSTANCE").is_none();
+    if single_instance && crate::instance::forward(args.path.as_deref()) {
+        return;
+    }
 
     if std::env::var_os("ZCODE_TRACE_STARTUP").is_some() {
         eprintln!("[startup] main: {:?}", main_started.elapsed());
@@ -204,6 +219,12 @@ pub fn run() {
     if std::env::var_os("ZCODE_TRACE_STARTUP").is_some() {
         eprintln!("[startup] application(): {:?}", main_started.elapsed());
     }
+    // Clicking the Dock icon with no windows open shows the welcome window.
+    app.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            open_welcome(cx);
+        }
+    });
     app
         .with_assets(crate::assets::Assets)
         .run(move |cx| {
@@ -227,12 +248,17 @@ pub fn run() {
             cx.on_action(|_: &About, cx| {
                 cx.open_url("https://github.com/zed-industries/zed/tree/main/crates/gpui");
             });
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
+            cx.on_window_closed(move |cx, _| {
+                // Like other Mac document apps, a single-instance zcode keeps
+                // running with no windows, so the next open is instant.
+                if cx.windows().is_empty() && !single_instance {
                     quit(cx);
                 }
             })
             .detach();
+            if single_instance {
+                crate::instance::listen(cx);
+            }
 
             match args.path.clone() {
                 Some(path) if path.exists() => open_project(path, cx),

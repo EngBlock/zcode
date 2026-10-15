@@ -7,6 +7,7 @@ pub mod build;
 pub mod debug;
 pub mod debugger;
 pub mod fuzzy;
+pub mod instance;
 pub mod languages;
 pub mod lsp;
 pub mod paths;
