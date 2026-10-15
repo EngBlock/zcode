@@ -1,0 +1,48 @@
+[package]
+name = "zcode"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, Zed-inspired editor for the Apple ecosystem"
+license = "Apache-2.0"
+
+[dependencies]
+gpui-kit = { version = "=0.7.3", features = [
+    "tree-sitter",
+    "tree-sitter-swift",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-yaml",
+    "tree-sitter-markdown",
+    "tree-sitter-bash",
+    "tree-sitter-toml",
+    "tree-sitter-html",
+    "tree-sitter-rust",
+    "tree-sitter-javascript",
+    "tree-sitter-python",
+] }
+anyhow = "1"
+futures = "0.3"
+ignore = "0.4"
+libc = "0.2"
+log = "0.4"
+lsp-types = { version = "0.97", features = ["proposed"] }
+nucleo-matcher = "0.3"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSResponder", "NSGraphics"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray"] }
+parking_lot = "0.12"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+shlex = "1"
+smol = "2"
+tree-sitter-swift = "0.7"
+
+[profile.release]
+debug = "line-tables-only"
+lto = "thin"
+codegen-units = 16
+
+[profile.dev.package."*"]
+opt-level = 2
+

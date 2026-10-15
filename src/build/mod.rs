@@ -1,0 +1,917 @@
+//! Build, run, test and clean — the Product menu.
+
+pub mod compiledb;
+pub mod log;
+pub mod process;
+pub mod xcode;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{Duration, Instant, SystemTime};
+
+use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
+use smol::channel;
+
+use crate::project::{ProjectInfo, ProjectKind};
+use log::{Issue, LogLine, Severity, TestResult, TestStatus};
+use process::ProcessHandle;
+use xcode::{BuildSettings, Destination, Platform, SchemeList};
+
+/// Lines kept in memory per log; older lines are dropped from the view (the
+/// full log is still written to disk).
+const MAX_LOG_LINES: usize = 50_000;
+const MAX_CONSOLE_LINES: usize = 20_000;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildAction {
+    Build,
+    Run,
+    Test,
+    Clean,
+}
+
+impl BuildAction {
+    pub fn verb(&self) -> &'static str {
+        match self {
+            Self::Build | Self::Run => "Build",
+            Self::Test => "Test",
+            Self::Clean => "Clean",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Phase {
+    Idle,
+    Preparing(BuildAction),
+    Building { action: BuildAction, started: Instant },
+    Launching,
+    Running { started: Instant },
+    Finished {
+        action: BuildAction,
+        success: bool,
+        duration: Duration,
+    },
+    Stopped,
+}
+
+impl Phase {
+    pub fn is_busy(&self) -> bool {
+        matches!(
+            self,
+            Self::Preparing(_) | Self::Building { .. } | Self::Launching | Self::Running { .. }
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Report {
+    pub action: BuildAction,
+    pub scheme: String,
+    pub destination: String,
+    pub finished_at: SystemTime,
+    pub duration: Duration,
+    pub success: bool,
+    pub errors: usize,
+    pub warnings: usize,
+    pub log_path: PathBuf,
+}
+
+pub enum BuildEvent {
+    /// Scheme list, destinations or selection changed.
+    ConfigurationChanged,
+    LogUpdated,
+    ConsoleUpdated,
+    IssuesChanged,
+    PhaseChanged,
+    /// A compilation database was (re)written for sourcekit-lsp.
+    CompileDatabaseUpdated(PathBuf),
+}
+
+pub struct BuildController {
+    pub project: ProjectInfo,
+    pub schemes: SchemeList,
+    pub schemes_loading: bool,
+    pub schemes_error: Option<String>,
+    pub scheme: Option<String>,
+    pub configuration: String,
+    pub all_destinations: Vec<Destination>,
+    pub destinations: Vec<Destination>,
+    pub destination: Option<Destination>,
+    settings: HashMap<(String, String), BuildSettings>,
+    pub log: Vec<LogLine>,
+    pub console: Vec<String>,
+    pub issues: Vec<Issue>,
+    pub tests: Vec<TestResult>,
+    pub phase: Phase,
+    pub reports: Vec<Report>,
+    process: ProcessHandle,
+    /// Background "index build" that produces the compilation database for
+    /// projects that have never been built (like Xcode's prepare-for-indexing).
+    pub indexing: bool,
+    index_process: ProcessHandle,
+    index_attempted: bool,
+    _index_task: Option<Task<()>>,
+    run_target: Option<(Destination, String)>,
+    cache_dir: PathBuf,
+    task: Option<Task<()>>,
+    _load_task: Option<Task<()>>,
+}
+
+impl EventEmitter<BuildEvent> for BuildController {}
+
+impl BuildController {
+    pub fn new(project: ProjectInfo, cache_dir: PathBuf, cx: &mut Context<Self>) -> Self {
+        let mut this = Self {
+            project,
+            schemes: SchemeList::default(),
+            schemes_loading: false,
+            schemes_error: None,
+            scheme: None,
+            configuration: "Debug".into(),
+            all_destinations: vec![],
+            destinations: vec![],
+            destination: None,
+            settings: HashMap::new(),
+            log: vec![],
+            console: vec![],
+            issues: vec![],
+            tests: vec![],
+            phase: Phase::Idle,
+            reports: vec![],
+            process: ProcessHandle::default(),
+            indexing: false,
+            index_process: ProcessHandle::default(),
+            index_attempted: false,
+            _index_task: None,
+            run_target: None,
+            cache_dir,
+            task: None,
+            _load_task: None,
+        };
+        this.reload(cx);
+        this
+    }
+
+    pub fn can_build(&self) -> bool {
+        !matches!(self.project.kind, ProjectKind::Folder)
+    }
+
+    /// Loads schemes and destinations in the background.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        if !self.can_build() {
+            return;
+        }
+        self.schemes_loading = true;
+        let project = self.project.clone();
+        self._load_task = Some(cx.spawn(async move |this, cx| {
+            let (schemes, simulators) = cx
+                .background_spawn(async move {
+                    let schemes = xcode::list_schemes(&project);
+                    let simulators = if project.kind.is_xcode() {
+                        xcode::list_simulators().unwrap_or_default()
+                    } else {
+                        vec![]
+                    };
+                    (schemes, simulators)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.schemes_loading = false;
+                match schemes {
+                    Ok(schemes) => {
+                        this.schemes_error = None;
+                        if this
+                            .scheme
+                            .as_ref()
+                            .is_none_or(|s| !schemes.schemes.contains(s))
+                        {
+                            this.scheme = schemes.schemes.first().cloned();
+                        }
+                        this.schemes = schemes;
+                    }
+                    Err(err) => this.schemes_error = Some(format!("{err:#}")),
+                }
+                let mut all = vec![Destination::my_mac()];
+                all.extend(simulators);
+                this.all_destinations = all;
+                this.destinations = this.all_destinations.clone();
+                if this.destination.is_none() {
+                    this.destination = this.default_destination();
+                }
+                cx.emit(BuildEvent::ConfigurationChanged);
+                cx.notify();
+                this.refresh_supported_destinations(cx);
+            })
+            .ok();
+        }));
+    }
+
+    fn default_destination(&self) -> Option<Destination> {
+        match self.project.kind {
+            ProjectKind::SwiftPackage => Some(Destination::my_mac()),
+            _ => self
+                .destinations
+                .iter()
+                .find(|d| d.platform == Platform::IOSSimulator && d.booted)
+                .or_else(|| {
+                    self.destinations
+                        .iter()
+                        .find(|d| d.platform == Platform::IOSSimulator && d.name.starts_with("iPhone"))
+                })
+                .or_else(|| self.destinations.first())
+                .cloned(),
+        }
+    }
+
+    /// Narrows destinations to what the scheme's SUPPORTED_PLATFORMS allows.
+    fn refresh_supported_destinations(&mut self, cx: &mut Context<Self>) {
+        let (Some(scheme), true) = (self.scheme.clone(), self.project.kind.is_xcode()) else {
+            if matches!(self.project.kind, ProjectKind::SwiftPackage) {
+                self.destinations = vec![Destination::my_mac()];
+                self.destination = Some(Destination::my_mac());
+            }
+            return;
+        };
+        let project = self.project.clone();
+        let configuration = self.configuration.clone();
+        self._load_task = Some(cx.spawn(async move |this, cx| {
+            let settings = cx
+                .background_spawn(async move {
+                    xcode::show_build_settings(&project, &scheme, &configuration, None)
+                        .map(|all| (scheme.clone(), xcode::runnable_settings(&all, &scheme)))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                if let Ok((scheme, Some(settings))) = settings {
+                    let supported = settings.supported_platforms();
+                    this.destinations = xcode::filter_destinations(&this.all_destinations, &supported);
+                    let still_valid = this
+                        .destination
+                        .as_ref()
+                        .is_some_and(|d| this.destinations.contains(d));
+                    if !still_valid {
+                        this.destination = this.default_destination();
+                    }
+                    this.settings.insert((scheme, "*".into()), settings);
+                    cx.emit(BuildEvent::ConfigurationChanged);
+                    cx.notify();
+                }
+                this.maybe_start_index_build(cx);
+            })
+            .ok();
+        }));
+    }
+
+    pub fn set_scheme(&mut self, scheme: String, cx: &mut Context<Self>) {
+        self.scheme = Some(scheme);
+        cx.emit(BuildEvent::ConfigurationChanged);
+        cx.notify();
+        self.refresh_supported_destinations(cx);
+    }
+
+    pub fn set_destination(&mut self, destination: Destination, cx: &mut Context<Self>) {
+        self.destination = Some(destination);
+        cx.emit(BuildEvent::ConfigurationChanged);
+        cx.notify();
+    }
+
+    pub fn set_configuration(&mut self, configuration: String, cx: &mut Context<Self>) {
+        self.configuration = configuration;
+        cx.emit(BuildEvent::ConfigurationChanged);
+        cx.notify();
+    }
+
+    pub fn error_count(&self) -> usize {
+        self.issues.iter().filter(|i| i.severity == Severity::Error).count()
+    }
+
+    pub fn warning_count(&self) -> usize {
+        self.issues.iter().filter(|i| i.severity == Severity::Warning).count()
+    }
+
+    pub fn clear_console(&mut self, cx: &mut Context<Self>) {
+        self.console.clear();
+        cx.emit(BuildEvent::ConsoleUpdated);
+        cx.notify();
+    }
+
+    pub fn stop(&mut self, cx: &mut Context<Self>) {
+        self.process.terminate();
+        if let Some((destination, bundle_id)) = self.run_target.take()
+            && destination.platform.is_simulator()
+        {
+            let mut cmd = Command::new("/usr/bin/xcrun");
+            cmd.args(["simctl", "terminate", &destination.id, &bundle_id]);
+            cx.background_spawn(async move {
+                process::run_quiet(cmd).await.ok();
+            })
+            .detach();
+        }
+        if self.phase.is_busy() {
+            self.task = None;
+            self.phase = Phase::Stopped;
+            cx.emit(BuildEvent::PhaseChanged);
+            cx.notify();
+        }
+    }
+
+    fn maybe_start_index_build(&mut self, cx: &mut Context<Self>) {
+        let db = compiledb::database_path(&self.cache_dir);
+        if self.index_attempted || db.exists() {
+            return;
+        }
+        self.start_index_build(cx);
+    }
+
+    /// Re-runs the index build after source edits are saved so cross-file
+    /// features (references, rename, Open Quickly symbols) see them — what
+    /// Xcode's background indexing does. Debounced by the caller.
+    pub fn refresh_index(&mut self, cx: &mut Context<Self>) {
+        if self.indexing {
+            self.index_process.terminate();
+            self._index_task = None;
+            self.indexing = false;
+        }
+        self.start_index_build(cx);
+    }
+
+    fn start_index_build(&mut self, cx: &mut Context<Self>) {
+        if !self.project.kind.is_xcode() || self.phase.is_busy() {
+            return;
+        }
+        let (Some(scheme), Some(destination)) = (self.scheme.clone(), self.destination.clone()) else {
+            return;
+        };
+        self.index_attempted = true;
+        self.indexing = true;
+        cx.notify();
+        let mut cmd = build_command(&self.project, &scheme, &self.configuration, &destination, BuildAction::Build);
+        // Run at lower CPU priority so editing stays smooth.
+        // A private derived-data directory guarantees a full (logged) compile,
+        // the way Xcode keeps its own Index.noindex build.
+        let mut niced = Command::new("/usr/bin/nice");
+        niced
+            .arg("-n")
+            .arg("10")
+            .arg(cmd.get_program())
+            .args(cmd.get_args())
+            .arg("-derivedDataPath")
+            .arg(self.cache_dir.join("IndexDerivedData"));
+        if let Some(dir) = cmd.get_current_dir() {
+            niced.current_dir(dir);
+        }
+        cmd = niced;
+        let handle = ProcessHandle::default();
+        self.index_process = handle.clone();
+        let cache_dir = self.cache_dir.clone();
+        self._index_task = Some(cx.spawn(async move |this, cx| {
+            let (tx, rx) = channel::unbounded::<String>();
+            let process = cx.background_spawn(process::run_streaming(cmd, tx, handle));
+            let collect = cx.background_spawn(async move {
+                let mut raw = String::new();
+                while let Ok(line) = rx.recv().await {
+                    raw.push_str(&line);
+                    raw.push('\n');
+                }
+                raw
+            });
+            let code = process.await.ok().flatten();
+            let raw = collect.await;
+            let db = compiledb::database_path(&cache_dir);
+            let changed = cx
+                .background_spawn({
+                    let db = db.clone();
+                    let store = compiledb::index_store_path(&cache_dir);
+                    async move {
+                        let commands = compiledb::with_index_store(compiledb::extract(&raw), &store);
+                        compiledb::merge_into(&db, commands).unwrap_or(false)
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.indexing = false;
+                ::log::info!("index build finished (exit {code:?}, database updated: {changed})");
+                if changed {
+                    cx.emit(BuildEvent::CompileDatabaseUpdated(db));
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// Product ▸ Build / Run / Test / Clean.
+    pub fn start(&mut self, action: BuildAction, cx: &mut Context<Self>) {
+        if !self.can_build() {
+            return;
+        }
+        if self.indexing {
+            // The user's build supersedes (and will produce) the index data.
+            self.index_process.terminate();
+            self.indexing = false;
+            self._index_task = None;
+        }
+        if self.phase.is_busy() {
+            self.stop(cx);
+        }
+        let Some(scheme) = self.scheme.clone() else {
+            self.push_log_line("error: No scheme selected".into());
+            cx.notify();
+            return;
+        };
+        let destination = self
+            .destination
+            .clone()
+            .unwrap_or_else(Destination::my_mac);
+        self.log.clear();
+        self.issues.clear();
+        if action == BuildAction::Test {
+            self.tests.clear();
+        }
+        if action == BuildAction::Run {
+            self.console.clear();
+            cx.emit(BuildEvent::ConsoleUpdated);
+        }
+        self.phase = Phase::Preparing(action);
+        cx.emit(BuildEvent::IssuesChanged);
+        cx.emit(BuildEvent::LogUpdated);
+        cx.emit(BuildEvent::PhaseChanged);
+        cx.notify();
+
+        let project = self.project.clone();
+        let configuration = self.configuration.clone();
+        let handle = ProcessHandle::default();
+        self.process = handle.clone();
+        let cache_dir = self.cache_dir.clone();
+        let cached_settings = self
+            .settings
+            .get(&(scheme.clone(), destination.id.clone()))
+            .cloned();
+
+        self.task = Some(cx.spawn(async move |this, cx| {
+            let started = Instant::now();
+            let tool_action = if action == BuildAction::Run {
+                BuildAction::Build
+            } else {
+                action
+            };
+            let cmd = build_command(&project, &scheme, &configuration, &destination, tool_action);
+
+            // Resolve run settings concurrently with the build.
+            let settings_task = (action == BuildAction::Run && project.kind.is_xcode()).then(|| {
+                let project = project.clone();
+                let scheme = scheme.clone();
+                let configuration = configuration.clone();
+                let destination = destination.clone();
+                cx.background_spawn(async move {
+                    if let Some(settings) = cached_settings {
+                        return Ok(settings);
+                    }
+                    let all = xcode::show_build_settings(
+                        &project,
+                        &scheme,
+                        &configuration,
+                        Some(&destination),
+                    )?;
+                    xcode::runnable_settings(&all, &scheme)
+                        .ok_or_else(|| anyhow::anyhow!("scheme {scheme} has no runnable target"))
+                })
+            });
+
+            this.update(cx, |this, cx| {
+                this.phase = Phase::Building { action, started };
+                this.push_log_line(format!("$ {}", display_command(&cmd)));
+                cx.emit(BuildEvent::PhaseChanged);
+                cx.notify();
+            })
+            .ok();
+
+            let (code, raw_log) = stream_into(&this, cx, cmd, handle.clone(), Sink::Log).await;
+            let success = code == Some(0);
+            let duration = started.elapsed();
+
+            // Persist the log and extract compiler invocations for the LSP.
+            let log_path = cache_dir.join("logs").join(format!(
+                "{}-{}.log",
+                SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default(),
+                action.verb().to_lowercase()
+            ));
+            let is_xcode = project.kind.is_xcode();
+            let db_path = compiledb::database_path(&cache_dir);
+            let db_changed = cx
+                .background_spawn({
+                    let log_path = log_path.clone();
+                    let db_path = db_path.clone();
+                    async move {
+                        if let Some(dir) = log_path.parent() {
+                            std::fs::create_dir_all(dir).ok();
+                        }
+                        std::fs::write(&log_path, &raw_log).ok();
+                        if is_xcode && tool_action != BuildAction::Clean {
+                            let commands = compiledb::extract(&raw_log);
+                            let store = compiledb::index_store_path(&cache_dir);
+                            let commands = compiledb::with_index_store(commands, &store);
+                            compiledb::merge_into(&db_path, commands).unwrap_or(false)
+                        } else {
+                            false
+                        }
+                    }
+                })
+                .await;
+
+            let continue_to_run = this
+                .update(cx, |this, cx| {
+                    if db_changed {
+                        cx.emit(BuildEvent::CompileDatabaseUpdated(db_path.clone()));
+                    }
+                    let stopped = this.phase == Phase::Stopped;
+                    this.reports.insert(
+                        0,
+                        Report {
+                            action,
+                            scheme: scheme.clone(),
+                            destination: destination.name.clone(),
+                            finished_at: SystemTime::now(),
+                            duration,
+                            success,
+                            errors: this.error_count(),
+                            warnings: this.warning_count(),
+                            log_path: log_path.clone(),
+                        },
+                    );
+                    if stopped {
+                        return false;
+                    }
+                    if action != BuildAction::Run || !success {
+                        this.phase = Phase::Finished {
+                            action: tool_action,
+                            success,
+                            duration,
+                        };
+                        cx.emit(BuildEvent::PhaseChanged);
+                        cx.notify();
+                        return false;
+                    }
+                    this.phase = Phase::Launching;
+                    cx.emit(BuildEvent::PhaseChanged);
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if !continue_to_run {
+                return;
+            }
+
+            // Launch.
+            let launch = match &project.kind {
+                ProjectKind::SwiftPackage => {
+                    let root = project.root.clone();
+                    let scheme = scheme.clone();
+                    let configuration = configuration.to_lowercase();
+                    cx.background_spawn(async move {
+                        let mut cmd = Command::new("/usr/bin/swift");
+                        cmd.args(["build", "-c", &configuration, "--show-bin-path"])
+                            .current_dir(&root);
+                        let (_, out) = process::run_quiet(cmd).await?;
+                        let bin = PathBuf::from(out.lines().last().unwrap_or("").trim()).join(&scheme);
+                        let mut run = Command::new(bin);
+                        run.current_dir(&root);
+                        anyhow::Ok((run, None))
+                    })
+                    .await
+                }
+                _ => {
+                    let settings = match settings_task {
+                        Some(task) => task.await,
+                        None => Err(anyhow::anyhow!("no build settings")),
+                    };
+                    match settings {
+                        Ok(settings) => {
+                            this.update(cx, |this, _| {
+                                this.settings.insert(
+                                    (scheme.clone(), destination.id.clone()),
+                                    settings.clone(),
+                                );
+                            })
+                            .ok();
+                            let destination = destination.clone();
+                            let console = channel::unbounded::<String>();
+                            let lines_tx = console.0.clone();
+                            let prepared = cx
+                                .background_spawn(async move {
+                                    prepare_launch(&destination, &settings, lines_tx).await
+                                })
+                                .await;
+                            // Surface preparation messages in the console.
+                            let mut messages = vec![];
+                            while let Ok(line) = console.1.try_recv() {
+                                messages.push(line);
+                            }
+                            this.update(cx, |this, cx| {
+                                for message in messages {
+                                    this.push_console_line(message);
+                                }
+                                cx.emit(BuildEvent::ConsoleUpdated);
+                                cx.notify();
+                            })
+                            .ok();
+                            prepared
+                        }
+                        Err(err) => Err(err),
+                    }
+                }
+            };
+
+            let (cmd, target) = match launch {
+                Ok(launch) => launch,
+                Err(err) => {
+                    this.update(cx, |this, cx| {
+                        this.push_console_line(format!("Launch failed: {err:#}"));
+                        this.issues.push(Issue {
+                            severity: Severity::Error,
+                            message: format!("Launch failed: {err:#}"),
+                            path: None,
+                            line: None,
+                            column: None,
+                            source: log::IssueSource::Build,
+                        });
+                        this.phase = Phase::Finished {
+                            action: BuildAction::Run,
+                            success: false,
+                            duration: started.elapsed(),
+                        };
+                        cx.emit(BuildEvent::IssuesChanged);
+                        cx.emit(BuildEvent::ConsoleUpdated);
+                        cx.emit(BuildEvent::PhaseChanged);
+                        cx.notify();
+                    })
+                    .ok();
+                    return;
+                }
+            };
+
+            let run_started = Instant::now();
+            this.update(cx, |this, cx| {
+                this.run_target = target.map(|bundle| (destination.clone(), bundle));
+                this.phase = Phase::Running {
+                    started: run_started,
+                };
+                cx.emit(BuildEvent::PhaseChanged);
+                cx.notify();
+            })
+            .ok();
+
+            let (code, _) = stream_into(&this, cx, cmd, handle, Sink::Console).await;
+            this.update(cx, |this, cx| {
+                if matches!(this.phase, Phase::Running { .. }) {
+                    this.push_console_line(match code {
+                        Some(code) => format!("Program ended with exit code: {code}"),
+                        None => "Program terminated".to_string(),
+                    });
+                    this.phase = Phase::Finished {
+                        action: BuildAction::Run,
+                        success: true,
+                        duration: run_started.elapsed(),
+                    };
+                    this.run_target = None;
+                    cx.emit(BuildEvent::ConsoleUpdated);
+                    cx.emit(BuildEvent::PhaseChanged);
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+    }
+
+    fn push_log_line(&mut self, raw: String) {
+        let parsed = log::parse_line(&raw);
+        if let Some(issue) = parsed.issue
+            && !self.issues.contains(&issue)
+        {
+            self.issues.push(issue);
+        }
+        if let Some(test) = parsed.test {
+            match self.tests.iter_mut().find(|t| t.name == test.name) {
+                Some(existing) => *existing = test,
+                None => self.tests.push(test),
+            }
+        }
+        self.log.push(log::prettify(&raw));
+        if self.log.len() > MAX_LOG_LINES {
+            self.log.drain(..self.log.len() - MAX_LOG_LINES);
+        }
+    }
+
+    fn push_console_line(&mut self, line: String) {
+        self.console.push(line);
+        if self.console.len() > MAX_CONSOLE_LINES {
+            self.console.drain(..self.console.len() - MAX_CONSOLE_LINES);
+        }
+    }
+
+    pub fn failed_tests(&self) -> usize {
+        self.tests
+            .iter()
+            .filter(|t| t.status == TestStatus::Failed)
+            .count()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Sink {
+    Log,
+    Console,
+}
+
+/// Streams a process into the build log or console, batching UI updates to
+/// at most ~30 per second. Returns the exit code and the raw output.
+async fn stream_into(
+    this: &gpui_kit::WeakEntity<BuildController>,
+    cx: &mut gpui_kit::AsyncApp,
+    cmd: Command,
+    handle: ProcessHandle,
+    sink: Sink,
+) -> (Option<i32>, String) {
+    let (tx, rx) = channel::unbounded::<String>();
+    let process = cx.background_spawn(process::run_streaming(cmd, tx, handle));
+    let mut raw = String::new();
+    while let Ok(first) = rx.recv().await {
+        let mut batch = vec![first];
+        cx.background_executor()
+            .timer(Duration::from_millis(33))
+            .await;
+        while let Ok(line) = rx.try_recv() {
+            batch.push(line);
+        }
+        if sink == Sink::Log {
+            for line in &batch {
+                raw.push_str(line);
+                raw.push('\n');
+            }
+        }
+        let alive = this
+            .update(cx, |this, cx| {
+                let had_issues = this.issues.len();
+                for line in batch {
+                    match sink {
+                        Sink::Log => this.push_log_line(line),
+                        Sink::Console => this.push_console_line(line),
+                    }
+                }
+                match sink {
+                    Sink::Log => cx.emit(BuildEvent::LogUpdated),
+                    Sink::Console => cx.emit(BuildEvent::ConsoleUpdated),
+                }
+                if this.issues.len() != had_issues {
+                    cx.emit(BuildEvent::IssuesChanged);
+                }
+                cx.notify();
+            })
+            .is_ok();
+        if !alive {
+            break;
+        }
+    }
+    match process.await {
+        Ok(code) => (code, raw),
+        Err(err) => {
+            this.update(cx, |this, cx| {
+                this.push_log_line(format!("error: {err:#}"));
+                cx.emit(BuildEvent::LogUpdated);
+                cx.emit(BuildEvent::IssuesChanged);
+            })
+            .ok();
+            (Some(-1), raw)
+        }
+    }
+}
+
+fn display_command(cmd: &Command) -> String {
+    std::iter::once(cmd.get_program().to_string_lossy().to_string())
+        .chain(cmd.get_args().map(|a| {
+            let a = a.to_string_lossy();
+            if a.contains(' ') {
+                format!("'{a}'")
+            } else {
+                a.to_string()
+            }
+        }))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn build_command(
+    project: &ProjectInfo,
+    scheme: &str,
+    configuration: &str,
+    destination: &Destination,
+    action: BuildAction,
+) -> Command {
+    match &project.kind {
+        ProjectKind::SwiftPackage => {
+            let mut cmd = Command::new("/usr/bin/swift");
+            cmd.current_dir(&project.root);
+            match action {
+                BuildAction::Build | BuildAction::Run => {
+                    cmd.args(["build", "-c", &configuration.to_lowercase()]);
+                    if !scheme.is_empty() {
+                        cmd.args(["--product", scheme]);
+                    }
+                }
+                BuildAction::Test => {
+                    cmd.arg("test");
+                }
+                BuildAction::Clean => {
+                    cmd.args(["package", "clean"]);
+                }
+            }
+            cmd
+        }
+        _ => {
+            let mut cmd = Command::new("/usr/bin/xcodebuild");
+            cmd.current_dir(&project.root)
+                .args(project.kind.xcodebuild_args())
+                .args(["-scheme", scheme, "-configuration", configuration])
+                .args(["-destination", &destination.xcodebuild_specifier()])
+                .args(["-skipMacroValidation", "-skipPackagePluginValidation"])
+                .arg(match action {
+                    BuildAction::Build | BuildAction::Run => "build",
+                    BuildAction::Test => "test",
+                    BuildAction::Clean => "clean",
+                });
+            cmd
+        }
+    }
+}
+
+/// Boots/installs as needed and returns the command whose output is the
+/// app's console, plus the bundle id when running in a simulator.
+async fn prepare_launch(
+    destination: &Destination,
+    settings: &BuildSettings,
+    messages: channel::Sender<String>,
+) -> anyhow::Result<(Command, Option<String>)> {
+    let say = |m: String| {
+        messages.try_send(m).ok();
+    };
+    match destination.platform {
+        Platform::MacOS => {
+            let exe = settings
+                .executable_path()
+                .ok_or_else(|| anyhow::anyhow!("missing EXECUTABLE_PATH"))?;
+            say(format!("Launching {}", exe.display()));
+            Ok((Command::new(exe), None))
+        }
+        _ => {
+            let app = settings
+                .product_path()
+                .ok_or_else(|| anyhow::anyhow!("missing TARGET_BUILD_DIR"))?;
+            let bundle_id = settings
+                .bundle_identifier()
+                .ok_or_else(|| anyhow::anyhow!("missing PRODUCT_BUNDLE_IDENTIFIER"))?
+                .to_string();
+            let udid = destination.id.clone();
+
+            say(format!("Booting {} ({})…", destination.name, destination.runtime));
+            let mut boot = Command::new("/usr/bin/xcrun");
+            boot.args(["simctl", "boot", &udid]);
+            let (ok, out) = process::run_quiet(boot).await?;
+            if !ok && !out.contains("current state: Booted") {
+                anyhow::bail!("simctl boot failed: {}", out.trim());
+            }
+
+            let mut open = Command::new("/usr/bin/open");
+            open.args(["-g", "-a", "Simulator", "--args", "-CurrentDeviceUDID", &udid]);
+            process::run_quiet(open).await.ok();
+
+            say(format!("Installing {}…", app.file_name().unwrap_or_default().to_string_lossy()));
+            let mut install = Command::new("/usr/bin/xcrun");
+            install.args(["simctl", "install", &udid]).arg(&app);
+            let (ok, out) = process::run_quiet(install).await?;
+            if !ok {
+                anyhow::bail!("simctl install failed: {}", out.trim());
+            }
+
+            let mut bring_front = Command::new("/usr/bin/open");
+            bring_front.args(["-a", "Simulator"]);
+            process::run_quiet(bring_front).await.ok();
+
+            say(format!("Launching {bundle_id}"));
+            let mut launch = Command::new("/usr/bin/xcrun");
+            launch.args([
+                "simctl",
+                "launch",
+                "--console-pty",
+                "--terminate-running-process",
+                &udid,
+                &bundle_id,
+            ]);
+            Ok((launch, Some(bundle_id)))
+        }
+    }
+}
