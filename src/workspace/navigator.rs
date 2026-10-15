@@ -25,17 +25,21 @@ pub enum NavigatorTab {
     Find,
     Issues,
     Tests,
+    Debug,
+    Breakpoints,
     Reports,
 }
 
 impl NavigatorTab {
-    const ALL: [NavigatorTab; 7] = [
+    const ALL: [NavigatorTab; 9] = [
         Self::Project,
         Self::SourceControl,
         Self::Symbols,
         Self::Find,
         Self::Issues,
         Self::Tests,
+        Self::Debug,
+        Self::Breakpoints,
         Self::Reports,
     ];
 
@@ -47,6 +51,8 @@ impl NavigatorTab {
             Self::Find => IconName::Search,
             Self::Issues => IconName::TriangleAlert,
             Self::Tests => IconName::Diamond,
+            Self::Debug => IconName::Bug,
+            Self::Breakpoints => IconName::Tag,
             Self::Reports => IconName::MessageSquareText,
         }
     }
@@ -59,6 +65,8 @@ impl NavigatorTab {
             Self::Find => "Find Navigator (⌘4)",
             Self::Issues => "Issue Navigator (⌘5)",
             Self::Tests => "Test Navigator (⌘6)",
+            Self::Debug => "Debug Navigator (⌘7)",
+            Self::Breakpoints => "Breakpoint Navigator (⌘8)",
             Self::Reports => "Report Navigator (⌘9)",
         }
     }
@@ -153,6 +161,8 @@ impl Workspace {
             NavigatorTab::Find => self.render_find_navigator(window, cx).into_any_element(),
             NavigatorTab::Issues => self.render_issue_navigator(cx).into_any_element(),
             NavigatorTab::Tests => self.render_test_navigator(cx).into_any_element(),
+            NavigatorTab::Debug => self.render_debug_navigator(cx).into_any_element(),
+            NavigatorTab::Breakpoints => self.render_breakpoint_navigator(cx).into_any_element(),
             NavigatorTab::Reports => self.render_report_navigator(cx).into_any_element(),
         };
 
@@ -570,6 +580,135 @@ impl Workspace {
                         el.child(div().text_xs().text_color(theme.muted_foreground).child(format!("{d:.3}s")))
                     }),
             );
+        }
+        list
+    }
+
+    fn render_debug_navigator(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let debugger = self.debugger.read(cx);
+        let state = debugger.state.clone();
+        let frames = debugger.frames.clone();
+        let selected = debugger.selected_frame;
+        let threads = debugger.threads.clone();
+        let mut list = v_flex().id("debug-nav").size_full().overflow_y_scroll();
+        let status = match &state {
+            crate::debugger::DebugState::Inactive | crate::debugger::DebugState::Exited => {
+                return list.child(empty(
+                    "Not debugging. Set a breakpoint (⌘\\) and run (⌘R) to debug.",
+                    cx,
+                ));
+            }
+            crate::debugger::DebugState::Starting => "Attaching…".to_string(),
+            crate::debugger::DebugState::Running => "Running".to_string(),
+            crate::debugger::DebugState::Stopped { reason, description, .. } => {
+                description.clone().unwrap_or_else(|| format!("Paused ({reason})"))
+            }
+        };
+        list = list.child(section_header(status, cx));
+        if let crate::debugger::DebugState::Stopped { thread_id, .. } = &state {
+            let thread_name = threads
+                .iter()
+                .find(|(id, _)| id == thread_id)
+                .map(|(_, name)| name.clone())
+                .unwrap_or_default();
+            list = list.child(
+                row("debug-thread")
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(Icon::new(IconName::Layers).small().text_color(theme.muted_foreground))
+                    .child(format!("Thread {thread_id} {thread_name}")),
+            );
+        }
+        for (ix, frame) in frames.into_iter().enumerate() {
+            let has_source = frame.path.as_ref().is_some_and(|p| p.exists());
+            list = list.child(
+                row(("frame", ix))
+                    .pl_5()
+                    .text_xs()
+                    .when(ix == selected, |el| el.bg(theme.sidebar_accent))
+                    .hover(|el| el.bg(theme.sidebar_accent))
+                    .when(!has_source, |el| el.text_color(theme.muted_foreground))
+                    .child(div().w(px(18.)).text_color(theme.muted_foreground).child(ix.to_string()))
+                    .child(div().flex_1().truncate().child(frame.name.clone()))
+                    .when_some(frame.path.clone().filter(|_| has_source), |el, path| {
+                        el.child(
+                            div()
+                                .text_color(theme.muted_foreground)
+                                .child(format!("{}:{}", path.file_name().unwrap_or_default().to_string_lossy(), frame.line)),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.debugger.update(cx, |d, cx| d.select_frame(ix, cx));
+                    })),
+            );
+        }
+        list
+    }
+
+    fn render_breakpoint_navigator(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let debugger = self.debugger.read(cx);
+        let breakpoints = debugger.breakpoints.clone();
+        let active = debugger.breakpoints_active;
+        let mut list = v_flex()
+            .id("breakpoints")
+            .size_full()
+            .overflow_y_scroll()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .child(section_header(if active { "Breakpoints" } else { "Breakpoints (deactivated)" }, cx))
+                    .child(
+                        Button::new("clear-breakpoints")
+                            .icon(IconName::Trash)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Delete All Breakpoints")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.debugger.update(cx, |d, cx| d.remove_all_breakpoints(cx));
+                            })),
+                    ),
+            );
+        if breakpoints.is_empty() {
+            return list.child(empty("No breakpoints. Use ⌘\\ on a line to add one.", cx));
+        }
+        for (file_ix, (path, lines)) in breakpoints.into_iter().enumerate() {
+            list = list.child(
+                row(("bp-file", file_ix))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(Icon::new(file_icon(&path)).small().text_color(theme.muted_foreground))
+                    .child(path.file_name().unwrap_or_default().to_string_lossy().to_string()),
+            );
+            for line in lines {
+                let open = path.clone();
+                let remove = path.clone();
+                list = list.child(
+                    row(SharedString::from(format!("bp-{file_ix}-{line}")))
+                        .pl_6()
+                        .text_xs()
+                        .hover(|el| el.bg(theme.sidebar_accent))
+                        .child(Icon::new(IconName::Tag).xsmall().text_color(if active {
+                            theme.primary
+                        } else {
+                            theme.muted_foreground
+                        }))
+                        .child(div().flex_1().child(format!("line {line}")))
+                        .child(
+                            Button::new(SharedString::from(format!("bp-remove-{file_ix}-{line}")))
+                                .icon(IconName::X)
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    let path = remove.clone();
+                                    this.debugger.update(cx, |d, cx| d.toggle_breakpoint(path, line, cx));
+                                })),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            let target = Target::Line { line: line.saturating_sub(1), column: 0 };
+                            this.open_file(open.clone(), Some(target), true, window, cx);
+                        })),
+                );
+            }
         }
         list
     }

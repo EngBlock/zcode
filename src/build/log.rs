@@ -122,6 +122,17 @@ pub fn parse_issue(line: &str) -> Option<Issue> {
             source: IssueSource::Build,
         });
     }
+    // xcodebuild's "Testing failed:" summary: "\tApp (123) encountered an error (...)".
+    if line.starts_with('\t') && line.contains(" encountered an error ") {
+        return Some(Issue {
+            severity: Severity::Error,
+            message: line.trim().to_string(),
+            path: None,
+            line: None,
+            column: None,
+            source: IssueSource::Build,
+        });
+    }
     if let Some(c) = re(
         &GENERIC,
         r"^(?:([\w.\-/ ]+): )?(error|warning|fatal error): (.+)$",
@@ -351,6 +362,13 @@ mod tests {
         assert_eq!(issue.line, Some(12));
         assert_eq!(issue.column, Some(5));
         assert_eq!(issue.message, "cannot find 'foo' in scope");
+    }
+
+    #[test]
+    fn parses_test_runner_errors() {
+        let issue = parse_issue("\tHelloZ (32433) encountered an error (The test runner hung before establishing connection.)").unwrap();
+        assert_eq!(issue.severity, Severity::Error);
+        assert!(parse_test("✔ Test run with 2 tests in 0 suites passed after 0.001 seconds.").is_none());
     }
 
     #[test]

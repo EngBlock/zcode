@@ -15,6 +15,9 @@ pub struct ProjectSession {
     pub configuration: Option<String>,
     pub show_navigator: Option<bool>,
     pub show_debug_area: Option<bool>,
+    /// File → 1-based breakpoint lines.
+    pub breakpoints: std::collections::BTreeMap<PathBuf, Vec<u32>>,
+    pub breakpoints_active: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

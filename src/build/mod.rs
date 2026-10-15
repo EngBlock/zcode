@@ -87,6 +87,10 @@ pub enum BuildEvent {
     PhaseChanged,
     /// A compilation database was (re)written for sourcekit-lsp.
     CompileDatabaseUpdated(PathBuf),
+    /// Run with debugging: a simulator app is waiting for the debugger.
+    AttachDebugger { pid: i32 },
+    /// Run with debugging: launch this executable under the debugger.
+    LaunchDebugger { program: PathBuf, cwd: PathBuf },
 }
 
 pub struct BuildController {
@@ -114,6 +118,11 @@ pub struct BuildController {
     index_attempted: bool,
     _index_task: Option<Task<()>>,
     run_target: Option<(Destination, String)>,
+    /// Whether the current run should attach the debugger.
+    debug_run: bool,
+    awaiting_attach: Option<String>,
+    /// Events raised where no `Context` is available, emitted on next flush.
+    pending_events: Vec<BuildEvent>,
     cache_dir: PathBuf,
     task: Option<Task<()>>,
     _load_task: Option<Task<()>>,
@@ -146,6 +155,9 @@ impl BuildController {
             index_attempted: false,
             _index_task: None,
             run_target: None,
+            debug_run: false,
+            awaiting_attach: None,
+            pending_events: vec![],
             cache_dir,
             task: None,
             _load_task: None,
@@ -402,6 +414,37 @@ impl BuildController {
         }));
     }
 
+    /// Product ▸ Run, under the debugger when `debug` (breakpoints exist).
+    pub fn run(&mut self, debug: bool, cx: &mut Context<Self>) {
+        self.debug_run = debug;
+        self.start(BuildAction::Run, cx);
+    }
+
+    /// Ends a run that the debugger owned (Mac executables launched by lldb-dap).
+    pub fn finish_debug_run(&mut self, exit_code: Option<i64>, cx: &mut Context<Self>) {
+        if let Phase::Running { started } = self.phase.clone() {
+            self.push_console_line(match exit_code {
+                Some(code) => format!("Program ended with exit code: {code}"),
+                None => "Debugging session ended".to_string(),
+            });
+            self.phase = Phase::Finished {
+                action: BuildAction::Run,
+                success: true,
+                duration: started.elapsed(),
+            };
+            cx.emit(BuildEvent::ConsoleUpdated);
+            cx.emit(BuildEvent::PhaseChanged);
+            cx.notify();
+        }
+    }
+
+    /// Debugger output goes to the same console as program output.
+    pub fn append_console(&mut self, line: String, cx: &mut Context<Self>) {
+        self.push_console_line(line);
+        cx.emit(BuildEvent::ConsoleUpdated);
+        cx.notify();
+    }
+
     /// Product ▸ Build / Run / Test / Clean.
     pub fn start(&mut self, action: BuildAction, cx: &mut Context<Self>) {
         if !self.can_build() {
@@ -445,6 +488,7 @@ impl BuildController {
         let handle = ProcessHandle::default();
         self.process = handle.clone();
         let cache_dir = self.cache_dir.clone();
+        let debug = action == BuildAction::Run && std::mem::take(&mut self.debug_run);
         let cached_settings = self
             .settings
             .get(&(scheme.clone(), destination.id.clone()))
@@ -604,7 +648,7 @@ impl BuildController {
                             let lines_tx = console.0.clone();
                             let prepared = cx
                                 .background_spawn(async move {
-                                    prepare_launch(&destination, &settings, lines_tx).await
+                                    prepare_launch(&destination, &settings, debug, lines_tx).await
                                 })
                                 .await;
                             // Surface preparation messages in the console.
@@ -656,15 +700,31 @@ impl BuildController {
             };
 
             let run_started = Instant::now();
+            let launch_under_debugger = debug && target.is_none();
             this.update(cx, |this, cx| {
+                this.awaiting_attach = if debug { target.clone() } else { None };
                 this.run_target = target.map(|bundle| (destination.clone(), bundle));
                 this.phase = Phase::Running {
                     started: run_started,
                 };
+                if launch_under_debugger {
+                    let program = PathBuf::from(cmd.get_program());
+                    let cwd = cmd
+                        .get_current_dir()
+                        .map(PathBuf::from)
+                        .or_else(|| program.parent().map(PathBuf::from))
+                        .unwrap_or_default();
+                    this.push_console_line(format!("Debugging {}", program.display()));
+                    cx.emit(BuildEvent::LaunchDebugger { program, cwd });
+                }
                 cx.emit(BuildEvent::PhaseChanged);
                 cx.notify();
             })
             .ok();
+            if launch_under_debugger {
+                // lldb-dap owns the process; the workspace ends the run.
+                return;
+            }
 
             let (code, _) = stream_into(&this, cx, cmd, handle, Sink::Console).await;
             this.update(cx, |this, cx| {
@@ -708,6 +768,16 @@ impl BuildController {
     }
 
     fn push_console_line(&mut self, line: String) {
+        // `simctl launch` prints "<bundle id>: <pid>" once the app is
+        // waiting for a debugger.
+        if let Some(bundle) = self.awaiting_attach.clone()
+            && let Some(pid) = line
+                .strip_prefix(&format!("{bundle}: "))
+                .and_then(|p| p.trim().parse::<i32>().ok())
+        {
+            self.awaiting_attach = None;
+            self.pending_events.push(BuildEvent::AttachDebugger { pid });
+        }
         self.console.push(line);
         if self.console.len() > MAX_CONSOLE_LINES {
             self.console.drain(..self.console.len() - MAX_CONSOLE_LINES);
@@ -766,6 +836,9 @@ async fn stream_into(
                 match sink {
                     Sink::Log => cx.emit(BuildEvent::LogUpdated),
                     Sink::Console => cx.emit(BuildEvent::ConsoleUpdated),
+                }
+                for event in std::mem::take(&mut this.pending_events) {
+                    cx.emit(event);
                 }
                 if this.issues.len() != had_issues {
                     cx.emit(BuildEvent::IssuesChanged);
@@ -854,6 +927,7 @@ pub fn build_command(
 async fn prepare_launch(
     destination: &Destination,
     settings: &BuildSettings,
+    debug: bool,
     messages: channel::Sender<String>,
 ) -> anyhow::Result<(Command, Option<String>)> {
     let say = |m: String| {
@@ -903,14 +977,11 @@ async fn prepare_launch(
 
             say(format!("Launching {bundle_id}"));
             let mut launch = Command::new("/usr/bin/xcrun");
-            launch.args([
-                "simctl",
-                "launch",
-                "--console-pty",
-                "--terminate-running-process",
-                &udid,
-                &bundle_id,
-            ]);
+            launch.args(["simctl", "launch", "--console-pty", "--terminate-running-process"]);
+            if debug {
+                launch.arg("--wait-for-debugger");
+            }
+            launch.args([&udid, &bundle_id]);
             Ok((launch, Some(bundle_id)))
         }
     }

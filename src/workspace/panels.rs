@@ -19,6 +19,7 @@ use super::{NavigatorTab, Workspace};
 use crate::actions::*;
 use crate::build::log::{LineStyle, Severity};
 use crate::build::{BuildAction, Phase};
+use crate::debugger::DebugState;
 use crate::lsp::LspStatus;
 use crate::perf::Perf;
 use crate::picker::Picker;
@@ -158,7 +159,7 @@ impl Workspace {
                             .small()
                             .disabled(!busy)
                             .tooltip("Stop (⌘.)")
-                            .on_click(cx.listener(|this, _, _, cx| this.build.update(cx, |b, cx| b.stop(cx)))),
+                            .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
                     )
                     .child(div().w(px(8.)))
                     .child(scheme_button)
@@ -216,6 +217,16 @@ impl Workspace {
                 true,
             ),
             Phase::Launching => (format!("Launching {scheme}…"), true),
+            Phase::Running { .. } if matches!(self.debugger.read(cx).state, DebugState::Stopped { .. }) => (
+                match &self.debugger.read(cx).state {
+                    DebugState::Stopped { description, reason, .. } => format!(
+                        "Paused {scheme} — {}",
+                        description.clone().unwrap_or_else(|| reason.clone())
+                    ),
+                    _ => String::new(),
+                },
+                false,
+            ),
             Phase::Running { .. } => (
                 format!(
                     "Running {scheme} on {}",
@@ -293,8 +304,19 @@ impl Workspace {
         if action != BuildAction::Run {
             self.debug_tab = DebugTab::BuildLog;
         }
-        self.build.update(cx, |b, cx| b.start(action, cx));
+        if action == BuildAction::Run {
+            // Like Xcode: run under the debugger when breakpoints are active.
+            let debug = self.debugger.read(cx).wants_debugging();
+            self.build.update(cx, |b, cx| b.run(debug, cx));
+        } else {
+            self.build.update(cx, |b, cx| b.start(action, cx));
+        }
         cx.notify();
+    }
+
+    pub(super) fn stop(&mut self, cx: &mut Context<Self>) {
+        self.debugger.update(cx, |d, cx| d.stop(cx));
+        self.build.update(cx, |b, cx| b.stop(cx));
     }
 
     // ------------------------------------------------------------------
@@ -456,12 +478,53 @@ impl Workspace {
     fn render_debug_area(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let tab = self.debug_tab;
+        let debug_state = self.debugger.read(cx).state.clone();
+        let debugging = debug_state.is_active();
+        let stopped = matches!(debug_state, DebugState::Stopped { .. });
         let header = h_flex()
             .h(px(28.))
             .px_2()
             .gap_1()
             .border_b_1()
             .border_color(theme.border)
+            .when(debugging, |el| {
+                el.child(
+                    Button::new("dbg-continue")
+                        .icon(if stopped { IconName::Play } else { IconName::Pause })
+                        .xsmall()
+                        .ghost()
+                        .tooltip(if stopped { "Continue (⌃⌘Y)" } else { "Pause (⌃⌘Y)" })
+                        .on_click(cx.listener(|this, _, _, cx| this.debugger.update(cx, |d, cx| d.continue_or_pause(cx)))),
+                )
+                .child(
+                    Button::new("dbg-over")
+                        .icon(IconName::Redo)
+                        .xsmall()
+                        .ghost()
+                        .disabled(!stopped)
+                        .tooltip("Step Over (F6)")
+                        .on_click(cx.listener(|this, _, _, cx| this.debugger.update(cx, |d, cx| d.step_over(cx)))),
+                )
+                .child(
+                    Button::new("dbg-into")
+                        .icon(IconName::ArrowDownToLine)
+                        .xsmall()
+                        .ghost()
+                        .disabled(!stopped)
+                        .tooltip("Step Into (F7)")
+                        .on_click(cx.listener(|this, _, _, cx| this.debugger.update(cx, |d, cx| d.step_into(cx)))),
+                )
+                .child(
+                    Button::new("dbg-out")
+                        .icon(IconName::ArrowUpFromLine)
+                        .xsmall()
+                        .ghost()
+                        .disabled(!stopped)
+                        .tooltip("Step Out (F8)")
+                        .on_click(cx.listener(|this, _, _, cx| this.debugger.update(cx, |d, cx| d.step_out(cx)))),
+                )
+                .child(div().w(px(1.)).h(px(14.)).bg(theme.border))
+            })
             .child(
                 Button::new("tab-console")
                     .label("Console")
@@ -542,7 +605,65 @@ impl Workspace {
             .border_t_1()
             .border_color(theme.border)
             .child(header)
-            .child(div().flex_1().min_h_0().child(body))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .when(debugging, |el| el.child(self.render_variables(cx)))
+                    .child(div().flex_1().h_full().min_w_0().child(body)),
+            )
+    }
+
+    /// Xcode's Variables view (left half of the debug area while debugging).
+    fn render_variables(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let variables = self.debugger.read(cx).variables.clone();
+        let mono = theme.mono_font_family.clone();
+        v_flex()
+            .id("variables")
+            .w(px(380.))
+            .h_full()
+            .border_r_1()
+            .border_color(theme.border)
+            .overflow_y_scroll()
+            .when(variables.is_empty(), |el| {
+                el.child(
+                    div()
+                        .p_3()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child("Variables appear when execution pauses."),
+                )
+            })
+            .children(variables.into_iter().enumerate().map(|(ix, var)| {
+                h_flex()
+                    .id(("var", ix))
+                    .px_2()
+                    .pl(px(8. + var.depth as f32 * 14.))
+                    .h(px(20.))
+                    .gap_1()
+                    .text_xs()
+                    .font_family(mono.clone())
+                    .hover(|el| el.bg(theme.secondary_hover))
+                    .child(
+                        div().w(px(12.)).child(if var.reference != 0 {
+                            Icon::new(if var.expanded { IconName::ChevronDown } else { IconName::ChevronRight })
+                                .xsmall()
+                                .into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }),
+                    )
+                    .child(div().text_color(theme.primary).child(var.name.clone()))
+                    .when_some(var.ty.clone(), |el, ty| {
+                        el.child(div().text_color(theme.muted_foreground).child(format!("({ty})")))
+                    })
+                    .child(div().child("="))
+                    .child(div().flex_1().truncate().child(var.value.clone()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.debugger.update(cx, |d, cx| d.toggle_variable(ix, cx));
+                    }))
+            }))
     }
 
     pub(super) fn debug_line_count(&self, cx: &App) -> usize {
@@ -959,7 +1080,26 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &Run, window, cx| this.start_build(BuildAction::Run, window, cx)))
             .on_action(cx.listener(|this, _: &Test, window, cx| this.start_build(BuildAction::Test, window, cx)))
             .on_action(cx.listener(|this, _: &Clean, window, cx| this.start_build(BuildAction::Clean, window, cx)))
-            .on_action(cx.listener(|this, _: &Stop, _, cx| this.build.update(cx, |b, cx| b.stop(cx))))
+            .on_action(cx.listener(|this, _: &Stop, _, cx| this.stop(cx)))
+            .on_action(cx.listener(Self::toggle_breakpoint))
+            .on_action(cx.listener(|this, _: &ToggleBreakpointsActive, _, cx| {
+                this.debugger.update(cx, |d, cx| d.toggle_breakpoints_active(cx));
+            }))
+            .on_action(cx.listener(|this, _: &DeleteAllBreakpoints, _, cx| {
+                this.debugger.update(cx, |d, cx| d.remove_all_breakpoints(cx));
+            }))
+            .on_action(cx.listener(|this, _: &DebugContinue, _, cx| {
+                this.debugger.update(cx, |d, cx| d.continue_or_pause(cx));
+            }))
+            .on_action(cx.listener(|this, _: &StepOver, _, cx| this.debugger.update(cx, |d, cx| d.step_over(cx))))
+            .on_action(cx.listener(|this, _: &StepInto, _, cx| this.debugger.update(cx, |d, cx| d.step_into(cx))))
+            .on_action(cx.listener(|this, _: &StepOut, _, cx| this.debugger.update(cx, |d, cx| d.step_out(cx))))
+            .on_action(cx.listener(|this, _: &ShowDebugNavigator, window, cx| {
+                this.show_navigator_tab(NavigatorTab::Debug, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowBreakpointNavigator, window, cx| {
+                this.show_navigator_tab(NavigatorTab::Breakpoints, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &RefreshDestinations, _, cx| this.build.update(cx, |b, cx| b.reload(cx))))
             .on_action(cx.listener(|this, _: &ClearConsole, _, cx| this.build.update(cx, |b, cx| b.clear_console(cx))))
             .child(self.render_toolbar(cx))

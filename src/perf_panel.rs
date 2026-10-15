@@ -74,7 +74,8 @@ impl Render for PerfPanel {
             .child(metric("main() → first frame", ms(startup.main_to_first_frame), cx))
             .child(metric("Total to first frame", ms(startup.total()), cx))
             .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(theme.muted_foreground).child("MEMORY (PHYSICAL FOOTPRINT)"))
-            .child(metric("zcode", format_bytes(mem.footprint), cx))
+            .child(metric("zcode (now)", format_bytes(mem.footprint), cx))
+            .child(metric("zcode (idle baseline, 30 s)", format_bytes(perf.baseline_footprint()), cx))
             .child(metric("zcode peak", format_bytes(peak), cx))
             .child(metric("zcode resident", format_bytes(mem.resident), cx))
             .child(metric(
@@ -100,7 +101,7 @@ impl Render for PerfPanel {
                 div()
                     .text_xs()
                     .text_color(theme.muted_foreground)
-                    .child("Sampled every 2 s. Run `zcode --startup-bench` for a scripted measurement."),
+                    .child("Sampled every 2 s. While the window is frontmost, macOS attributes ~200 MB of transient compositor memory to each redraw (a bare GPUI window shows the same); the idle baseline excludes it. Run `zcode --startup-bench` for a scripted measurement."),
             )
             .child(
                 h_flex()

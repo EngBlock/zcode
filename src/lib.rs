@@ -5,6 +5,7 @@ pub mod assets;
 pub mod app;
 pub mod build;
 pub mod debug;
+pub mod debugger;
 pub mod fuzzy;
 pub mod languages;
 pub mod lsp;

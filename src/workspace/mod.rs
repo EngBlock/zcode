@@ -20,6 +20,8 @@ use gpui_kit::*;
 use crate::actions::*;
 use crate::build::log::{Issue, IssueSource, Severity};
 use crate::build::{BuildAction, BuildController, BuildEvent};
+use crate::debugger::{DebugState, DebugTarget, Debugger, DebuggerEvent};
+use gpui_kit::component::input::{RangeDecoration, RangeDecorationCollection, RangeDecorationStyle};
 use crate::lsp::{self, DocumentProviders, LspStore, LspStoreEvent};
 use crate::project::{self, ProjectInfo};
 use crate::search::{FileMatches, SearchOptions};
@@ -54,6 +56,8 @@ pub struct Buffer {
     saved_text: gpui_kit::component::input::Rope,
     pub language: SharedString,
     mtime: Option<SystemTime>,
+    breakpoint_marks: Option<RangeDecorationCollection>,
+    exec_mark: Option<RangeDecorationCollection>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -89,6 +93,7 @@ pub struct Workspace {
     pub tree: Entity<TreeState>,
     pub lsp: Entity<LspStore>,
     pub build: Entity<BuildController>,
+    pub debugger: Entity<Debugger>,
     pub buffers: Vec<Buffer>,
     pub active: Option<usize>,
     pub navigator: NavigatorTab,
@@ -130,6 +135,7 @@ impl Workspace {
         let lsp = cx.new(|_| LspStore::new(project.root.clone(), lsp_args));
         let build = cx.new(|cx| BuildController::new(project.clone(), cache_dir.clone(), cx));
         let tree = cx.new(|cx| TreeState::new(cx));
+        let debugger = cx.new(|_| Debugger::default());
         let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in Workspace"));
 
         let mut session = Session::load();
@@ -140,6 +146,7 @@ impl Workspace {
         let mut subscriptions = vec![
             cx.subscribe_in(&lsp, window, Self::on_lsp_event),
             cx.subscribe_in(&build, window, Self::on_build_event),
+            cx.subscribe_in(&debugger, window, Self::on_debugger_event),
             cx.subscribe_in(&find_input, window, |this, _, event, window, cx| {
                 if let InputEvent::PressEnter { .. } = event {
                     this.run_find(window, cx);
@@ -162,6 +169,7 @@ impl Workspace {
             tree,
             lsp,
             build,
+            debugger,
             buffers: vec![],
             active: None,
             navigator: NavigatorTab::Project,
@@ -210,6 +218,15 @@ impl Workspace {
             });
         }
         this.restore_destination = saved.destination.clone();
+        this.debugger.update(cx, |d, _| {
+            d.breakpoints = saved
+                .breakpoints
+                .iter()
+                .filter(|(path, _)| path.exists())
+                .map(|(path, lines)| (path.clone(), lines.iter().copied().collect()))
+                .collect();
+            d.breakpoints_active = saved.breakpoints_active.unwrap_or(true);
+        });
 
         this.rescan(cx);
         this.refresh_scm(cx);
@@ -419,6 +436,14 @@ impl Workspace {
             configuration: Some(build.configuration.clone()),
             show_navigator: Some(self.show_navigator),
             show_debug_area: Some(self.show_debug_area),
+            breakpoints: self
+                .debugger
+                .read(cx)
+                .breakpoints
+                .iter()
+                .map(|(path, lines)| (path.clone(), lines.iter().copied().collect()))
+                .collect(),
+            breakpoints_active: Some(self.debugger.read(cx).breakpoints_active),
         };
         self.session = Session::load();
         self.session.set_project(&self.project.root, state);
@@ -596,10 +621,13 @@ impl Workspace {
             dirty: false,
             language: language.into(),
             mtime,
+            breakpoint_marks: None,
+            exec_mark: None,
             _subscriptions: vec![change, observe],
         });
         let ix = self.buffers.len() - 1;
         self.refresh_diagnostics_for(&path, cx);
+        self.refresh_breakpoint_marks(&path, cx);
         self.activate(ix, window, cx);
         if let Some(target) = target {
             self.reveal_target(ix, target.clone(), window, cx);
@@ -905,6 +933,20 @@ impl Workspace {
                 }
                 let _ = window;
             }
+            BuildEvent::AttachDebugger { pid } => {
+                let pid = *pid;
+                self.debugger
+                    .update(cx, |d, cx| d.start(DebugTarget::Attach { pid }, cx));
+            }
+            BuildEvent::LaunchDebugger { program, cwd } => {
+                let target = DebugTarget::Launch {
+                    program: program.clone(),
+                    cwd: cwd.clone(),
+                    args: vec![],
+                };
+                self.show_debug_area = true;
+                self.debugger.update(cx, |d, cx| d.start(target, cx));
+            }
             BuildEvent::LogUpdated | BuildEvent::ConsoleUpdated => {
                 let count = self.debug_line_count(cx);
                 if count > 0 {
@@ -914,6 +956,122 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    fn on_debugger_event(
+        &mut self,
+        _: &Entity<Debugger>,
+        event: &DebuggerEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            DebuggerEvent::Output(line) => {
+                let line = line.clone();
+                self.build.update(cx, |b, cx| b.append_console(line, cx));
+            }
+            DebuggerEvent::BreakpointsChanged(path) => self.refresh_breakpoint_marks(path, cx),
+            DebuggerEvent::Stopped { path, line } => {
+                self.show_debug_area = true;
+                self.debug_tab = DebugTab::Console;
+                self.navigator = NavigatorTab::Debug;
+                self.show_navigator = true;
+                let target = Target::Line { line: line.saturating_sub(1), column: 0 };
+                self.open_file(path.clone(), Some(target), false, window, cx);
+                self.set_exec_mark(Some((path.clone(), *line)), cx);
+                window.activate_window();
+            }
+            DebuggerEvent::StateChanged => {
+                if !matches!(self.debugger.read(cx).state, DebugState::Stopped { .. }) {
+                    self.set_exec_mark(None, cx);
+                }
+            }
+            DebuggerEvent::Ended { exit_code } => {
+                let code = *exit_code;
+                self.set_exec_mark(None, cx);
+                self.build.update(cx, |b, cx| b.finish_debug_run(code, cx));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Byte range covering a whole 1-based line, newline included.
+    fn line_range(text: &gpui_kit::component::input::Rope, line: u32) -> Option<std::ops::Range<usize>> {
+        let row = line.checked_sub(1)? as usize;
+        if row >= text.lines_len() {
+            return None;
+        }
+        let start = text.line_start_offset(row);
+        let end = (text.line_end_offset(row) + 1).min(text.len());
+        (end > start).then_some(start..end)
+    }
+
+    pub(super) fn refresh_breakpoint_marks(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let (lines, active) = {
+            let debugger = self.debugger.read(cx);
+            (
+                debugger.breakpoints.get(path).cloned().unwrap_or_default(),
+                debugger.breakpoints_active,
+            )
+        };
+        let color = if active {
+            gpui_kit::hsla(0.6, 0.85, 0.55, 0.22)
+        } else {
+            gpui_kit::hsla(0.6, 0.1, 0.55, 0.18)
+        };
+        let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) else { return };
+        let text = buffer.editor.read(cx).text().clone();
+        let decorations: Vec<_> = lines
+            .iter()
+            .filter_map(|&line| Self::line_range(&text, line))
+            .map(|range| RangeDecoration::new(range).with_style(RangeDecorationStyle::Fill).with_color(color))
+            .collect();
+        match &buffer.breakpoint_marks {
+            Some(marks) => marks.set(decorations, cx),
+            None => {
+                let marks = buffer
+                    .editor
+                    .update(cx, |state, cx| state.create_range_decorations_collection(decorations, cx));
+                buffer.breakpoint_marks = Some(marks);
+            }
+        }
+    }
+
+    /// Highlights the line execution stopped on (green, like Xcode).
+    fn set_exec_mark(&mut self, location: Option<(PathBuf, u32)>, cx: &mut Context<Self>) {
+        for buffer in &mut self.buffers {
+            let decorations: Vec<RangeDecoration> = match &location {
+                Some((path, line)) if *path == buffer.path => {
+                    let text = buffer.editor.read(cx).text().clone();
+                    Self::line_range(&text, *line)
+                        .map(|range| {
+                            vec![RangeDecoration::new(range)
+                                .with_style(RangeDecorationStyle::Fill)
+                                .with_color(gpui_kit::hsla(0.33, 0.7, 0.45, 0.28))]
+                        })
+                        .unwrap_or_default()
+                }
+                _ => vec![],
+            };
+            match &buffer.exec_mark {
+                Some(mark) => mark.set(decorations, cx),
+                None if !decorations.is_empty() => {
+                    let mark = buffer
+                        .editor
+                        .update(cx, |state, cx| state.create_range_decorations_collection(decorations, cx));
+                    buffer.exec_mark = Some(mark);
+                }
+                None => {}
+            }
+        }
+    }
+
+    pub(super) fn toggle_breakpoint(&mut self, _: &crate::actions::ToggleBreakpoint, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self.active_buffer() else { return };
+        let path = buffer.path.clone();
+        let line = buffer.editor.read(cx).cursor_position().line + 1;
+        self.debugger
+            .update(cx, |d, cx| d.toggle_breakpoint(path, line, cx));
     }
 
     /// Combined, de-duplicated issues: live (LSP) diagnostics plus the last
@@ -1296,6 +1454,12 @@ impl Workspace {
             "scm_changes": self.scm_status.len(),
             "font_size": self.font_size,
             "history": { "back": self.back.len(), "forward": self.forward.len() },
+            "debugger": {
+                "state": format!("{:?}", self.debugger.read(cx).state),
+                "frames": self.debugger.read(cx).frames.iter().take(4).map(|f| format!("{} {}:{}", f.name, f.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), f.line)).collect::<Vec<_>>(),
+                "variables": self.debugger.read(cx).variables.iter().take(8).map(|v| format!("{} = {}", v.name, v.value)).collect::<Vec<_>>(),
+                "breakpoints": self.debugger.read(cx).breakpoints.values().map(|l| l.len()).sum::<usize>(),
+            },
         })
     }
 }

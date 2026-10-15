@@ -131,6 +131,20 @@ impl Perf {
         self.history.push_back(sample);
     }
 
+    /// Lowest footprint over the last ~30 s. While a window is frontmost,
+    /// macOS briefly attributes ~200 MB of compositor/GPU memory to each
+    /// redraw (a bare GPUI window shows the same), so the idle baseline is the
+    /// better measure of what zcode itself holds.
+    pub fn baseline_footprint(&self) -> u64 {
+        self.history
+            .iter()
+            .rev()
+            .take(15)
+            .map(|s| s.footprint)
+            .min()
+            .unwrap_or(0)
+    }
+
     pub fn current(&self) -> MemorySample {
         self.history.back().copied().unwrap_or_default()
     }
@@ -158,6 +172,7 @@ impl Perf {
             "main_to_first_frame_ms": ms(self.startup.main_to_first_frame),
             "total_to_first_frame_ms": ms(self.startup.total()),
             "footprint_mb": mb(mem.footprint),
+            "baseline_footprint_mb": mb(self.baseline_footprint()),
             "resident_mb": mb(mem.resident),
             "peak_footprint_mb": mb(self.peak_footprint.max(mem.lifetime_peak)),
             "language_server_footprint_mb": self.language_server.map(|(_, s)| mb(s.footprint)),
