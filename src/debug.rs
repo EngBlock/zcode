@@ -7,6 +7,7 @@
 //!   action <namespace::Name>   dispatch an action to the focused element
 //!   keys <keystroke> ...       simulate keystrokes, e.g. `keys cmd-shift-o`
 //!   type <text>                type text into the focused input
+//!   mouse <x> <y> / click <x> <y>  move / click at window coordinates (points)
 //!   open <path>[:line]         open a file in the frontmost workspace
 //!   wait <ms>                  pause
 //!   dump                       log workspace state as JSON
@@ -106,6 +107,47 @@ fn run_command(
             }
             Ok(String::new())
         }
+        "mouse" | "click" => {
+            let mut parts = arg.split_whitespace().filter_map(|p| p.parse::<f32>().ok());
+            let (Some(x), Some(y)) = (parts.next(), parts.next()) else {
+                return Err("usage: mouse <x> <y> (window points)".into());
+            };
+            let position = point(px(x), px(y));
+            window
+                .update(cx, |_, window, cx| {
+                    window.dispatch_event(
+                        PlatformInput::MouseMove(MouseMoveEvent {
+                            position,
+                            pressed_button: None,
+                            modifiers: Modifiers::default(),
+                        }),
+                        cx,
+                    );
+                    if cmd == "click" {
+                        window.dispatch_event(
+                            PlatformInput::MouseDown(MouseDownEvent {
+                                button: MouseButton::Left,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                                first_mouse: false,
+                            }),
+                            cx,
+                        );
+                        window.dispatch_event(
+                            PlatformInput::MouseUp(MouseUpEvent {
+                                button: MouseButton::Left,
+                                position,
+                                modifiers: Modifiers::default(),
+                                click_count: 1,
+                            }),
+                            cx,
+                        );
+                    }
+                })
+                .map_err(|e| e.to_string())?;
+            Ok(String::new())
+        }
         "open" => {
             let (path, line) = match arg.rsplit_once(':') {
                 Some((p, l)) if l.parse::<u32>().is_ok() => (p, l.parse::<u32>().ok()),
@@ -119,6 +161,17 @@ fn run_command(
                         let target = line.map(|l| Target::Line { line: l.saturating_sub(1), column: 0 });
                         ws.open_file(path, target, true, window, cx)
                     })
+                })
+                .map_err(|e| e.to_string())?;
+            Ok(String::new())
+        }
+        "rename" => {
+            let (from, to) = arg.split_once(" -> ").ok_or("usage: rename <path> -> <new name>")?;
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            let (from, to) = (PathBuf::from(from), to.to_string());
+            window
+                .update(cx, |_, window, cx| {
+                    workspace.update(cx, |ws, cx| ws.rename_path(from, to, window, cx))
                 })
                 .map_err(|e| e.to_string())?;
             Ok(String::new())

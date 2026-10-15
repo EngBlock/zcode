@@ -32,11 +32,50 @@ pub fn sample_pid(pid: i32) -> Option<MemorySample> {
             &mut info as *mut _ as *mut libc::rusage_info_t,
         )
     };
-    (ret == 0).then(|| MemorySample {
+    (ret == 0).then_some(MemorySample {
         footprint: info.ri_phys_footprint,
         resident: info.ri_resident_size,
         lifetime_peak: info.ri_lifetime_max_phys_footprint,
     })
+}
+
+/// Executable path of a process.
+fn process_path(pid: i32) -> Option<String> {
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let len = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
+    (len > 0).then(|| String::from_utf8_lossy(&buf[..len as usize]).into_owned())
+}
+
+/// PIDs of this user's processes whose executable path ends with `suffix`.
+fn pids_with_path_suffix(suffix: &str) -> Vec<i32> {
+    let mut pids = vec![0i32; 8192];
+    let bytes = unsafe {
+        libc::proc_listallpids(
+            pids.as_mut_ptr() as *mut libc::c_void,
+            (pids.len() * std::mem::size_of::<i32>()) as i32,
+        )
+    };
+    if bytes <= 0 {
+        return vec![];
+    }
+    pids.truncate(bytes as usize);
+    pids.into_iter()
+        .filter(|&pid| pid > 0 && process_path(pid).is_some_and(|p| p.ends_with(suffix)))
+        .collect()
+}
+
+/// sourcekit-lsp does its heavy lifting in `SourceKitService` XPC helpers
+/// (launched by launchd, so not our children); include them.
+pub fn sample_language_server(pid: i32) -> Option<MemorySample> {
+    let mut total = sample_pid(pid)?;
+    for helper in pids_with_path_suffix("/SourceKitService") {
+        if let Some(s) = sample_pid(helper) {
+            total.footprint += s.footprint;
+            total.resident += s.resident;
+            total.lifetime_peak += s.lifetime_peak;
+        }
+    }
+    Some(total)
 }
 
 pub fn sample_self() -> MemorySample {
@@ -201,7 +240,7 @@ pub fn start_sampler(cx: &mut App) {
         loop {
             let me = sample_self();
             let ls_pid = cx.update(|cx| cx.global::<Perf>().language_server.map(|(pid, _)| pid));
-            let ls = ls_pid.and_then(|pid| sample_pid(pid).map(|s| (pid, s)));
+            let ls = ls_pid.and_then(|pid| sample_language_server(pid).map(|s| (pid, s)));
             cx.update(|cx| {
                 let perf = cx.global_mut::<Perf>();
                 perf.record(me);

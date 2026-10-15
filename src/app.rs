@@ -71,8 +71,16 @@ fn sync_theme(window: &mut Window, cx: &mut App) {
 
 /// Opens a project window for `path` (or focuses it if already open).
 pub fn open_project(path: PathBuf, cx: &mut App) {
+    let t0 = Instant::now();
+    let trace = std::env::var_os("ZCODE_TRACE_STARTUP").is_some();
+    let mark = move |label: &str| {
+        if trace {
+            eprintln!("[open_project] {label}: {:?}", t0.elapsed());
+        }
+    };
     let path = path.canonicalize().unwrap_or(path);
     let info = project::detect(&path);
+    mark("detect");
 
     // Focus an existing window for the same project.
     let open: Vec<_> = cx
@@ -92,15 +100,19 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
         window_options(&title, size(px(1440.), px(900.)), cx),
         cx,
         |window, cx| {
+            mark("platform window created");
             sync_theme(window, cx);
+            mark("theme");
             let workspace = cx.new(|cx| Workspace::new(info, opened, window, cx));
+            mark("workspace");
             window.set_window_title(&workspace.read(cx).title());
             window
-                .observe_window_appearance(|window, cx| sync_theme(window, cx))
+                .observe_window_appearance(sync_theme)
                 .detach();
             workspace
         },
     );
+    mark("open_window returned");
     match result {
         Ok((window, workspace)) => {
             cx.default_global::<Workspaces>().0.push(workspace.downgrade());
@@ -130,7 +142,7 @@ fn open_welcome(cx: &mut App) {
         |window, cx| {
             sync_theme(window, cx);
             window
-                .observe_window_appearance(|window, cx| sync_theme(window, cx))
+                .observe_window_appearance(sync_theme)
                 .detach();
             cx.new(Welcome::new)
         },

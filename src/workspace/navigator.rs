@@ -7,6 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Disableable as _, Selectable as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::list::ListItem;
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::tree::tree;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -261,6 +262,36 @@ impl Workspace {
                                     .ok();
                             })
                     })
+                    .context_menu({
+                        let workspace = cx.weak_entity();
+                        move |_, entry, menu, _, _| {
+                            let path = PathBuf::from(entry.item().id.as_str());
+                            let folder = if entry.is_folder() {
+                                path.clone()
+                            } else {
+                                path.parent().map(PathBuf::from).unwrap_or_else(|| path.clone())
+                            };
+                            let (ws1, ws2, ws3) = (workspace.clone(), workspace.clone(), workspace.clone());
+                            let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());
+                            menu.item(PopupMenuItem::new("New File…").on_click(move |_, window, cx| {
+                                let folder = folder.clone();
+                                ws1.update(cx, |ws, cx| ws.new_file_in(folder, window, cx)).ok();
+                            }))
+                            .separator()
+                            .item(PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {
+                                let path = p1.clone();
+                                ws2.update(cx, |ws, cx| ws.prompt_rename(path, window, cx)).ok();
+                            }))
+                            .item(PopupMenuItem::new("Show in Finder").on_click(move |_, _, cx| {
+                                cx.reveal_path(&p2);
+                            }))
+                            .separator()
+                            .item(PopupMenuItem::new("Move to Trash").on_click(move |_, window, cx| {
+                                let path = p3.clone();
+                                ws3.update(cx, |ws, cx| ws.move_to_trash(path, window, cx)).ok();
+                            }))
+                        }
+                    })
                     .text_sm()
                     .p_1(),
                 ),
@@ -300,7 +331,7 @@ impl Workspace {
         }
         for (ix, (status, path)) in self.scm_status.iter().enumerate() {
             let color = match status.as_str() {
-                "M" | "MM" | "AM" => theme.warning,
+                "M" | "R" => theme.warning,
                 "A" | "??" => theme.success,
                 "D" => theme.danger,
                 _ => theme.muted_foreground,

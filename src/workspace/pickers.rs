@@ -23,7 +23,7 @@ pub fn symbol_icon(kind: u64) -> IconName {
         11 => IconName::Shapes,          // interface/protocol
         6 | 9 | 12 => IconName::SquareFunction,
         7 | 8 | 13 | 14 => IconName::Variable,
-        2 | 3 | 4 => IconName::Package,
+        2..=4 => IconName::Package,
         _ => IconName::Hash,
     }
 }
@@ -241,8 +241,11 @@ pub fn file_icon(path: &Path) -> IconName {
 // ---------------------------------------------------------------------------
 // Quick Actions (⇧⌘A): every command with its shortcut.
 
+/// (menu, name, action, keystroke label)
+type QuickAction = (String, String, Box<dyn Action>, Option<String>);
+
 pub struct QuickActionsDelegate {
-    commands: Vec<(String, String, Box<dyn Action>, Option<String>)>,
+    commands: Vec<QuickAction>,
     labels: Vec<String>,
     items: Vec<PickerItem>,
     matches: Vec<usize>,
@@ -750,6 +753,74 @@ impl PickerDelegate for RenameDelegate {
             .update(cx, |ws, cx| {
                 ws.dismiss_modal(window, cx);
                 ws.rename_symbol(server, path, position, name, window, cx);
+            })
+            .ok();
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rename file or folder (Project navigator).
+
+pub struct RenameFileDelegate {
+    workspace: WeakEntity<Workspace>,
+    path: PathBuf,
+    original: String,
+    new_name: String,
+    items: Vec<PickerItem>,
+}
+
+impl RenameFileDelegate {
+    pub fn new(workspace: WeakEntity<Workspace>, path: PathBuf) -> Self {
+        let original = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        Self {
+            workspace,
+            path,
+            new_name: original.clone(),
+            original,
+            items: vec![],
+        }
+    }
+}
+
+impl PickerDelegate for RenameFileDelegate {
+    fn placeholder(&self) -> SharedString {
+        "New file name".into()
+    }
+
+    fn items(&self) -> &[PickerItem] {
+        &self.items
+    }
+
+    fn empty_message(&self) -> SharedString {
+        format!("Type a new name for “{}”", self.original).into()
+    }
+
+    fn update_matches(&mut self, query: String, _: &mut Window, _: &mut Context<Picker<Self>>) {
+        self.new_name = query.trim().to_string();
+        let valid = !self.new_name.is_empty()
+            && self.new_name != self.original
+            && !self.new_name.contains('/');
+        self.items = if valid {
+            vec![PickerItem {
+                label: format!("Rename “{}” to “{}”", self.original, self.new_name).into(),
+                icon: Some(IconName::Pencil),
+                ..Default::default()
+            }]
+        } else {
+            vec![]
+        };
+    }
+
+    fn confirm(&mut self, _: usize, window: &mut Window, cx: &mut Context<Picker<Self>>) -> bool {
+        let (path, name) = (self.path.clone(), self.new_name.clone());
+        self.workspace
+            .update(cx, |ws, cx| {
+                ws.dismiss_modal(window, cx);
+                ws.rename_path(path, name, window, cx);
             })
             .ok();
         false

@@ -394,9 +394,7 @@ impl Workspace {
         let cursor_line = buffer.editor.read(cx).cursor_position().line;
         let symbol = self
             .outline
-            .iter()
-            .filter(|e| e.selection_range.start.line <= cursor_line)
-            .next_back()
+            .iter().rfind(|e| e.selection_range.start.line <= cursor_line)
             .map(|e| e.name.clone());
         let mut crumbs = vec![self.project.name.clone()];
         crumbs.extend(rel.iter().map(|c| c.to_string_lossy().to_string()));

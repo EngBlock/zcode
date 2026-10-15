@@ -133,11 +133,20 @@ impl Workspace {
         let cache_dir = crate::paths::project_cache_dir(&project.root);
         let lsp_args = Self::lsp_args(&project, &cache_dir);
         let lsp = cx.new(|_| LspStore::new(project.root.clone(), lsp_args));
+        let t0 = std::time::Instant::now();
+        let trace = std::env::var_os("ZCODE_TRACE_STARTUP").is_some();
+        let mark = move |label: &str| {
+            if trace {
+                eprintln!("[workspace] {label}: {:?}", t0.elapsed());
+            }
+        };
         let build = cx.new(|cx| BuildController::new(project.clone(), cache_dir.clone(), cx));
+        mark("build controller");
         let tree = cx.new(|cx| TreeState::new(cx));
         let debugger = cx.new(|_| Debugger::default());
         let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in Workspace"));
 
+        mark("find input");
         let mut session = Session::load();
         session.note_recent(&opened_path);
         let saved = session.project(&project.root);
@@ -228,11 +237,14 @@ impl Workspace {
             d.breakpoints_active = saved.breakpoints_active.unwrap_or(true);
         });
 
+        mark("state");
         this.rescan(cx);
         this.refresh_scm(cx);
         this.start_activity_ticker(cx);
         this.watch_files(cx);
+        mark("background tasks");
         this.restore_tabs(saved, opened_path, window, cx);
+        mark("restore tabs");
         if this.active.is_none() {
             // Keep shortcuts working before any file is open.
             this.focus_handle.focus(window, cx);
@@ -351,6 +363,78 @@ impl Workspace {
             .active_buffer()
             .and_then(|b| b.path.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| self.project.root.clone());
+        self.new_file_in(dir, window, cx);
+    }
+
+    /// Moves a file or folder to the user's Trash (Finder-style naming on
+    /// collision) and closes any tabs inside it.
+    pub(super) fn move_to_trash(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let path = path.canonicalize().unwrap_or(path);
+        let trash = std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(".Trash"))
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let mut target = trash.join(&name);
+        let mut n = 2;
+        while target.exists() {
+            target = trash.join(format!("{name} {n}"));
+            n += 1;
+        }
+        if let Err(err) = std::fs::rename(&path, &target) {
+            self.notify_error(format!("Couldn’t move {name} to the Trash: {err}"), window, cx);
+            return;
+        }
+        while let Some(ix) = self.buffers.iter().position(|b| b.path.starts_with(&path)) {
+            self.force_close(ix, window, cx);
+        }
+        self.rescan(cx);
+        self.refresh_scm(cx);
+    }
+
+    /// Renames a file or folder in place, keeping open tabs pointed at it.
+    pub fn rename_path(&mut self, path: PathBuf, new_name: String, window: &mut Window, cx: &mut Context<Self>) {
+        let path = path.canonicalize().unwrap_or(path);
+        let Some(parent) = path.parent() else { return };
+        let target = parent.join(&new_name);
+        if target.exists() {
+            self.notify_error(format!("“{new_name}” already exists."), window, cx);
+            return;
+        }
+        // Save edits first so nothing is lost when tabs reopen.
+        let affected: Vec<usize> = (0..self.buffers.len())
+            .filter(|&ix| self.buffers[ix].path.starts_with(&path))
+            .collect();
+        for &ix in &affected {
+            if self.buffers[ix].dirty {
+                self.save_buffer(ix, window, cx);
+            }
+        }
+        if let Err(err) = std::fs::rename(&path, &target) {
+            self.notify_error(format!("Couldn’t rename: {err}"), window, cx);
+            return;
+        }
+        let mut reopen = vec![];
+        while let Some(ix) = self.buffers.iter().position(|b| b.path.starts_with(&path)) {
+            let old = self.buffers[ix].path.clone();
+            let rel = old.strip_prefix(&path).unwrap_or(Path::new(""));
+            reopen.push(if rel.as_os_str().is_empty() { target.clone() } else { target.join(rel) });
+            self.force_close(ix, window, cx);
+        }
+        for new_path in reopen {
+            self.open_file(new_path, None, false, window, cx);
+        }
+        self.rescan(cx);
+        self.refresh_scm(cx);
+    }
+
+    pub(super) fn prompt_rename(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let delegate = pickers::RenameFileDelegate::new(cx.weak_entity(), path.clone());
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let picker = cx.new(|cx| crate::picker::Picker::with_query(delegate, &name, window, cx));
+        self.show_modal(picker, window, cx);
+    }
+
+    pub(super) fn new_file_in(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let receiver = cx.prompt_for_new_path(&dir, Some("Untitled.swift"));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = receiver.await else { return };
@@ -386,7 +470,7 @@ impl Workspace {
         window
             .update(cx, |_, window, cx| {
                 editor.update(cx, |state, cx| {
-                    if state.text().to_string() != text {
+                    if *state.text() != text {
                         let cursor = state.cursor();
                         state.set_value(text, window, cx);
                         let clamped = cursor.min(state.text().len());
@@ -1242,7 +1326,7 @@ impl Workspace {
         for (path, mut edits) in per_file {
             let path = path.canonicalize().unwrap_or(path);
             // Apply back to front so earlier offsets stay valid.
-            edits.sort_by(|a, b| b.range.start.cmp(&a.range.start));
+            edits.sort_by_key(|e| std::cmp::Reverse(e.range.start));
             // Edits land in (possibly newly opened) tabs rather than straight
             // on disk: the language server sees the new text immediately and
             // the user can review the change before saving.
@@ -1267,7 +1351,7 @@ impl Workspace {
                     text = gpui_kit::component::input::Rope::from(s.as_str());
                 }
                 std::fs::write(&path, text.to_string()).ok();
-                self.lsp.read(cx).files_changed(&[path.clone()]);
+                self.lsp.read(cx).files_changed(std::slice::from_ref(&path));
             }
             touched += 1;
         }
@@ -1392,7 +1476,14 @@ impl Workspace {
                     this.scm_status = out
                         .lines()
                         .filter(|l| l.len() > 3)
-                        .map(|l| (l[..2].trim().to_string(), top.join(&l[3..])))
+                        .map(|l| {
+                            // "XY path" or "R  old -> new"; show the most
+                            // significant status letter and the current path.
+                            let code = l[..2].trim();
+                            let status = if code == "??" { "??" } else { &code[..1] };
+                            let path = l[3..].rsplit(" -> ").next().unwrap_or(&l[3..]);
+                            (status.to_string(), top.join(path.trim_matches('"')))
+                        })
                         .collect();
                 }
                 this.scm_branch = branch

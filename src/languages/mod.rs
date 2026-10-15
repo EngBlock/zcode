@@ -3,6 +3,9 @@
 
 use gpui_kit::component::highlighter::{LanguageConfig, LanguageRegistry};
 
+/// See the file header for why zcode ships its own query.
+pub const SWIFT_HIGHLIGHTS: &str = include_str!("swift-highlights.scm");
+
 pub fn register() {
     LanguageRegistry::singleton().register(
         "swift",
@@ -10,9 +13,9 @@ pub fn register() {
             "swift",
             tree_sitter_swift::LANGUAGE.into(),
             vec![],
-            tree_sitter_swift::HIGHLIGHTS_QUERY,
+            SWIFT_HIGHLIGHTS,
             "",
-            tree_sitter_swift::LOCALS_QUERY,
+            "",
         ),
     );
 }

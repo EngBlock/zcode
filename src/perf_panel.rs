@@ -79,7 +79,7 @@ impl Render for PerfPanel {
             .child(metric("zcode peak", format_bytes(peak), cx))
             .child(metric("zcode resident", format_bytes(mem.resident), cx))
             .child(metric(
-                "sourcekit-lsp",
+                "sourcekit-lsp + SourceKitService",
                 ls.map(|(pid, s)| format!("{} (pid {pid})", format_bytes(s.footprint)))
                     .unwrap_or_else(|| "not running".into()),
                 cx,

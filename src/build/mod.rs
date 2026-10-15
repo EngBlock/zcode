@@ -123,6 +123,8 @@ pub struct BuildController {
     awaiting_attach: Option<String>,
     /// Events raised where no `Context` is available, emitted on next flush.
     pending_events: Vec<BuildEvent>,
+    /// An action requested before the scheme list finished loading.
+    queued: Option<(BuildAction, bool)>,
     cache_dir: PathBuf,
     task: Option<Task<()>>,
     _load_task: Option<Task<()>>,
@@ -158,6 +160,7 @@ impl BuildController {
             debug_run: false,
             awaiting_attach: None,
             pending_events: vec![],
+            queued: None,
             cache_dir,
             task: None,
             _load_task: None,
@@ -215,6 +218,10 @@ impl BuildController {
                 cx.emit(BuildEvent::ConfigurationChanged);
                 cx.notify();
                 this.refresh_supported_destinations(cx);
+                if let Some((action, debug)) = this.queued.take() {
+                    this.debug_run = debug;
+                    this.start(action, cx);
+                }
             })
             .ok();
         }));
@@ -460,7 +467,14 @@ impl BuildController {
             self.stop(cx);
         }
         let Some(scheme) = self.scheme.clone() else {
-            self.push_log_line("error: No scheme selected".into());
+            if self.schemes_loading {
+                // Run as soon as the project's schemes are known.
+                self.queued = Some((action, self.debug_run));
+                self.phase = Phase::Preparing(action);
+                cx.emit(BuildEvent::PhaseChanged);
+            } else {
+                self.push_log_line("error: No scheme selected".into());
+            }
             cx.notify();
             return;
         };

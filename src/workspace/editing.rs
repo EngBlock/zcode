@@ -446,6 +446,8 @@ impl Workspace {
                     let edits: Vec<lsp_types::TextEdit> =
                         serde_json::from_value(value).unwrap_or_default();
                     if !edits.is_empty() {
+                        // `WorkspaceEdit::changes` is keyed by lsp_types' Uri.
+                        #[allow(clippy::mutable_key_type)]
                         let mut changes = std::collections::HashMap::new();
                         changes.insert(uri, edits);
                         this.apply_workspace_edit(
