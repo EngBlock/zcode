@@ -11,7 +11,7 @@ use zcode::debugger::dap::{DapClient, DapEvent, initialize_args};
 #[test]
 #[ignore]
 fn stops_at_breakpoint_and_reads_variables() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../samples/ZKit").canonicalize().unwrap();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("samples/ZKit").canonicalize().unwrap();
     assert!(Command::new("/usr/bin/swift").arg("build").current_dir(&root).status().unwrap().success());
     let program = root.join(".build/debug/zhello");
     let source = root.join("Sources/zhello/main.swift");

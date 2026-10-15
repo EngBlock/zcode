@@ -17,7 +17,7 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SAMPLES = os.path.normpath(os.path.join(ROOT, "..", "samples"))
+SAMPLES = os.path.normpath(os.path.join(ROOT, "samples"))
 BINARY = os.path.join(ROOT, "target", "release", "zcode")
 DEBUG_DIR = tempfile.mkdtemp(prefix="zcode-e2e-")
 
@@ -110,7 +110,9 @@ def xcode_project_checks(z, sim):
 
     def lsp_ready():
         z.run(f"open {content}")
-        z.wait_for(lambda s: s["lsp"] == "Ready" and not s["issues"], timeout=180)
+        # On a never-indexed project the background index build restarts
+        # sourcekit-lsp when it finishes; wait for that too.
+        z.wait_for(lambda s: s["lsp"] == "Ready" and not s["issues"] and not s["indexing"], timeout=300)
 
     def open_quickly():
         z.run("keys cmd-shift-o", "type cou", "wait 300")
@@ -138,6 +140,20 @@ def xcode_project_checks(z, sim):
         z.run("keys cmd-z")
         s = z.dump()
         assert not s["active"]["dirty"], "undo should restore the saved state"
+
+    def cut_and_paste_line():
+        z.run(f"open {counter}:8", "wait 300", "keys right right")
+        before = z.dump()["active"]
+        z.run("keys cmd-x")
+        cut = z.dump()["active"]
+        assert cut["text"].count("\n") == before["text"].count("\n") - 1, cut["text"]
+        assert cut["line"] == 8 and cut["line_text"] != before["line_text"], cut
+        z.run("keys cmd-v")
+        pasted = z.dump()["active"]
+        assert pasted["text"] == before["text"], pasted["text"]
+        assert pasted["line"] == 9 and pasted["line_text"] == cut["line_text"], pasted
+        z.run("keys cmd-z cmd-z")
+        assert not z.dump()["active"]["dirty"], "undo should restore the saved state"
 
     def document_items():
         z.run(f"open {counter}", "keys ctrl-6", "wait 1500", "type reset", "keys enter", "wait 300")
@@ -176,6 +192,7 @@ def xcode_project_checks(z, sim):
     check("Jump to Definition across files (⌃⌘J)", definition)
     check("Completion + placeholder Tab", completion)
     check("Comment (⌘/) and undo restores clean state", comment_and_undo)
+    check("Cut line (⌘X) and paste above (⌘V) with nothing selected", cut_and_paste_line)
     check("Document Items (⌃6)", document_items)
     check("Find in Workspace (⇧⌘F) and references (⌃⇧⌘F)", find_and_references)
     check("Build error → Issue navigator → next issue (⌘')", build_error_and_issue_navigation)
@@ -203,7 +220,11 @@ def package_checks(z):
 
     def debug_package():
         z.run(f"open {main}:5", "wait 300", "keys cmd-\\", "keys cmd-r")
-        s = z.wait_for(lambda s: s["debugger"]["state"].startswith("Stopped"), timeout=300)
+        s = z.wait_for(
+            lambda s: s["debugger"]["state"].startswith("Stopped") and s["debugger"]["variables"],
+            timeout=300,
+            interval=0.5,
+        )
         assert any(v.startswith("i = ") for v in s["debugger"]["variables"]), s["debugger"]
         z.run("keys f6", "wait 1000")
         assert "main.swift:6" in z.dump()["debugger"]["frames"][0]

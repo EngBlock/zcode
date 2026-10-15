@@ -1535,6 +1535,7 @@ impl Workspace {
             "destination": build.destination.as_ref().map(|d| format!("{} ({})", d.name, d.runtime)),
             "destinations": build.destinations.len(),
             "phase": format!("{:?}", build.phase),
+            "indexing": build.indexing,
             "issues": issues.iter().map(|i| format!("{:?} {}:{} {}", i.severity, i.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), i.line.unwrap_or(0), i.message)).collect::<Vec<_>>(),
             "tests": build.tests.iter().map(|t| format!("{:?} {}", t.status, t.name)).collect::<Vec<_>>(),
             "console_tail": build.console.iter().rev().take(8).rev().cloned().collect::<Vec<_>>(),

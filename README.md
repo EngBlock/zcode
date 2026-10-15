@@ -101,7 +101,7 @@ cargo build --release && python3 scripts/e2e.py [--simulator]   # drives the rea
 ```
 
 `scripts/e2e.py` launches zcode with `ZCODE_DEBUG_DIR` set and checks against
-the sample projects in `../samples`:
+the sample projects in `samples/`:
 * Open Quickly, definition, completion with placeholders, comment and undo, Document Items, find and references
 * the build-error → issue flow
 * run, test and debug for a Swift package

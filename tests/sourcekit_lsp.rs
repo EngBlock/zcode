@@ -11,7 +11,7 @@ use zcode::build::compiledb;
 use zcode::lsp::{LanguageServer, path_to_uri};
 
 fn sample_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../samples/HelloZ")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("samples/HelloZ")
 }
 
 #[test]
