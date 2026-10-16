@@ -83,6 +83,16 @@ fn present(window: AnyWindowHandle, cx: &mut App) {
         .ok();
 }
 
+/// Starts `perf::watch_first_pixels` on the newest window.
+fn watch_first_pixels(main_started: Instant) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    if let Some(window) = NSApplication::sharedApplication(mtm).windows().lastObject() {
+        perf::watch_first_pixels(window.windowNumber() as u32, main_started);
+    }
+}
+
 fn disable_window_animations() {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSApplication, NSWindowAnimationBehavior};
@@ -335,6 +345,9 @@ pub fn run() {
             // Measure the first presented frame.
             if let Some(window) = cx.windows().first().copied() {
                 let bench = args.startup_bench;
+                if bench {
+                    watch_first_pixels(cx.global::<Perf>().main_started());
+                }
                 window
                     .update(cx, move |_, window, _| {
                         window.on_next_frame(move |window, cx| {
@@ -346,6 +359,12 @@ pub fn run() {
                                 if bench {
                                     cx.spawn(async move |cx| {
                                         cx.background_executor().timer(Duration::from_millis(500)).await;
+                                        for _ in 0..50 {
+                                            if perf::MAIN_TO_FIRST_PIXELS.get().is_some() {
+                                                break;
+                                            }
+                                            cx.background_executor().timer(Duration::from_millis(50)).await;
+                                        }
                                         cx.update(|cx| {
                                             cx.global_mut::<Perf>().record(perf::sample_self());
                                             println!("{}", cx.global::<Perf>().report_json());

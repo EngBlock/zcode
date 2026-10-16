@@ -122,6 +122,33 @@ impl StartupTimings {
     pub fn total(&self) -> Option<Duration> {
         Some(self.exec_to_main.unwrap_or_default() + self.main_to_first_frame?)
     }
+
+    /// exec() → the window server showing the first window's content.
+    pub fn total_to_first_pixels(&self) -> Option<Duration> {
+        Some(self.exec_to_main.unwrap_or_default() + *MAIN_TO_FIRST_PIXELS.get()?)
+    }
+}
+
+/// main() → the first window's content visible in the window server's copy
+/// of the window, set by `watch_first_pixels` (`--startup-bench` only).
+pub static MAIN_TO_FIRST_PIXELS: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+
+/// Polls the window server's image of window `number` from a background
+/// thread until it shows drawn content: what the user actually sees, rather
+/// than when GPUI handed a frame over.
+pub fn watch_first_pixels(number: u32, main_started: Instant) {
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            // Taken after the capture returns, so a slow capture (up to ~20
+            // ms) counts against zcode, never for it.
+            if crate::debug::window_shows_content(number) == Some(true) {
+                let _ = MAIN_TO_FIRST_PIXELS.set(main_started.elapsed());
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
 }
 
 /// App-wide performance state.
@@ -161,6 +188,10 @@ impl Perf {
             language_server: None,
             log_path: std::env::var_os("ZCODE_PERF_LOG").map(PathBuf::from),
         }
+    }
+
+    pub fn main_started(&self) -> Instant {
+        self.main_started
     }
 
     pub fn mark_window_opened(&mut self) {
@@ -242,6 +273,7 @@ impl Perf {
             "main_to_window_ms": ms(self.startup.main_to_window),
             "main_to_first_frame_ms": ms(self.startup.main_to_first_frame),
             "total_to_first_frame_ms": ms(self.startup.total()),
+            "total_to_first_pixels_ms": ms(self.startup.total_to_first_pixels()),
             "footprint_mb": mb(mem.footprint),
             "baseline_footprint_mb": mb(self.baseline_footprint()),
             "resident_mb": mb(mem.resident),

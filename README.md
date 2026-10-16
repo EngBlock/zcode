@@ -44,17 +44,25 @@ The full Xcode 27 menu and shortcut inventory this was matched against is in
 
 Measured on an M4 Max with macOS 27.2 and a release build.
 
-| | Time to first frame |
-|---|---|
-| `zcode <project>` while zcode is running (the usual case) | **~70 ms**; the CLI itself returns in ~50 ms |
-| Cold launch, welcome window | **~200 ms** (7 ms of it before `main()`) |
-| Cold launch, project with 2 Swift tabs restored | ~210–230 ms |
-| *Reference:* a minimal native AppKit app (one window, one line of text) | ~280 ms; ~158 ms with the open animation off |
+| | Content on screen | First frame produced |
+|---|---|---|
+| `zcode <project>` while zcode is running (the usual case) | | **~50–70 ms**; the CLI itself returns in ~50 ms |
+| Cold launch, welcome window | **~230–240 ms** | ~200–210 ms (7 ms of it before `main()`) |
+| Cold launch, project with 2 Swift tabs restored | | ~210–230 ms |
+| *Reference:* minimal native AppKit app (one window, one line of text) | ~295 ms | ~270 ms |
+| *Reference:* the same app with the open animation off | ~170 ms | ~150 ms |
 
-zcode reaches its first frame ~80 ms sooner than a minimal native AppKit app and
-~40 ms after that app's lower bound. `scripts/e2e.py` builds the reference app
-(`scripts/appkit_floor.swift`), times both the same way and fails if zcode is
-not faster.
+Times run from process start. "Content on screen" is when the window
+server's copy of the window first shows drawn content, which is what the user
+sees. `zcode --startup-bench` polls the window's image from a background
+thread and records the time after the capture returns, so slow captures count
+against zcode. "First frame produced" is the next main-loop turn after the
+app produced its first frame.
+
+zcode shows its window ~55 ms sooner than a minimal native AppKit app and
+~65 ms after that app's lower bound. `scripts/e2e.py` builds the reference app
+(`scripts/appkit_floor.swift`), which measures itself the same way, and fails
+if zcode is not faster.
 
 * **Single instance.** zcode keeps running when its last window closes, as Xcode and other Mac document apps do. `zcode <path>` hands the path to the running instance over a Unix socket and exits, and the warm instance opens the project window in ~50–75 ms. `ZCODE_NEW_INSTANCE=1` forces a separate process.
 * **Always warm.** `zcode --background` starts the resident instance with no window. Run it as a login item (System Settings ▸ General ▸ Login Items, or a LaunchAgent), and even the first open of the day takes the warm path.
