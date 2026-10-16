@@ -103,6 +103,13 @@ pub enum Entry {
     Search(SearchGroup),
 }
 
+/// A bookmark's place in the list: a top-level entry, or a row of a search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    Entry(usize),
+    Search(u64, usize),
+}
+
 /// A group of rows in the navigator: a file's bookmarks, or a search.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SectionKey {
@@ -266,6 +273,41 @@ impl Bookmarks {
     }
 
     /// Removes a bookmark or a whole search group.
+    /// Where bookmark `id` sits in the list, to put it back there.
+    pub fn slot_of(&self, id: u64) -> Option<Slot> {
+        self.entries.iter().enumerate().find_map(|(ix, entry)| match entry {
+            Entry::Bookmark(b) if b.id == id => Some(Slot::Entry(ix)),
+            Entry::Search(group) => group.results.iter().position(|b| b.id == id).map(|row| Slot::Search(group.id, row)),
+            _ => None,
+        })
+    }
+
+    /// Puts back a bookmark that was deleted with its line (the undo that
+    /// restored the line), where it was, unless that place is taken.
+    pub fn put_back(&mut self, bookmark: Bookmark, slot: Slot) -> bool {
+        if self.get(bookmark.id).is_some() || self.find(&bookmark.location).is_some() {
+            return false;
+        }
+        match slot {
+            Slot::Entry(ix) => {
+                let ix = ix.min(self.entries.len());
+                self.entries.insert(ix, Entry::Bookmark(bookmark));
+                true
+            }
+            Slot::Search(group_id, row) => {
+                let Some(group) = self.entries.iter_mut().find_map(|entry| match entry {
+                    Entry::Search(group) if group.id == group_id => Some(group),
+                    _ => None,
+                }) else {
+                    return false;
+                };
+                let row = row.min(group.results.len());
+                group.results.insert(row, bookmark);
+                true
+            }
+        }
+    }
+
     pub fn remove(&mut self, id: u64) -> bool {
         let before = self.count();
         self.entries.retain(|entry| match entry {
@@ -628,6 +670,29 @@ mod tests {
         assert_eq!(b.lines_in(Path::new("/p/a.swift")).map(|(id, _)| id).collect::<Vec<_>>(), vec![first, result]);
         b.move_lines(Path::new("/p/a.swift"), &[(result, None)]);
         assert!(b.search(search).unwrap().results.is_empty());
+    }
+
+    #[test]
+    fn deleted_bookmarks_go_back_in_their_place() {
+        let mut b = Bookmarks::default();
+        let first = b.add(line("/p/a.swift", 3), "three").0;
+        let second = b.add(line("/p/a.swift", 5), "five").0;
+        b.add(line("/p/a.swift", 9), "nine");
+        let search = b.add_search("q".into(), SearchOptions::default(), vec![("/p/b.swift".into(), 1, "x".into()), ("/p/b.swift".into(), 2, "y".into())]);
+        let result = b.search(search).unwrap().results[1].id;
+        let kept = [second, result].map(|id| (b.get(id).cloned().unwrap(), b.slot_of(id).unwrap()));
+        assert_eq!(kept[0].1, Slot::Entry(1));
+        assert_eq!(kept[1].1, Slot::Search(search, 1));
+        b.move_lines(Path::new("/p/a.swift"), &[(second, None)]);
+        b.move_lines(Path::new("/p/b.swift"), &[(result, None)]);
+        for (bookmark, slot) in kept.clone() {
+            assert!(b.put_back(bookmark, slot));
+        }
+        assert_eq!(titles(&b)[..3], ["three", "five", "nine"]);
+        assert_eq!(b.search(search).unwrap().results[1].id, result);
+        // Not twice, and not over a bookmark that took the line meanwhile.
+        assert!(!b.put_back(kept[0].0.clone(), kept[0].1));
+        let _ = first;
     }
 
     #[test]

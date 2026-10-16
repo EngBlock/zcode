@@ -84,6 +84,7 @@ mod touch;
 #[path = "base/undo_manager.rs"]
 mod undo_manager;
 
+mod anchors;
 mod history;
 #[cfg(test)]
 mod test_support;
@@ -106,6 +107,7 @@ pub(crate) fn test_init(cx: &mut App) {
 
 pub use gpui_base::{NumberInputEvent, NumberStep};
 pub use base::InputContextMenuCapabilities;
+pub use anchors::{Anchor, AnchorBias, AnchorRow};
 pub use cursor::Selection;
 pub use decorations::{
     RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, TextDecoration,

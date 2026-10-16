@@ -213,6 +213,7 @@ impl UndoManager {
                     .truncate(change.old_range.start - last.new_range.start);
                 last.new_text.push_str(&change.new_text);
                 last.new_range.end = change.new_range.end;
+                last.anchors.extend(change.anchors.iter().copied());
                 return;
             }
             previous.changes.extend(changes);

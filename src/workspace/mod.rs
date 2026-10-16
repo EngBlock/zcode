@@ -77,8 +77,8 @@ pub struct Buffer {
     saved_text: zcode_editor::Rope,
     pub language: SharedString,
     mtime: Option<SystemTime>,
-    breakpoint_anchors: line_anchors::LineAnchors,
-    bookmark_anchors: line_anchors::LineAnchors,
+    breakpoint_anchors: line_anchors::LineAnchors<crate::debugger::Breakpoint>,
+    bookmark_anchors: line_anchors::LineAnchors<(crate::bookmarks::Bookmark, crate::bookmarks::Slot)>,
     exec_mark: Option<RangeDecorationCollection>,
     /// Property lists: the structured editor over the same text.
     pub plist: Option<PlistBuffer>,

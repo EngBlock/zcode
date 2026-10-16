@@ -21,6 +21,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::breakpoint_editor::BreakpointEditor;
+use super::line_anchors::LineChange;
 use super::navigator::{empty, row, section_header};
 use super::pickers::file_icon;
 use super::test_gutter::{FOLD_COLUMN, gutter_width};
@@ -119,14 +120,38 @@ impl Workspace {
         buffer.breakpoint_anchors.set(&buffer.editor, wanted, force, cx);
     }
 
-    /// After an edit, moves breakpoints to where their anchors went.
+    /// After an edit, moves breakpoints to where their anchors went. A
+    /// breakpoint deleted with its line comes back with the undo that
+    /// restores the line.
     pub(super) fn track_breakpoints(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let Some(buffer) = self.buffers.iter().find(|b| b.path == path) else { return };
-        let moves = buffer.breakpoint_anchors.moves(&buffer.editor, cx);
-        if !moves.is_empty() {
-            let path = path.to_path_buf();
-            self.debugger.update(cx, |d, cx| d.move_line_breakpoints(&path, moves, cx));
+        let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) else { return };
+        let changes = buffer.breakpoint_anchors.changes(&buffer.editor, cx);
+        if changes.is_empty() {
+            return;
         }
+        let mut moves = vec![];
+        let mut restored = vec![];
+        for change in changes {
+            match change {
+                LineChange::Moved(id, line) => moves.push((id, Some(line))),
+                LineChange::Deleted(id) => {
+                    if let Some(bp) = self.debugger.read(cx).breakpoint(id).cloned() {
+                        buffer.breakpoint_anchors.keep_deleted(id, bp);
+                    }
+                    moves.push((id, None));
+                }
+                LineChange::Restored(line, bp) => restored.push((bp, line)),
+            }
+        }
+        let path = path.to_path_buf();
+        self.debugger.update(cx, |d, cx| {
+            if !moves.is_empty() {
+                d.move_line_breakpoints(&path, moves, cx);
+            }
+            for (bp, line) in restored {
+                d.restore_line_breakpoint(bp, line, cx);
+            }
+        });
     }
 
     // ------------------------------------------------------------------

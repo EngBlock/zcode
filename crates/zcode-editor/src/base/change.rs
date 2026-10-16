@@ -11,6 +11,8 @@ pub(super) struct Change {
     pub(crate) old_text: String,
     pub(crate) new_range: Selection,
     pub(crate) new_text: String,
+    /// Anchors the change moved irreversibly, as they were before it.
+    pub(crate) anchors: Vec<crate::anchors::AnchorSnapshot>,
 }
 
 impl Change {
@@ -26,6 +28,7 @@ impl Change {
             old_text: old_text.to_string(),
             new_range: new_range.into(),
             new_text: new_text.to_string(),
+            anchors: Vec::new(),
         }
     }
 
@@ -39,6 +42,7 @@ impl Change {
             old_text: self.old_text.clone(),
             new_range: (shift(self.new_range.start)..shift(self.new_range.end)).into(),
             new_text: self.new_text.clone(),
+            anchors: self.anchors.clone(),
         }
     }
 }

@@ -36,7 +36,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | Group-based projects (no file-system-synchronized folders) stay consistent as Xcode keeps them: New File, Rename (a name with `/` moves the item), Move to Trash and Add Files… add, update and remove file references, groups and build files in `project.pbxproj` (Sources for code, Resources for resources), with Xcode-style IDs and the rest of the file left byte for byte. New files join the targets that build their neighbors. | ⌥⌘A |
 | | File inspector: name, type, location, full path and Target Membership checkboxes for the selected file. | ⌥⌘1 |
 | **Navigators** | Xcode 27's set and order: Project (file tree with New File / Add Files / Rename / Move to Trash / Bookmark File / Show File Inspector / Show in Finder), Source Control (git status), Bookmarks, Find (find in workspace with case, word and regex options), Issues (live + build), Tests, Debug (threads and frames), Breakpoints and Reports (build/run/test history with full logs). Xcode 27 dropped the Symbol navigator: the file's symbols are in Document Items (⌃6), the workspace's in Open Quickly. | ⌘1 … ⌘9 |
-| **Bookmarks** | Edit ▸ Bookmark Line and Bookmark File (⌥ adds a dialog for the description); a bookmark's description starts as the selection or the line's text. Bookmarked lines get an orange ribbon left of the line numbers (right-click for its menu) and follow edits, undo, renames and Move to Trash, as breakpoints do. Jump to Next / Previous Bookmark in the file, or In Workspace in the navigator's order. | ⌃⌘' ⌃⇧⌘' ⌃⌥⌘' ⌃⌥⇧⌘', ⌃; ⌃: ⌃⌥; ⌃⌥: |
+| **Bookmarks** | Edit ▸ Bookmark Line and Bookmark File (⌥ adds a dialog for the description); a bookmark's description starts as the selection or the line's text. Bookmarked lines get an orange ribbon left of the line numbers (right-click for its menu) and follow edits, undo, renames and Move to Trash, as breakpoints do (undoing the deletion of a bookmarked line brings its bookmark back, in its place). Jump to Next / Previous Bookmark in the file, or In Workspace in the navigator's order. | ⌃⌘' ⌃⇧⌘' ⌃⌥⌘' ⌃⌥⇧⌘', ⌃; ⌃: ⌃⌥; ⌃⌥: |
 | | The Bookmarks navigator lists them grouped by file: click to open, double-click (or Edit Description) to edit the description in place, Mark as Complete, drag to reorder bookmarks within a file or whole files, delete, Sort By Name / Type / Completion Status, Delete All Completed Items, a filter and Show only incomplete items. From the Find navigator, Bookmark Line on a result, Bookmark File on a file, and the whole query with its results (its bookmark button, or Bookmark Line while the Find navigator has focus) as a group that Find Again refreshes. Saved per project. | ⌘3 |
 | **Build & run** | Scheme, configuration and run destination pickers. Destinations are grouped as in Xcode: My Mac, connected iOS, iPadOS, watchOS, tvOS and visionOS devices (from `devicectl`, with how they're connected or why they can't be used: not paired, Developer Mode disabled, unavailable), Any iOS Device (arm64) for building, then every available simulator, filtered by the scheme's `SUPPORTED_PLATFORMS`. Devices appear and disappear as they connect, without a refresh. | ⌃0, ⌃⇧0 |
 | | Build, Run, Test, Stop and Clean. Files are saved first. | ⌘B, ⌘R, ⌘U, ⌘., ⇧⌘K |
@@ -51,7 +51,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | The Test navigator lists targets, classes, suites and tests from source with their results; each row runs on its play button or context menu. Results of tests a run doesn't include stay, as in Xcode. | ⌘6 |
 | | Test plans: the scheme's `.xctestplan`s in Product ▸ Choose Test Plan… and the Test navigator; ⌘U and Test Again run the chosen plan, and tests it leaves out are dimmed. | — |
 | | Every runner gets the selection: `xcodebuild test -only-testing:`/`-testPlan`, `swift test --filter`, and in the simulator an XCTest scope for the injected bundle (which also selects Swift Testing tests), honoring the plan's skipped and selected tests, environment and arguments. | — |
-| **Debugging** (lldb-dap) | Breakpoints as blue markers on the line numbers: click the gutter to add one, click a marker to disable or enable it, double-click it (or Edit Breakpoint…) to edit it, right-click for its menu. They follow edits (lines inserted above move them), renames and moves, and are saved per project. ⌘R runs under the debugger whenever enabled breakpoints are active, as in Xcode. Simulator apps launch with `--wait-for-debugger` and lldb attaches to them. Device apps launch suspended and lldb attaches through CoreDevice (lldb's `device select` and `device process attach`, as Xcode does), using the local build's symbols. | ⌘\\, ⌘Y |
+| **Debugging** (lldb-dap) | Breakpoints as blue markers on the line numbers: click the gutter to add one, click a marker to disable or enable it, double-click it (or Edit Breakpoint…) to edit it, right-click for its menu. They follow edits (lines inserted above move them), undo, renames and moves, and are saved per project; deleting a breakpoint's line deletes it, and undoing that brings it back. ⌘R runs under the debugger whenever enabled breakpoints are active, as in Xcode. Simulator apps launch with `--wait-for-debugger` and lldb attaches to them. Device apps launch suspended and lldb attaches through CoreDevice (lldb's `device select` and `device process attach`, as Xcode does), using the local build's symbols. | ⌘\\, ⌘Y |
 | | The breakpoint editor popover: name, condition, "Ignore N times before stopping", actions (Log Message with `@expression@`, `%B` and `%H`, logged or spoken; Debugger Command; Sound) and "Automatically continue after evaluating actions". | — |
 | | Symbolic (symbol and module), Swift Error and Exception (Objective-C, C++ or both, on throw or catch) breakpoints from the Breakpoint navigator's + menu or Debug ▸ Breakpoints; the navigator lists every breakpoint with its toggle and options. | ⌥⌘\\ |
 | | Pause/continue, step over/into/out, the stopped line highlighted in green, threads and frames in the Debug navigator, and an expandable Variables view next to the console, with Copy Value and Print Description. Hovering a variable while paused shows its value. | ⌃⌘Y, F6, F7, F8 |
@@ -297,9 +297,8 @@ The control channel also takes window screenshots
   renaming them to a path.
 * Bookmarks are grouped by file rather than in Xcode's free-form groups:
   there's no New Group, Cut/Copy/Paste or Duplicate Bookmark, and a
-  bookmark can't be dragged into another file's section. Deleting a
-  bookmarked line deletes its bookmark, and edits made outside zcode don't
-  move bookmarks. They live in zcode's session, so Xcode doesn't see them.
+  bookmark can't be dragged into another file's section. Edits made outside
+  zcode don't move bookmarks. They live in zcode's session, so Xcode doesn't see them.
   A bookmarked search keeps one bookmark per matching line, and Find Again
   searches the files of the last project scan.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas or Instruments.
@@ -347,9 +346,8 @@ The control channel also takes window screenshots
   one error type, exception breakpoints have no condition (as in Xcode), and
   there are no Test Failure, Runtime Issue or Constraint Error breakpoints,
   watchpoints, or breakpoint sharing (zcode keeps breakpoints in its session,
-  not in the project's `xcuserdata`, so Xcode doesn't see them). Deleting a
-  breakpoint's line deletes the breakpoint, and edits made outside zcode
-  don't move breakpoints. The console takes lldb commands only while paused;
+  not in the project's `xcuserdata`, so Xcode doesn't see them). Edits made
+  outside zcode don't move breakpoints. The console takes lldb commands only while paused;
   a running program's stdin isn't connected.
 * UI test bundles are skipped by the in-simulator unit-test runner and still
   need `xcodebuild test` (running only UI tests from a diamond uses it). On this machine that fails ("The test runner hung

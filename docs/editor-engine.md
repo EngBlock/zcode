@@ -144,3 +144,32 @@ property list editor's ⌘Z/⇧⌘Z call `undo`/`redo` on its text (the hidden
 zero-size editor is gone), and zcode's line commands (comment, duplicate,
 move line) run through `transact`, so a read-only package source refuses
 them in the engine rather than in a workspace check.
+
+### Anchors (`anchors.rs`)
+
+```rust
+let a = editor.anchor(offset, AnchorBias::Left);  // a position; the bias picks
+                                                   // the side of text inserted at it
+let line = editor.line_anchor(row);                // a whole line, newline included
+editor.anchor_offset(a);   // Option<usize>
+editor.anchor_row(line);   // Option<u32>: None while the line is deleted
+editor.anchor_rows();      // every anchor's row, after an edit
+editor.remove_anchor(a);
+```
+
+Anchors move with every edit. Text inserted at a line's start belongs to
+that line (a newline typed there pushes it down), text at its end to the
+next one; a line anchor is deleted when an edit removes the whole line with
+its newline. Shifting past an edit is reversible by arithmetic, but landing
+inside replaced text isn't, so each undo history entry (`Change`) records
+the anchors its edit moved that way, and undoing the entry restores them
+exactly, deleted lines included; redo replays the edit and moves them
+again. `set_value` (a reload, which clears the history) keeps line anchors
+on their row.
+
+Ported: `src/workspace/line_anchors.rs` keeps breakpoints and bookmarks on
+line anchors instead of invisible range decorations. It reports each line
+as moved, deleted or restored; a breakpoint or bookmark deleted with its
+line is kept with the anchor and comes back (same id, same place in the
+bookmark list) with the undo that restores the line, which the invisible
+decorations could never do.

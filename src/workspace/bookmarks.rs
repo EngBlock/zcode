@@ -29,6 +29,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::bookmark_dialog::BookmarkDialog;
+use super::line_anchors::LineChange;
 use super::navigator::{empty, row, section_header};
 use super::pickers::file_icon;
 use super::test_gutter::{FOLD_COLUMN, gutter_width};
@@ -162,14 +163,37 @@ impl Workspace {
         buffer.bookmark_anchors.set(&buffer.editor, wanted, force, cx);
     }
 
-    /// After an edit, moves bookmarks to where their anchors went.
+    /// After an edit, moves bookmarks to where their anchors went. A
+    /// bookmark deleted with its line comes back, in its place in the list,
+    /// with the undo that restores the line.
     pub(super) fn track_bookmarks(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let Some(buffer) = self.buffers.iter().find(|b| b.path == path) else { return };
-        let moves = buffer.bookmark_anchors.moves(&buffer.editor, cx);
-        if !moves.is_empty() {
-            self.bookmarks.move_lines(path, &moves);
-            self.bookmarks_changed(false, cx);
+        let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) else { return };
+        let changes = buffer.bookmark_anchors.changes(&buffer.editor, cx);
+        if changes.is_empty() {
+            return;
         }
+        let mut moves = vec![];
+        let mut restored = vec![];
+        for change in changes {
+            match change {
+                LineChange::Moved(id, line) => moves.push((id, Some(line))),
+                LineChange::Deleted(id) => {
+                    if let (Some(bookmark), Some(slot)) = (self.bookmarks.get(id).cloned(), self.bookmarks.slot_of(id)) {
+                        buffer.bookmark_anchors.keep_deleted(id, (bookmark, slot));
+                    }
+                    moves.push((id, None));
+                }
+                LineChange::Restored(line, kept) => restored.push((kept, line)),
+            }
+        }
+        self.bookmarks.move_lines(path, &moves);
+        for ((mut bookmark, slot), line) in restored {
+            if let Location::Line { line: current, .. } = &mut bookmark.location {
+                *current = line;
+            }
+            self.bookmarks.put_back(bookmark, slot);
+        }
+        self.bookmarks_changed(false, cx);
     }
 
     /// Re-anchors open buffers after bookmarks changed, and saves them

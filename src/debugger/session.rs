@@ -185,6 +185,20 @@ impl Debugger {
         id
     }
 
+    /// Puts back a line breakpoint that was deleted with its line, as it was
+    /// (same id), at `line`: the undo that restored the line.
+    pub fn restore_line_breakpoint(&mut self, mut bp: Breakpoint, line: u32, cx: &mut Context<Self>) {
+        if let Kind::Line { line: current, .. } = &mut bp.kind {
+            *current = line;
+        }
+        if self.breakpoints.iter().any(|b| b.id == bp.id || (b.path().is_some() && b.path() == bp.path() && b.line() == Some(line))) {
+            return;
+        }
+        let scope = Self::scope(&bp);
+        self.breakpoints.push(bp);
+        self.changed(vec![scope], cx);
+    }
+
     /// Adds a breakpoint on a line, or removes the one there (⌘\).
     pub fn toggle_breakpoint(&mut self, path: PathBuf, line: u32, cx: &mut Context<Self>) {
         match self.breakpoint_at(&path, line).map(|bp| bp.id) {

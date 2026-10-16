@@ -1,72 +1,110 @@
-//! Lines anchored in an open buffer, for breakpoints and bookmarks: each
-//! line gets an invisible editor decoration, which the editor moves through
-//! edits and undo. After an edit the owner reads where its anchors went and
-//! moves its lines there; an anchor whose line was deleted reports `None`.
+//! Lines anchored in an open buffer, for breakpoints and bookmarks, on the
+//! editor's line anchors (`zcode-editor`'s `anchors.rs`): the editor moves
+//! them through edits, undo and redo. After an edit the owner reads what
+//! happened to its lines: moved, deleted with their line, or brought back by
+//! an undo. A deleted line's owner keeps what it removed here, with the
+//! anchor, so the undo that restores the line restores it too.
 
-use zcode_editor::{EditorState, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, RopeExt as _};
 use gpui_kit::*;
+use zcode_editor::{Anchor, EditorState};
 
-use super::Workspace;
-
-struct Anchor {
-    id: u64,
-    /// The 1-based line when anchored.
-    line: u32,
-    mark: Option<RangeDecorationCollection>,
+/// What an edit did to an anchored line (1-based lines).
+pub(super) enum LineChange<T> {
+    Moved(u64, u32),
+    Deleted(u64),
+    /// Undo brought the line back, with what the owner kept for it.
+    Restored(u32, T),
 }
 
-#[derive(Default)]
-pub(super) struct LineAnchors(Vec<Anchor>);
+pub(super) struct LineAnchors<T> {
+    /// (id, 1-based line when last seen, anchor)
+    live: Vec<(u64, u32, Anchor)>,
+    /// Anchors whose line is deleted, with what their owner removed.
+    deleted: Vec<(u64, Anchor, Option<T>)>,
+}
 
-impl LineAnchors {
+impl<T> Default for LineAnchors<T> {
+    fn default() -> Self {
+        Self { live: vec![], deleted: vec![] }
+    }
+}
+
+impl<T> LineAnchors<T> {
     /// Anchors `wanted` (id, 1-based line) in `editor`. Skipped when the
-    /// anchors already match, unless `force` (the text was replaced).
+    /// anchors already match, unless `force` (the text was replaced, which
+    /// also forgets the deleted lines: there is no undo back to them).
     pub fn set(&mut self, editor: &Entity<EditorState>, wanted: Vec<(u64, u32)>, force: bool, cx: &mut App) {
-        let current: Vec<(u64, u32)> = self.0.iter().map(|a| (a.id, a.line)).collect();
+        let current: Vec<(u64, u32)> = self.live.iter().map(|&(id, line, _)| (id, line)).collect();
         if current == wanted && !force {
             return;
         }
-        for anchor in self.0.drain(..) {
-            if let Some(mark) = anchor.mark {
-                mark.dispose(cx);
-            }
-        }
-        let text = editor.read(cx).text().clone();
-        self.0 = wanted
-            .into_iter()
-            .map(|(id, line)| {
-                let mark = Workspace::line_range(&text, line).map(|range| {
-                    // Invisible: a gutter overlay shows it.
-                    let decoration = RangeDecoration::new(range)
-                        .with_style(RangeDecorationStyle::Fill)
-                        .with_color(gpui_kit::transparent_black());
-                    editor.update(cx, |state, cx| state.create_range_decorations_collection(vec![decoration], cx))
-                });
-                Anchor { id, line, mark }
-            })
-            .collect();
-    }
-
-    /// The anchors whose line changed since they were set: the new 1-based
-    /// line, or `None` when the line was deleted.
-    pub fn moves(&self, editor: &Entity<EditorState>, cx: &App) -> Vec<(u64, Option<u32>)> {
-        if self.0.is_empty() {
-            return vec![];
-        }
-        let text = editor.read(cx).text().clone();
-        let mut moves = vec![];
-        for anchor in &self.0 {
-            let Some(mark) = &anchor.mark else { continue };
-            match mark.get_ranges(cx).first() {
-                None => moves.push((anchor.id, None)),
-                Some(range) => {
-                    let line = text.offset_to_point(range.start).row as u32 + 1;
-                    if line != anchor.line {
-                        moves.push((anchor.id, Some(line)));
-                    }
+        editor.update(cx, |state, _| {
+            let mut old = std::mem::take(&mut self.live);
+            for (id, line) in wanted {
+                let kept = (!force).then(|| old.iter().position(|&(i, l, _)| i == id && l == line)).flatten();
+                match kept {
+                    Some(ix) => self.live.push(old.remove(ix)),
+                    None => self.live.push((id, line, state.line_anchor(line.saturating_sub(1)))),
                 }
             }
+            for (_, _, anchor) in old {
+                state.remove_anchor(anchor);
+            }
+            let live = &self.live;
+            self.deleted.retain(|(id, anchor, _)| {
+                let keep = !force && !live.iter().any(|(i, _, _)| i == id);
+                if !keep {
+                    state.remove_anchor(*anchor);
+                }
+                keep
+            });
+        });
+    }
+
+    /// What happened to the anchored lines since the last call.
+    pub fn changes(&mut self, editor: &Entity<EditorState>, cx: &App) -> Vec<LineChange<T>> {
+        let state = editor.read(cx);
+        let mut changes = vec![];
+        let mut ix = 0;
+        while ix < self.live.len() {
+            let (id, line, anchor) = self.live[ix];
+            match state.anchor_row(anchor) {
+                None => {
+                    self.live.remove(ix);
+                    self.deleted.push((id, anchor, None));
+                    changes.push(LineChange::Deleted(id));
+                    continue;
+                }
+                Some(row) if row + 1 != line => {
+                    self.live[ix].1 = row + 1;
+                    changes.push(LineChange::Moved(id, row + 1));
+                }
+                Some(_) => {}
+            }
+            ix += 1;
         }
-        moves
+        let mut ix = 0;
+        while ix < self.deleted.len() {
+            let anchor = self.deleted[ix].1;
+            match state.anchor_row(anchor) {
+                Some(row) => {
+                    let (id, anchor, kept) = self.deleted.remove(ix);
+                    self.live.push((id, row + 1, anchor));
+                    if let Some(kept) = kept {
+                        changes.push(LineChange::Restored(row + 1, kept));
+                    }
+                }
+                None => ix += 1,
+            }
+        }
+        changes
+    }
+
+    /// Keeps what the owner removed with `id`'s deleted line, for the undo
+    /// that brings the line back.
+    pub fn keep_deleted(&mut self, id: u64, removed: T) {
+        if let Some(entry) = self.deleted.iter_mut().find(|(i, _, _)| *i == id) {
+            entry.2 = Some(removed);
+        }
     }
 }

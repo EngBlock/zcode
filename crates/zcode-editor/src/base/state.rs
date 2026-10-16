@@ -173,6 +173,8 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) text: Rope,
     pub(super) display_map: DisplayMap,
     pub(super) undo_manager: UndoManager,
+    /// Positions that follow edits (`anchors.rs`).
+    pub(crate) anchors: crate::anchors::Anchors,
     pub(super) inline_tokens: Option<Box<super::inline_tokens::InlineTokenStore>>,
     pub(super) pending_token: Option<super::InlineToken>,
     pub(super) replaying_history: bool,
@@ -579,6 +581,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             cursor_surrounding_lines: None,
             blink_cursor,
             undo_manager,
+            anchors: Default::default(),
             inline_tokens: None,
             pending_token: None,
             replaying_history: false,
@@ -807,9 +810,11 @@ impl<M: InputModeKind> InputBaseState<M> {
     ) {
         let content = value.into();
         self.inline_tokens = None;
+        let anchors = self.anchors.positions(&self.text);
         self.undo_manager.set_ignoring(true);
         self.emit_events = false;
         self.replace_text(content.text().clone(), window, cx);
+        self.anchors.restore_positions(anchors, &self.text);
         self.install_tokens(content);
         self.undo_manager.set_ignoring(false);
         self.emit_events = true;
@@ -2736,6 +2741,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         let open_transaction = self.undo_manager.has_open_transaction();
         let mut change = Change::new(range, &old_text, new_range, new_text);
         change.token_delta = token_delta;
+        change.anchors = self.anchors.take_moved();
         let recorded = self.undo_manager.record_transaction(change, intent);
         // A batch records its own cursor sets. This covers a change that is a
         // transaction on its own.
@@ -2786,6 +2792,9 @@ impl<M: InputModeKind> InputBaseState<M> {
             let range_utf16 = self.range_to_utf16(&range);
             self.replace_text_in_range_silent(Some(range_utf16), text, window, cx);
             self.replay_tokens(&range, text.len(), change.token_delta.as_deref(), undo);
+            if undo {
+                self.anchors.restore(&change.anchors);
+            }
         }
         self.restore_selections(replay.selections);
         self.mode
@@ -3682,6 +3691,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             self.mode.adjust_auto_closed_pair(range, new_text.len());
             self.text.replace(range.clone(), new_text);
 
+            self.anchors.adjust_for_edit(range, new_text.len());
             M::adjust_annotations(self, range, new_text.len());
             recorded |= self.push_history(
                 &old_text,
@@ -4062,6 +4072,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             // the old text no longer point at anything.
             M::reset_annotations(self);
         } else {
+            self.anchors.adjust_for_edit(&range, new_text.len());
             M::adjust_annotations(self, &range, new_text.len());
         }
         if mask_changed {
@@ -4203,6 +4214,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             }
         }
 
+        self.anchors.adjust_for_edit(&range, new_text.len());
         M::adjust_annotations(self, &range, new_text.len());
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)

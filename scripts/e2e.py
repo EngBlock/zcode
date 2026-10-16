@@ -1217,6 +1217,14 @@ def package_checks(z, samples):
                 break
             z.run("keys cmd-z", "wait 200")
         assert z.dump()["breakpoints"]["list"][0]["line"] == tick_line, z.dump()["breakpoints"]["list"]
+        # Deleting its line (⌘X with nothing selected) deletes it; undo brings
+        # the line back and the breakpoint with it, enabled as it was.
+        z.run(f"open {main}:{tick_line}", "keys cmd-x", "wait 300")
+        assert z.dump()["breakpoints"]["list"] == [], z.dump()["breakpoints"]["list"]
+        z.run("keys cmd-z", "wait 300")
+        s = z.dump()
+        assert [(b["line"], b["enabled"]) for b in s["breakpoints"]["list"]] == [(tick_line, True)], s["breakpoints"]
+        assert not s["active"]["dirty"], "undo restored the text"
         # A double-click edits it (and leaves it enabled); a right-click shows its menu.
         z.run(f"open {main}:{tick_line}", "wait 300")
         x, y = gutter_row(z, tick_line)
@@ -1332,7 +1340,7 @@ def package_checks(z, samples):
             z.run(f"breakpoint enable {ix} off")
         assert not any(b["enabled"] for b in z.dump()["breakpoints"]["list"])
 
-    check("Breakpoints: gutter click adds, disables and enables; follows inserted lines; double-click edits", breakpoint_gutter)
+    check("Breakpoints: gutter click adds, disables and enables; follows inserted lines; deleted with its line and back with undo; double-click edits", breakpoint_gutter)
     check("Breakpoints: condition; LLDB console po/p/expr/v/bt with history; Print Description; data tips", conditional_breakpoint_and_console)
     check("Breakpoints: ignore count", ignore_count)
     check("Breakpoints: Log Message (@expr@, %B, %H) and Debugger Command actions, auto-continue", log_message_and_auto_continue)
@@ -1422,6 +1430,15 @@ def bookmark_checks(samples):
             z.run("keys cmd-z", "wait 200")
         lines = [b[1] for b in bookmark_list(z.dump())]
         assert lines == [name_line, loop_line, None, greeting_line], lines
+        # Deleting a bookmarked line deletes its bookmark; undo puts it back
+        # in its place in the list.
+        z.run(f"open {main}:{loop_line}", "keys cmd-x", "wait 300")
+        lines = [b[1] for b in bookmark_list(z.dump())]
+        assert lines == [name_line, None, greeting_line], lines
+        z.run("keys cmd-z", "wait 300")
+        lines = [b[1] for b in bookmark_list(z.dump())]
+        assert lines == [name_line, loop_line, None, greeting_line], lines
+        assert not z.dump()["active"]["dirty"]
 
     def next_and_previous():
         z.run(f"open {main}:1", "wait 300", "keys ctrl-;")
@@ -1555,7 +1572,7 @@ def bookmark_checks(samples):
 
     try:
         check("Bookmarks: Bookmark Line (⌃⌘') and Bookmark File (⌃⇧⌘'), ribbons, ⌘3, no duplicates", lines_and_files)
-        check("Bookmarks: follow inserted lines and undo", follow_edits)
+        check("Bookmarks: follow inserted lines and undo; a deleted line's bookmark comes back with undo", follow_edits)
         check("Bookmarks: Jump to Next / Previous Bookmark (⌃; ⌃:), In Workspace (⌃⌥; ⌃⌥:)", next_and_previous)
         check("Bookmarks: edit descriptions in place, Mark as Complete, filter, incomplete only", edit_complete_filter)
         check("Bookmarks: drag to reorder bookmarks and files; click to open", drag_and_drop)
