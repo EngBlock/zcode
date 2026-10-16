@@ -1,0 +1,27 @@
+{
+  "configurations" : [
+    {
+      "id" : "5E1B2C3D-0000-4000-8000-000000000002",
+      "name" : "Configuration 1",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+
+  },
+  "testTargets" : [
+    {
+      "skippedTests" : [
+        "LegacyTests\/testIncrementTwice()"
+      ],
+      "target" : {
+        "containerPath" : "container:HelloZ.xcodeproj",
+        "identifier" : "A10000000000000000000016",
+        "name" : "HelloZTests"
+      }
+    }
+  ],
+  "version" : 1
+}

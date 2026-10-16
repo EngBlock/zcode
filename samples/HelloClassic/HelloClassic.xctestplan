@@ -1,0 +1,20 @@
+{
+  "configurations" : [
+    {
+      "id" : "5E1B2C3D-0000-4000-8000-000000000010",
+      "name" : "Configuration 1",
+      "options" : {}
+    }
+  ],
+  "defaultOptions" : {},
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:HelloClassic.xcodeproj",
+        "identifier" : "7C1E5A0F29F0B1C200D4E8F1",
+        "name" : "HelloClassicTests"
+      }
+    }
+  ],
+  "version" : 1
+}

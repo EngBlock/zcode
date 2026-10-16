@@ -12,6 +12,7 @@
 		7C1E5A0929F0B1C200D4E8F1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7C1E5A0829F0B1C200D4E8F1 /* Assets.xcassets */; };
 		7C1E5A0B29F0B1C200D4E8F1 /* Greeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C1E5A0A29F0B1C200D4E8F1 /* Greeter.swift */; };
 		7C1E5A1529F0B1C200D4E8F1 /* GreeterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C1E5A1429F0B1C200D4E8F1 /* GreeterTests.swift */; };
+		7C1E5A3529F0B1C200D4E8F1 /* GreeterSuite.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C1E5A3429F0B1C200D4E8F1 /* GreeterSuite.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -32,6 +33,7 @@
 		7C1E5A0A29F0B1C200D4E8F1 /* Greeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Greeter.swift; sourceTree = "<group>"; };
 		7C1E5A1029F0B1C200D4E8F1 /* HelloClassicTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HelloClassicTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		7C1E5A1429F0B1C200D4E8F1 /* GreeterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GreeterTests.swift; sourceTree = "<group>"; };
+		7C1E5A3429F0B1C200D4E8F1 /* GreeterSuite.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GreeterSuite.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -93,6 +95,7 @@
 			isa = PBXGroup;
 			children = (
 				7C1E5A1429F0B1C200D4E8F1 /* GreeterTests.swift */,
+				7C1E5A3429F0B1C200D4E8F1 /* GreeterSuite.swift */,
 			);
 			path = HelloClassicTests;
 			sourceTree = "<group>";
@@ -207,6 +210,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7C1E5A1529F0B1C200D4E8F1 /* GreeterTests.swift in Sources */,
+				7C1E5A3529F0B1C200D4E8F1 /* GreeterSuite.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
