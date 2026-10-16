@@ -41,15 +41,18 @@ struct Layer {
 impl Layer {
     fn reindex(&mut self) {
         self.ranges.sort_by_key(|(range, _)| range.start);
-        let mut max = 0;
-        self.max_ends = self
-            .ranges
-            .iter()
-            .map(|(range, _)| {
-                max = max.max(range.end);
-                max
-            })
-            .collect();
+        self.max_ends.clear();
+        self.reindex_ends(0);
+    }
+
+    /// Recomputes `max_ends` from `from` on.
+    fn reindex_ends(&mut self, from: usize) {
+        self.max_ends.truncate(from);
+        let mut max = self.max_ends.last().copied().unwrap_or(0);
+        self.max_ends.extend(self.ranges[from..].iter().map(|(range, _)| {
+            max = max.max(range.end);
+            max
+        }));
     }
 
     fn visible(&self, range: &Range<usize>) -> impl Iterator<Item = &(Range<usize>, HighlightStyle)> {
@@ -72,16 +75,27 @@ impl HighlightLayers {
         self.layers.iter().all(|layer| layer.ranges.is_empty())
     }
 
+    /// Moves the ranges past an edit. Called on every keystroke, and a
+    /// layer of semantic tokens has one range per identifier, so this
+    /// leaves alone the ranges that end before the edit and doesn't sort:
+    /// an edit maps offsets in order, so the ranges stay sorted by start.
     pub(crate) fn adjust_for_edit(&mut self, edited: &Range<usize>, new_len: usize) {
         for layer in &mut self.layers {
-            if layer.max_ends.last().is_none_or(|&end| end < edited.start) {
+            let first = layer.max_ends.partition_point(|&end| end < edited.start);
+            if first == layer.ranges.len() {
                 continue;
             }
-            layer.ranges.retain_mut(|(range, _)| {
-                *range = crate::decorations::adjust_range_for_edit(range, edited, new_len);
-                range.start < range.end
-            });
-            layer.reindex();
+            let mut kept = first;
+            for ix in first..layer.ranges.len() {
+                let range = crate::decorations::adjust_range_for_edit(&layer.ranges[ix].0, edited, new_len);
+                if range.start < range.end {
+                    layer.ranges[ix].0 = range;
+                    layer.ranges.swap(kept, ix);
+                    kept += 1;
+                }
+            }
+            layer.ranges.truncate(kept);
+            layer.reindex_ends(first);
         }
     }
 
@@ -218,6 +232,43 @@ mod tests {
                 (12..14, color(0.9)),
             ]
         );
+    }
+
+    #[test]
+    fn edits_keep_layers_sorted_without_sorting_again() {
+        // Overlapping and nested ranges, through edits before, inside,
+        // across and after them, compared with adjusting every range and
+        // sorting again.
+        let ranges: Vec<Range<usize>> = (0..60).map(|i| (i * 7 % 50)..(i * 7 % 50 + 1 + i % 9)).collect();
+        let mut layers = HighlightLayers::default();
+        let mut layer = Layer {
+            key: "tokens".into(),
+            priority: 0,
+            ranges: ranges.iter().map(|r| (r.clone(), color(0.1))).collect(),
+            max_ends: vec![],
+        };
+        layer.reindex();
+        layers.layers.push(layer);
+        let mut expected = layers.layers[0].ranges.clone();
+        for (edited, new_len) in [(10..10, 3), (20..26, 0), (0..2, 5), (55..70, 1), (30..31, 0), (5..40, 2), (200..200, 4)] {
+            layers.adjust_for_edit(&edited, new_len);
+            expected.retain_mut(|(range, _)| {
+                *range = crate::decorations::adjust_range_for_edit(range, &edited, new_len);
+                range.start < range.end
+            });
+            expected.sort_by_key(|(range, _)| range.start);
+            let layer = &layers.layers[0];
+            let starts = |list: &[(Range<usize>, HighlightStyle)]| list.iter().map(|(r, _)| r.clone()).collect::<Vec<_>>();
+            let mut got = starts(&layer.ranges);
+            let mut want = starts(&expected);
+            assert!(got.windows(2).all(|w| w[0].start <= w[1].start), "sorted after {edited:?}");
+            got.sort_by_key(|r| (r.start, r.end));
+            want.sort_by_key(|r| (r.start, r.end));
+            assert_eq!(got, want, "after {edited:?}");
+            let mut max = 0;
+            let ends: Vec<usize> = layer.ranges.iter().map(|(r, _)| { max = max.max(r.end); max }).collect();
+            assert_eq!(layer.max_ends, ends);
+        }
     }
 
     #[gpui::test]
