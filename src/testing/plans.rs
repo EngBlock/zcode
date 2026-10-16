@@ -97,37 +97,10 @@ impl PlanContents {
     }
 }
 
-/// The scheme file for `scheme`: shared first, then the user's.
-pub fn scheme_file(kind: &ProjectKind, scheme: &str) -> Option<PathBuf> {
-    let containers: Vec<PathBuf> = match kind {
-        ProjectKind::XcodeWorkspace(path) => {
-            std::iter::once(path.clone()).chain(crate::project::xcode_projects(kind)).collect()
-        }
-        ProjectKind::XcodeProject(path) => vec![path.clone()],
-        _ => return None,
-    };
-    let file = format!("{scheme}.xcscheme");
-    for container in &containers {
-        let shared = container.join("xcshareddata/xcschemes").join(&file);
-        if shared.is_file() {
-            return Some(shared);
-        }
-        if let Ok(users) = std::fs::read_dir(container.join("xcuserdata")) {
-            for user in users.flatten() {
-                let candidate = user.path().join("xcschemes").join(&file);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// The test plans a scheme lists (`<TestPlans>` in its test action), with
 /// their contents.
 pub fn scheme_test_plans(kind: &ProjectKind, scheme: &str) -> Vec<TestPlan> {
-    let Some(file) = scheme_file(kind, scheme) else { return vec![] };
+    let Some(file) = crate::scheme::scheme_file(kind, scheme) else { return vec![] };
     let Ok(xml) = std::fs::read_to_string(&file) else { return vec![] };
     // `X.xcodeproj/xcshareddata/xcschemes/S.xcscheme`: "container:" paths
     // are relative to the folder holding `X.xcodeproj`.

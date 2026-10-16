@@ -15,6 +15,7 @@ pub mod perf;
 pub mod perf_panel;
 pub mod picker;
 pub mod project;
+pub mod scheme;
 pub mod search;
 pub mod session;
 pub mod testing;
