@@ -541,6 +541,143 @@ def xcode_project_checks(z, samples, sim):
         check("Debug on iOS Simulator (breakpoint stop, LLDB console)", debug_on_simulator)
 
 
+def available_simulator_udid():
+    """An available iOS simulator, which the fake devices pretend to be so
+    xcodebuild can really build for them."""
+    out = subprocess.run(["xcrun", "simctl", "list", "devices", "available", "--json"], capture_output=True, text=True).stdout
+    devices = json.loads(out)["devices"]
+    return next(d["udid"] for runtime, ds in sorted(devices.items(), reverse=True) if ".iOS-" in runtime for d in ds)
+
+
+def device_checks(samples):
+    """Physical devices through a fake devicectl (scripts/fake_devicectl.py)
+    serving tests/fixtures/devicectl/list-devices.json. "Test iPhone" has an
+    iOS simulator's UDID, so xcodebuild builds for it and zcode's device path
+    (install, lock wait, launch, console, Stop, debugger attach) runs in full;
+    real hardware isn't needed."""
+    state = os.path.join(WORK, "fake-devicectl")
+    os.makedirs(state, exist_ok=True)
+    fake_udid = "00008150-0000000000000001"
+    udid = available_simulator_udid()
+    with open(os.path.join(ROOT, "tests", "fixtures", "devicectl", "list-devices.json")) as f:
+        devices_json = f.read().replace(fake_udid, udid)
+    devices_path = os.path.join(state, "devices.json")
+
+    def set_devices(drop=()):
+        document = json.loads(devices_json)
+        document["result"]["devices"] = [d for d in document["result"]["devices"]
+                                         if d["properties"]["state"]["name"] not in drop]
+        with open(devices_path + ".tmp", "w") as f:
+            json.dump(document, f)
+        os.rename(devices_path + ".tmp", devices_path)
+
+    def calls():
+        with open(os.path.join(state, "calls.jsonl")) as f:
+            return [json.loads(l) for l in f]
+
+    def processes():
+        try:
+            with open(os.path.join(state, "processes.json")) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return []
+
+    set_devices()
+    project = os.path.join(WORK, "Devices", "HelloZ")
+    shutil.copytree(os.path.join(samples, "HelloZ"), project)
+    z = Zcode(project, {"ZCODE_DEVICECTL": os.path.join(ROOT, "scripts", "fake_devicectl.py"), "FAKE_DEVICECTL_DIR": state})
+    try:
+        def menu():
+            s = z.wait_for(lambda s: any(l.startswith("Build |") for l in s["destination_menu"])
+                           and not any("watchOS" in l for l in s["destination_menu"]), timeout=90)
+            m = s["destination_menu"]
+            assert m[:5] == [
+                "iOS Devices | Test iPhone | iOS 27.2 · Connected via network",
+                "iOS Devices | Test iPhone (USB) | iOS 27.2 · Connected via USB",
+                "iOS Devices | Old iPhone (Unavailable) | iOS 18.6 · Unavailable",
+                "iOS Devices | Test iPad (Developer Mode disabled) | iOS 26.4 · Developer Mode disabled",
+                "Build | Any iOS Device (arm64) | Build only",
+            ], m
+            # The scheme builds for iOS only: no watch, TV or Vision Pro; simulators follow.
+            assert all(l.split(" | ")[0].endswith("Simulators") for l in m[5:]) and len(m) > 5, m
+
+        def hot_plug():
+            set_devices(drop=("Test iPhone (USB)",))
+            # Polled every few seconds while the window is active.
+            z.wait_for(lambda s: not any("(USB)" in l for l in s["destination_menu"]), timeout=20, interval=0.5)
+            set_devices()
+            z.wait_for(lambda s: any("(USB)" in l for l in s["destination_menu"]), timeout=20, interval=0.5)
+
+        def unavailable_device():
+            z.run("destination Test iPad", "keys cmd-r")
+            s = z.wait_for(finished, timeout=30)
+            assert "success: false" in s["phase"], s["phase"]
+            assert any("Developer Mode is disabled on Test iPad" in i for i in s["issues"]), s["issues"]
+            assert not any("install" in c["args"] for c in calls()), "nothing is built or installed"
+
+        def run_and_stop():
+            z.wait_for(lambda s: s["scheme_options"], timeout=60)
+            z.run("keys cmd-<", "wait 300", "edit-scheme argument -onDevice", "edit-scheme variable HELLOZ_MODE=device",
+                  "edit-scheme close")
+            open(os.path.join(state, "locked"), "w").close()
+            z.run(f"destination {udid}", "keys cmd-r")
+            assert z.dump()["destination"] == "Test iPhone (iOS 27.2)"
+            console_has(z, "Test iPhone is locked. Unlock it to continue…", timeout=300)
+            os.remove(os.path.join(state, "locked"))
+            s = console_has(z, "arguments: -onDevice HELLOZ_MODE=device", timeout=60)
+            assert s["phase"].startswith("Running"), s["phase"]
+            tail = s["console_tail"]
+            assert "HelloZ launched" in tail and not any("Launched application with" in l for l in tail), tail
+            install = next(c for c in calls() if c["args"][:3] == ["device", "install", "app"])
+            assert install["args"][3:5] == ["--device", udid] and install["args"][5].endswith("HelloZ.app"), install
+            launch = [c for c in calls() if c["args"][:3] == ["device", "process", "launch"]][-1]
+            assert "--console" in launch["args"] and "--start-stopped" not in launch["args"], launch
+            assert launch["args"][-2:] == ["dev.zcode.HelloZ", "-onDevice"], launch
+            assert launch["env"] == {"DEVICECTL_CHILD_HELLOZ_MODE": "device"}, launch
+            assert processes(), "the app runs"
+            z.run("keys cmd-.")
+            z.wait_for(lambda s: s["phase"] == "Stopped" and not processes(), timeout=15, interval=0.3)
+            build_log = open(z.dump()["last_log"]).read()
+            assert f"-destination id={udid} -skipMacroValidation -skipPackagePluginValidation -allowProvisioningUpdates -allowProvisioningDeviceRegistration build" in build_log
+
+        def debug_attach():
+            content = os.path.join(project, "HelloZ", "ContentView.swift")
+            line = line_of(content, 'print("HelloZ launched")')
+            z.run(f"open {content}:{line}", "wait 300", "keys cmd-\\", "keys cmd-r")
+            # The fake device isn't real, so lldb's attach fails; the commands
+            # are what attaches on hardware (verified by hand on an iPhone).
+            s = console_has(z, "(lldb) device process attach --pid 4242", timeout=300)
+            launch = [c for c in calls() if c["args"][:3] == ["device", "process", "launch"]][-1]
+            assert "--start-stopped" in launch["args"], launch
+            tail = s["console_tail"]
+            assert "Attaching to process 4242…" in tail, tail
+            assert "(lldb) device select FAD3EBA8-0000-0000-0000-000000000001" in tail, tail
+            assert "(lldb) settings set target.memory-module-load-level partial" in tail, tail
+            assert any(l.startswith('(lldb) settings set target.exec-search-paths "') and l.endswith('HelloZ.app"') for l in tail), tail
+            z.wait_for(lambda s: s["debugger"]["state"] == "Exited", timeout=120)
+            z.run("keys cmd-\\", "keys cmd-.", "wait 500")
+            z.wait_for(lambda s: not processes(), timeout=15, interval=0.3)
+
+        def signing_error():
+            z.run("destination generic:iOS", "keys cmd-b")
+            s = z.wait_for(finished, timeout=300)
+            assert "success: false" in s["phase"], s["phase"]
+            issues = s["issues"]
+            assert ('Error HelloZ.xcodeproj:0 Signing for "HelloZ" requires a development team. '
+                    "Set the target's Development Team (your team ID) in the project settings.") in issues, issues
+            assert s["navigator"] == "Issues"
+            assert "generic/platform=iOS" in open(s["last_log"]).read()
+
+        check("Devices: the destination menu lists devices by OS with their state, Any iOS Device, then simulators", menu)
+        check("Devices: plugging and unplugging a device updates the menu", hot_plug)
+        check("Devices: Run on an unavailable device says why without building", unavailable_device)
+        check("Devices: Run signs, installs, waits for unlock, launches with the scheme's arguments and environment; Stop terminates", run_and_stop)
+        check("Devices: Run with breakpoints launches suspended and attaches lldb through CoreDevice", debug_attach)
+        check("Devices: a signing error for Any iOS Device shows in the Issue navigator with where to fix it", signing_error)
+    finally:
+        z.quit()
+
+
 def classic_project_checks(z, samples):
     root = os.path.join(samples, "HelloClassic")
     app = os.path.join(root, "HelloClassic")
@@ -1114,6 +1251,9 @@ def main():
         xcode_project_checks(z, samples, sim)
     finally:
         z.quit()
+
+    print("Physical devices (fake devicectl):")
+    device_checks(samples)
 
     print("Group-based Xcode project (samples/HelloClassic):")
     z = Zcode(os.path.join(samples, "HelloClassic"))
