@@ -659,9 +659,10 @@ def classic_project_checks(z, samples):
     check("Run on My Mac gets the scheme's arguments and environment", run_mac_app_with_options)
     check("Edit Scheme: Test configuration, then everything undone restores the file byte for byte", edit_scheme_restores_file)
 
-    content = os.path.join(app, "ContentView.swift")
-
     def debug_mac_app():
+        # Moved into Views/ by the rename check (when it ran).
+        content = next(p for p in (os.path.join(app, "Views", "ContentView.swift"), os.path.join(app, "ContentView.swift"))
+                       if os.path.exists(p))
         launched = line_of(content, 'print("HelloClassic launched")')
         arguments = line_of(content, 'print("arguments:')
         z.run(f"open {content}:{launched}", "wait 300", "keys cmd-\\")
