@@ -126,3 +126,42 @@ fn xcodebuild_resolves_and_builds_added_packages() {
     assert!(!text.contains("productRef = ") && !text.contains("Tally") && !text.contains("ZKit"), "{text}");
     std::fs::remove_dir_all(&work).ok();
 }
+
+#[test]
+#[ignore]
+fn lists_tags_and_reads_products_offline() {
+    use zcode::packages::remote;
+    let work = std::env::temp_dir().join(format!("zcode-packages-remote-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).unwrap();
+    let repo = tally_repo(&work.canonicalize().unwrap());
+    let url = format!("file://{}", repo.display());
+    let refs = remote::list_refs(&url).unwrap();
+    assert_eq!(refs.releases.iter().map(|r| r.tag.as_str()).collect::<Vec<_>>(), ["2.0.0", "1.2.0", "1.1.0", "1.0.0"]);
+    assert_eq!(refs.default_branch.as_deref(), Some("main"));
+    assert_eq!(refs.branches, ["main", "develop"]);
+
+    let rule = Rule::UpToNextMinor("1.1.0".into());
+    let tag = remote::checkout_ref(&rule, &refs.releases).unwrap();
+    assert_eq!(tag, "1.1.0");
+    let manifest = remote::fetch_manifest(&url, &tag, false, &work.join("scratch")).unwrap();
+    assert_eq!(manifest.name, "Tally");
+    assert_eq!(manifest.products.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Tally", "TallyFormat"]);
+
+    // By commit: the develop branch's head.
+    let output = Command::new("/usr/bin/git").arg("-C").arg(&repo).args(["rev-parse", "develop"]).output().unwrap();
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let manifest = remote::fetch_manifest(&url, &sha, true, &work.join("scratch")).unwrap();
+    assert_eq!(manifest.products.len(), 2);
+    assert!(remote::list_refs("file:///nonexistent/Nope.git").unwrap_err().to_string().contains("does not appear to be a git repository"));
+    std::fs::remove_dir_all(&work).ok();
+}
+
+/// Needs network access (github.com).
+#[test]
+#[ignore]
+fn network_lists_a_public_packages_versions() {
+    let refs = zcode::packages::remote::list_refs(&zcode::packages::remote::normalize_url("apple/swift-argument-parser")).unwrap();
+    assert!(refs.releases.iter().any(|r| r.tag == "1.0.0"), "{:?}", refs.releases.first());
+    assert_eq!(refs.default_branch.as_deref(), Some("main"));
+}

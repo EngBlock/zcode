@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """End-to-end UI checks for zcode, driven through its debug control channel.
 
-    cargo build --release && python3 scripts/e2e.py [--simulator] [--only <text>]
+    cargo build --release && python3 scripts/e2e.py [--simulator] [--network] [--only <text>]
 
 Launches zcode on the sample projects with ZCODE_DEBUG_DIR set, sends
 keystrokes/actions, and asserts on the JSON state from `dump`. `--simulator`
 also builds, runs and debugs the iOS sample in a simulator (slower).
+Package checks use a local repository of the Tally fixture, so they run
+offline; `--network` also lists a public package's versions from GitHub.
 `--only <text>[,<text>…]` runs just the checks whose names contain one of them.
 """
 
@@ -1123,6 +1125,241 @@ def package_checks(z, samples):
     check("Swift package: Test… (⌥⌘U) with the Test action's own environment", package_test_with_options)
 
 
+def tally_repo():
+    """The Tally fixture package as a bare git repository with release tags."""
+    out = subprocess.run(["sh", os.path.join(ROOT, "tests", "fixtures", "packages", "make_repo.sh"), os.path.join(WORK, "repos")],
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def tag_release(repo, tag):
+    """Publishes a new release of the fixture repository."""
+    clone = os.path.join(WORK, f"tally-clone-{tag}")
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t.invalid"]
+    subprocess.run(git + ["clone", "-q", repo, clone], check=True)
+    subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", tag], cwd=clone, check=True)
+    subprocess.run(git + ["tag", tag], cwd=clone, check=True)
+    subprocess.run(git + ["push", "-q", "origin", "main", tag], cwd=clone, check=True)
+
+
+def packages_done(z, jobs, timeout=300):
+    """Waits until `jobs` package jobs have finished and none is running."""
+    return z.wait_for(lambda s: s["packages"]["completed"] >= jobs and not s["packages"]["busy"], timeout=timeout, interval=0.5)
+
+
+def add_package_sheet(z, url, *fields, products=()):
+    """Add Package Dependencies for `url`: rule `fields`, then the products step."""
+    z.run(f"package open {url}")
+    s = z.wait_for(lambda s: (s["packages"]["add_package"] or {}).get("versions") is not None
+                   or (s["packages"]["add_package"] or {}).get("error"), timeout=60, interval=0.3)
+    sheet = s["packages"]["add_package"]
+    assert not sheet["error"], sheet
+    z.run(*[f"package {f}" for f in fields], "package next")
+    s = z.wait_for(lambda s: (s["packages"]["add_package"] or {}).get("step") == "Products", timeout=120, interval=0.3)
+    z.run(*[f"package target {p}" for p in products])
+    return sheet, z.dump()["packages"]["add_package"]
+
+
+def package_dependency_checks(samples):
+    repo = tally_repo()
+    url = f"file://{repo}"
+    root = os.path.join(WORK, "Packages")
+    os.makedirs(root)
+    shutil.copytree(os.path.join(samples, "HelloClassic"), os.path.join(root, "HelloClassic"))
+    shutil.copytree(os.path.join(samples, "ZKit"), os.path.join(root, "ZKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), os.path.join(root, "LocalKit"))
+    classic = os.path.join(root, "HelloClassic")
+    pbxproj = os.path.join(classic, "HelloClassic.xcodeproj", "project.pbxproj")
+    resolved = os.path.join(classic, "HelloClassic.xcodeproj", "project.xcworkspace", "xcshareddata", "swiftpm", "Package.resolved")
+    uses = os.path.join(classic, "HelloClassic", "UsesPackages.swift")
+
+    def pins():
+        # xcodebuild deletes Package.resolved once nothing is left to pin.
+        if not os.path.exists(resolved):
+            return {}
+        return {p["identity"]: p["state"].get("version") for p in json.load(open(resolved))["pins"]}
+
+
+    z = Zcode(classic)
+    try:
+        def add_remote():
+            z.wait_for(lambda s: s["xcode_projects"] and s["scheme"], timeout=60, interval=0.3)
+            before = open(pbxproj).read()
+            sheet, products = add_package_sheet(z, url, products=["TallyFormat None"])
+            assert sheet["versions"] == ["2.0.0", "1.2.0", "1.1.0", "1.0.0"] and sheet["branches"] == ["main", "develop"], sheet
+            assert sheet["rule"] == "Up to Next Major Version" and sheet["resolves_to"] == "2.0.0", sheet
+            assert products["products"] == ["Tally: Library → HelloClassic", "TallyFormat: Library → None"], products
+            z.run("package add")
+            s = packages_done(z, 1)
+            assert not s["packages"]["issues"], s["packages"]["issues"]
+            assert s["packages"]["list"] == ["Tally 2.0.0 direct checkout"], s["packages"]
+            assert s["packages"]["tree"] == ["Package Dependencies", "  Tally"], s["packages"]["tree"]
+            text = open(pbxproj).read()
+            assert lines_kept(before, text), "only inserted lines"
+            assert 'XCRemoteSwiftPackageReference "Tally"' in text and "kind = upToNextMajorVersion;" in text, text
+            assert "/* Tally in Frameworks */ = {isa = PBXBuildFile; productRef = " in text and "TallyFormat" not in text
+            assert pins() == {"tally": "2.0.0"}, pins()
+
+        def add_local():
+            z.run(f"package local {os.path.join(root, 'LocalKit')}")
+            s = z.wait_for(lambda s: (s["packages"]["add_package"] or {}).get("step") == "Products", timeout=60, interval=0.3)
+            assert s["packages"]["add_package"]["products"] == ["ZKit: Library → HelloClassic", "zhello: Executable → None"], s["packages"]
+            z.run("package add")
+            s = packages_done(z, 2)
+            assert "LocalKit local direct checkout" in s["packages"]["list"], s["packages"]
+            assert 'relativePath = ../LocalKit;' in open(pbxproj).read()
+
+        def builds_with_packages():
+            with open(uses, "w") as f:
+                f.write("import Tally\nimport ZKit\n\nfunc tallied() -> String {\n    var tally = Tally()\n    tally.add()\n"
+                        "    return Tally.version + ZKit.Greeter(name: \"\\(tally.count)\").greeting()\n}\n")
+            z.run(f"new-file {uses}")
+            wait_file(pbxproj, lambda t: "UsesPackages.swift in Sources" in t)
+            z.run("keys cmd-b")
+            s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=400)
+            assert "success: true" in s["phase"], (s["phase"], s["issues"][:5])
+
+        def browse_and_jump_read_only():
+            checkout = z.dump()["packages"]["checkouts"]["tally"]
+            source = os.path.join(checkout, "Sources", "Tally", "Tally.swift")
+            z.run(f"reveal {source}", "wait 300")
+            rows = z.dump()["packages"]["tree"]
+            assert rows[:5] == ["Package Dependencies", "  LocalKit", "  Tally", "    Sources", "      Tally"] and "        Tally.swift" in rows, rows
+            # Jump to Definition from the app's code lands in the package,
+            # read-only, once the index knows the package.
+            z.wait_for(lambda s: s["lsp"] == "Ready" and not s["indexing"], timeout=400, interval=1)
+            line = line_of(uses, "var tally = Tally()")
+            z.run(f"open {uses}:{line}", keys_right(column_of(uses, "Tally()", 1)), "wait 1500")
+            s = None
+            for _ in range(20):
+                z.run("keys ctrl-cmd-j", "wait 1500")
+                s = z.dump()
+                if s["active"]["path"].endswith("Tally.swift"):
+                    break
+            assert "/checkouts/Tally/Sources/Tally/Tally.swift" in s["active"]["path"], s["active"]["path"]
+            assert s["active"]["read_only"], s["active"]
+            z.run("type zzz", "keys cmd-s", "wait 300")
+            s = z.dump()
+            assert not s["active"]["dirty"] and "zzz" not in open(s["active"]["path"]).read(), "package sources aren't edited"
+
+        def update_package():
+            tag_release(repo, "2.1.0")
+            z.run("action zcode::ResolvePackageVersions")
+            s = packages_done(z, 3)
+            assert pins() == {"tally": "2.0.0"}, "resolving keeps the pinned version"
+            z.run("package-menu update tally")
+            s = packages_done(z, 4)
+            assert pins() == {"tally": "2.1.0"}, pins()
+            assert "Tally 2.1.0 direct checkout" in s["packages"]["list"], s["packages"]["list"]
+
+        def resolve_error_in_issue_navigator():
+            shutil.move(repo, repo + ".away")
+            try:
+                z.run("action zcode::ResetPackageCaches")
+                s = packages_done(z, 5)
+                assert s["packages"]["issues"] and "Tally.git" in s["packages"]["issues"][0], s["packages"]
+                assert s["navigator"] == "Issues", s["navigator"]
+            finally:
+                shutil.move(repo + ".away", repo)
+            z.run("action zcode::ResolvePackageVersions")
+            s = packages_done(z, 6)
+            assert not s["packages"]["issues"] and "Tally 2.1.0 direct checkout" in s["packages"]["list"], s["packages"]
+
+        def remove_packages():
+            z.run("package-menu remove tally")
+            s = packages_done(z, 7)
+            z.run("package-menu remove localkit")
+            s = packages_done(z, 8)
+            assert s["packages"]["list"] == [] and s["packages"]["tree"] == [], s["packages"]
+            text = open(pbxproj).read()
+            assert "Tally" not in text and "LocalKit" not in text and "productRef = " not in text, text
+            assert pins() == {}, pins()
+
+        check("Packages: Add Package Dependencies lists tags, adds a product to a target, resolves", add_remote)
+        check("Packages: Add Local… adds a package folder", add_local)
+        check("Packages: the app builds against both packages (⌘B)", builds_with_packages)
+        check("Packages: browse a package's sources; Jump to Definition opens them read-only", browse_and_jump_read_only)
+        check("Packages: Resolve keeps the pin; Update Package moves to a new release", update_package)
+        check("Packages: a resolve error shows under Package Loading", resolve_error_in_issue_navigator)
+        check("Packages: Remove Package takes packages out of project.pbxproj", remove_packages)
+    finally:
+        z.quit()
+
+    kit = os.path.join(root, "ZKit")
+    manifest = os.path.join(kit, "Package.swift")
+    z = Zcode(kit)
+    try:
+        def swift_package_add():
+            z.wait_for(lambda s: s["scheme"], timeout=60)
+            _, products = add_package_sheet(z, url, "rule minor", "version 1.1.0", products=["TallyFormat None"])
+            assert products["targets"] == ["ZKit", "zhello", "ZKitTests"], products
+            z.run("package add")
+            s = packages_done(z, 1)
+            assert not s["packages"]["issues"], s["packages"]["issues"]
+            assert s["packages"]["list"] == ["Tally 1.1.0 direct checkout"] and s["packages"]["rules"] == ["Tally 1.1.0 – Next Minor"], s["packages"]
+            text = open(manifest).read()
+            assert f'.package(url: "{url}"' in text and '.product(name: "Tally", package: "Tally")' in text, text
+            assert json.load(open(os.path.join(kit, "Package.resolved")))["pins"][0]["state"]["version"] == "1.1.0"
+
+        def swift_package_builds_and_removes():
+            greeter = os.path.join(kit, "Sources", "ZKit", "Greeter.swift")
+            with open(greeter, "a") as f:
+                f.write("\nimport Tally\n\npublic func tallyVersion() -> String { Tally.version }\n")
+            z.run("keys cmd-b")
+            s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=400)
+            assert "success: true" in s["phase"], (s["phase"], s["issues"][:5])
+            with open(greeter) as f:
+                restored = f.read().split("\nimport Tally\n")[0]
+            with open(greeter, "w") as f:
+                f.write(restored)
+            z.run("package-menu remove tally")
+            s = packages_done(z, 2)
+            assert s["packages"]["list"] == [], s["packages"]
+            assert "Tally" not in open(manifest).read()
+
+        check("Swift package: Add Package Dependencies writes Package.swift (swift package add-dependency) and resolves", swift_package_add)
+        check("Swift package: builds with the package; Remove Package edits Package.swift", swift_package_builds_and_removes)
+    finally:
+        z.quit()
+
+    def workspace_packages():
+        ws_root = os.path.join(WORK, "PackagesWorkspace")
+        shutil.copytree(os.path.join(samples, "HelloClassic"), ws_root)
+        workspace = os.path.join(ws_root, "Classic.xcworkspace")
+        os.makedirs(workspace)
+        with open(os.path.join(workspace, "contents.xcworkspacedata"), "w") as f:
+            f.write('<?xml version="1.0" encoding="UTF-8"?>\n<Workspace\n   version = "1.0">\n   <FileRef\n'
+                    '      location = "group:HelloClassic.xcodeproj">\n   </FileRef>\n</Workspace>\n')
+        z = Zcode(workspace)
+        try:
+            z.wait_for(lambda s: s["xcode_projects"] and s["scheme"], timeout=60, interval=0.3)
+            add_package_sheet(z, url, "rule exact", "version 1.2.0")
+            z.run("package add")
+            s = packages_done(z, 1)
+            assert not s["packages"]["issues"] and s["packages"]["list"] == ["Tally 1.2.0 direct checkout"], s["packages"]
+            pinned = json.load(open(os.path.join(workspace, "xcshareddata", "swiftpm", "Package.resolved")))["pins"]
+            assert pinned[0]["state"]["version"] == "1.2.0", pinned
+            assert 'XCRemoteSwiftPackageReference "Tally"' in open(os.path.join(ws_root, "HelloClassic.xcodeproj", "project.pbxproj")).read()
+        finally:
+            z.quit()
+
+    check("Packages in an .xcworkspace: added to its project, resolved for the workspace", workspace_packages)
+
+    if "--network" in sys.argv:
+        def public_package_versions():
+            z = Zcode(os.path.join(root, "ZKit"))
+            try:
+                z.run("package open apple/swift-argument-parser")
+                s = z.wait_for(lambda s: (s["packages"]["add_package"] or {}).get("versions"), timeout=60, interval=0.5)
+                sheet = s["packages"]["add_package"]
+                assert sheet["url"] == "https://github.com/apple/swift-argument-parser" and "1.0.0" in sheet["versions"], sheet
+                z.run("package cancel")
+            finally:
+                z.quit()
+
+        check("Packages (network): versions of github.com/apple/swift-argument-parser", public_package_versions)
+
+
 def warm_open(samples, background=False, limit_ms=150):
     """Starts a resident zcode (a regular window, or `--background`), then
     times `zcode <project>` through it."""
@@ -1276,6 +1513,9 @@ def main():
         package_checks(z, samples)
     finally:
         z.quit()
+
+    print("Package dependencies (offline, a local repository of the Tally fixture):")
+    package_dependency_checks(samples)
 
     def package_options_persist():
         z = Zcode(os.path.join(samples, "ZKit"))

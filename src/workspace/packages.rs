@@ -589,11 +589,13 @@ impl Workspace {
         }
         serde_json::json!({
             "list": dependencies.packages.iter().map(|p| {
-                let mut line = format!("{} {}", p.name, p.state);
-                if p.local { line.push_str(" local"); }
-                if p.direct { line.push_str(" direct"); }
-                if p.checkout.is_some() { line.push_str(" checkout"); }
-                line.trim().to_string()
+                let flags = [(p.local, "local"), (p.direct, "direct"), (p.checkout.is_some(), "checkout")];
+                [p.name.as_str(), p.state.as_str()]
+                    .into_iter()
+                    .chain(flags.into_iter().filter(|(on, _)| *on).map(|(_, flag)| flag))
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
             }).collect::<Vec<_>>(),
             "rules": dependencies.packages.iter().filter_map(|p| Some(format!("{} {}", p.name, p.rule.as_ref()?.summary()))).collect::<Vec<_>>(),
             "checkouts": dependencies.packages.iter().filter_map(|p| Some((p.identity.clone(), p.checkout.clone()?))).collect::<HashMap<_, _>>(),
