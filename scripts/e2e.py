@@ -1494,7 +1494,8 @@ def pane_checks(samples):
     list: splits, one buffer in several panes (edits, undo, breakpoints,
     bookmarks, diamonds), the assistant, closing panes, and a relaunch."""
     project = os.path.realpath(os.path.join(WORK, "PaneKit"))
-    shutil.copytree(os.path.join(samples, "ZKit"), project)
+    # Not the package checks' build folder: its paths point at their copy.
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
     legacy = os.path.join(project, "Legacy")
     os.makedirs(legacy)
     header, implementation = os.path.join(legacy, "Legacy.h"), os.path.join(legacy, "Legacy.m")
@@ -1628,11 +1629,15 @@ def pane_checks(samples):
         # The assistant shows the definition; the editor stays where it was.
         # Right after sourcekit-lsp starts its answers can be empty: retry
         # like a user pressing ⌃⌥⌘J again.
-        for _ in range(12):
+        # (Under load, sourcekit-lsp can take minutes to load a fresh package.)
+        deadline, tries = time.time() + 240, 0
+        while time.time() < deadline:
+            tries += 1
             z.run(f"open {main}:{call_line}", "wait 200", keys_right(column), "keys ctrl-alt-cmd-j", "wait 1500")
             p = panes()
             if shown(p, 1)["path"] == main:
                 break
+        print(f"    answered after {tries} ⌃⌥⌘J")
         assert p["focused"] == 1 and shown(p, 1)["line"] == line_of(main, "func verify"), shape(p)
         assert shown(p, 0)["path"] == main and shown(p, 0)["line"] == call_line, shown(p, 0)
 
