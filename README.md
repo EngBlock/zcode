@@ -47,23 +47,37 @@ Measured on an M4 Max with macOS 27.2 and a release build.
 | | Time to first frame |
 |---|---|
 | `zcode <project>` while zcode is running (the usual case) | **~70 ms**; the CLI itself returns in ~50 ms |
-| Cold launch, welcome window | ~210–245 ms (8 ms of it before `main()`) |
-| Cold launch, project with 2 Swift tabs restored | ~235–255 ms |
+| Cold launch, welcome window | **~200 ms** (7 ms of it before `main()`) |
+| Cold launch, project with 2 Swift tabs restored | ~210–230 ms |
+| *Reference:* a minimal native AppKit app (one window, one line of text) | ~280 ms; ~158 ms with the open animation off |
+
+zcode reaches its first frame ~80 ms sooner than a minimal native AppKit app and
+~40 ms after that app's lower bound. `scripts/e2e.py` builds the reference app
+(`scripts/appkit_floor.swift`), times both the same way and fails if zcode is
+not faster.
 
 * **Single instance.** zcode keeps running when its last window closes, as Xcode and other Mac document apps do. `zcode <path>` hands the path to the running instance over a Unix socket and exits, and the warm instance opens the project window in ~50–75 ms. `ZCODE_NEW_INSTANCE=1` forces a separate process.
 * **Always warm.** `zcode --background` starts the resident instance with no window. Run it as a login item (System Settings ▸ General ▸ Login Items, or a LaunchAgent), and even the first open of the day takes the warm path.
-* Resident memory at first frame is ~106 MB for the welcome window and ~124 MB with a project open.
+* Resident memory at first frame is ~102 MB for the welcome window and ~120 MB with a project open.
 * The first launch after each rebuild also includes macOS scanning the new binary.
 
-* Cold start is faster than a bare GPUI Kit window
+* Two startup fixes make zcode faster than a bare GPUI Kit window
   (`cargo run --release --example gpui_baseline -- --quit --activate`, ~340–360
-  ms). zcode opens its windows hidden, turns off AppKit's window-open animation
-  and then shows them, which removes ~110 ms that `makeKeyAndOrderFront`
-  otherwise spends setting up the animation. What remains is framework
-  initialization: ~50 ms platform setup, ~30 ms component and theme init
-  (font enumeration), ~40 ms creating the Metal window and ~60 ms for the first
-  two frames. Profiling with `ZCODE_PAUSE_AT_START=<ms>` plus `sample`, or
-  `ZCODE_TRACE_STARTUP=1`, shows the breakdown.
+  ms):
+  * zcode opens its windows hidden, turns off AppKit's window-open animation
+    and then shows them. That removes ~110 ms that `makeKeyAndOrderFront`
+    otherwise spends setting up the animation.
+  * gpui-component's theme init listed every installed font (a ~35 ms
+    synchronous round trip to `fontd`) to check two names. A one-function
+    patch checks just those names (`vendor/gpui-component/ZCODE-PATCH.md`).
+* What remains is mostly AppKit and the window server: ~50 ms of platform
+  setup (Launch Services check-in, keyboard layout), ~25 ms creating the
+  window, and the first frame. After the first frame, the app's activation
+  (switching the menu bar, starting text input) keeps the main thread busy for
+  ~60 ms before the next frame. The benchmark counts that time, although the
+  first frame is already with the window server. `ZCODE_TRACE_STARTUP=1`
+  prints the phases. `ZCODE_PAUSE_AT_START=<ms>` lets a profiler attach before
+  startup begins.
 * sourcekit-lsp, scheme listing, simulator discovery, file scanning and git
   status all start after the window appears, on background threads.
 * Swift highlighting uses a compact tree-sitter query
@@ -94,11 +108,17 @@ src/
   search.rs         parallel find-in-workspace
   perf.rs           startup timing and memory sampling (proc_pid_rusage)
   debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR)
+vendor/
+  gpui-component/   gpui-component 0.7.3 plus a startup patch (ZCODE-PATCH.md)
+scripts/
+  e2e.py            end-to-end UI tests
+  appkit_floor.swift  minimal native AppKit app, the cold-launch reference
 ```
 
 The editor engine (rope, layout, tree-sitter highlighting, completion and
-hover UI) comes from `gpui-component`, which is Apache-2.0. zcode doesn't use
-any GPL code from Zed.
+hover UI) comes from `gpui-component`, which is Apache-2.0. zcode vendors it
+with one startup patch, described in `vendor/gpui-component/ZCODE-PATCH.md`.
+zcode doesn't use any GPL code from Zed.
 
 ## Testing
 
@@ -114,7 +134,7 @@ saved breakpoints can't leak in. It covers:
 * Open Quickly, definition, completion with placeholders, comment and undo, Document Items, find and references
 * the build-error → issue flow
 * run, test and debug for a Swift package
-* cold launch (< 300 ms to first frame, median of 3) and opening a project through an already-running instance (< 150 ms)
+* cold launch: first frame before the minimal native AppKit app and under 250 ms (medians of 5); opening a project through an already-running instance (< 150 ms)
 * every Xcode 27 default shortcut for the MVP commands (from
   `docs/xcode-inventory.md`) is bound to the matching zcode command in the live
   keymap

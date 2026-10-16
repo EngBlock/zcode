@@ -419,19 +419,32 @@ def main():
     sim = "--simulator" in sys.argv
     print("Cold launch (welcome window; the first launch after a rebuild includes macOS's binary scan):")
     env = dict(os.environ, ZCODE_NEW_INSTANCE="1")
-    subprocess.run([BINARY, "--startup-bench"], capture_output=True, env=env)
-    runs = []
-    for _ in range(3):
-        out = subprocess.run([BINARY, "--startup-bench"], capture_output=True, text=True, env=env).stdout
-        runs.append(json.loads(out.strip().splitlines()[-1]))
-    print("  " + json.dumps(runs[-1]))
+
+    def median_launch(command):
+        subprocess.run(command, capture_output=True, env=env)
+        runs = []
+        for _ in range(5):
+            out = subprocess.run(command, capture_output=True, text=True, env=env).stdout
+            runs.append(json.loads(out.strip().splitlines()[-1]))
+        return sorted(r["total_to_first_frame_ms"] for r in runs)[2], runs[-1]
+
+    zcode_ms, last = median_launch([BINARY, "--startup-bench"])
+    print("  " + json.dumps(last))
 
     def cold_start():
-        median = sorted(r["total_to_first_frame_ms"] for r in runs)[1]
-        print(f"    median of 3: {median:.0f} ms to first frame")
-        assert median < 300, f"{median:.0f} ms"
+        # Reference: a minimal native AppKit app (one window, one line of
+        # text), launched and timed the same way.
+        floor = os.path.join(WORK, "appkit_floor")
+        subprocess.run(["xcrun", "swiftc", "-O", os.path.join(ROOT, "scripts", "appkit_floor.swift"), "-o", floor],
+                       check=True, capture_output=True)
+        native_ms, _ = median_launch([floor])
+        bare_ms, _ = median_launch([floor, "--no-anim"])
+        print(f"    median of 5 to first frame: zcode {zcode_ms:.0f} ms · native AppKit window {native_ms:.0f} ms"
+              f" · native window without the open animation {bare_ms:.0f} ms")
+        assert zcode_ms < native_ms, "zcode should reach its first frame before a minimal native app"
+        assert zcode_ms < 250, f"{zcode_ms:.0f} ms"
 
-    check("Cold launch to first frame (< 300 ms)", cold_start)
+    check("Cold launch: first frame before a minimal native AppKit app, and < 250 ms", cold_start)
 
     samples = os.path.join(WORK, "samples")
     warm_open_check_pending = True
