@@ -88,8 +88,10 @@ mod anchors;
 mod annotations;
 mod gutter;
 mod highlights;
+mod edits;
 mod history;
 mod modal;
+pub mod multibuffer;
 #[cfg(test)]
 mod test_support;
 mod ui;
@@ -118,6 +120,7 @@ pub use gutter::{
     PaintedGutterItem,
 };
 pub use cursor::Selection;
+pub use edits::BufferEdit;
 pub use highlights::HighlightPriority;
 pub use modal::{CursorShape, KeystrokeInterceptor};
 pub use decorations::{

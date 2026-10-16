@@ -292,3 +292,60 @@ editing APIs (`set_selected_range`, `add_selection` for visual block,
 `edit`, `transact` for one-step undo of `dw`, `undo`), this is what Vim mode
 (2.7) needs: normal, insert, visual (character, line, block) and replace
 modes are states of the layer, not of the engine.
+
+### Edit events and read-only ranges (`edits.rs`)
+
+```rust
+cx.subscribe(&editor, |_, edit: &BufferEdit, cx| { /* edit.range (before), edit.new_text */ });
+editor.set_read_only_ranges(vec![separator], cx);
+```
+
+`BufferEdit` reports every replacement in order (typing, commands, undo,
+redo, and `set_value` as one whole-text edit). Read-only ranges refuse the
+user's edits that replace any of them or insert strictly inside them;
+inserting at their edges works, and like read-only mode they don't limit
+undo or the programmatic APIs. Both are what a multibuffer needs, and
+`BufferEdit` is also what incremental LSP sync needs (zcode still sends
+whole documents).
+
+### Multibuffers: the excerpt model (`multibuffer.rs`, stub for 2.5)
+
+A multibuffer is one editor showing editable excerpts of many files. The
+model is implemented and tested; the view isn't built yet.
+
+```rust
+let mut mb = MultiBuffer::new();
+let id = mb.push_excerpt(SourceId(file_editor.entity_id().as_u64()), range, "Sources/App.swift");
+let text = mb.compose(|source, range| /* that source's text in range */);
+mb.composed_ranges();  mb.separators();            // excerpts and the newlines between them
+mb.to_source(offset);  mb.to_composed(source, offset);
+mb.edit_composed(&ComposedEdit { .. })  -> Result<SourceEdit, EditError>   // typed in the multibuffer
+mb.edit_source(&SourceEdit { .. })      -> Vec<ComposedEdit>               // changed in the file
+```
+
+How 2.5 hosts it, with what exists now (the end-to-end test
+`an_editor_hosts_excerpts_and_edits_reach_the_source` does the first three):
+
+1. An `EditorState` whose text is `mb.compose(..)`, with the separators as
+   read-only ranges, so no edit spans two excerpts.
+2. Its `BufferEdit`s go through `edit_composed` to the file's own editor
+   (`edit`, so they join that file's undo history and dirty state); the
+   file editors' `BufferEdit`s go through `edit_source` back into the
+   multibuffer (`edit`, which read-only ranges don't limit). Events arrive
+   after the edit that caused them, so each side keeps the edits it
+   forwarded and drops them when they echo back.
+3. Excerpt ranges follow edits on both sides (the model updates them), and
+   anchors in the multibuffer follow its own edits as in any editor.
+4. Headers: blocks (`set_blocks`) under the last row of the previous
+   excerpt; the first excerpt's header needs a block *above* row 0, a small
+   addition to `Block` (an `above` flag laid out before the line).
+5. Line numbers: the engine's numbers count the multibuffer's rows; a
+   gutter lane over the numbers paints each row's source line number
+   (`to_source`), with the engine's numbers turned off.
+6. Diagnostics, search results and references map in with `to_composed`;
+   go-to-definition and other LSP requests map out with `to_source` and go
+   to the file's language server document.
+
+What it doesn't cover yet: one undo step spanning several files (each file
+undoes on its own), and excerpts that grow when context is expanded
+(remove and re-add the excerpt).

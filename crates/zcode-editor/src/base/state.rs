@@ -186,6 +186,10 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) cursor_shape: crate::modal::CursorShape,
     pub(crate) keystroke_interception: Option<Subscription>,
     pub(crate) extra_key_context: Option<SharedString>,
+    /// Ranges the user can't edit (`edits.rs`).
+    pub(crate) read_only_ranges: crate::edits::ReadOnlyRanges,
+    /// Set while a programmatic API edits, so read-only ranges let it.
+    pub(crate) programmatic_edit: bool,
     pub(super) inline_tokens: Option<Box<super::inline_tokens::InlineTokenStore>>,
     pub(super) pending_token: Option<super::InlineToken>,
     pub(super) replaying_history: bool,
@@ -599,6 +603,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             cursor_shape: Default::default(),
             keystroke_interception: None,
             extra_key_context: None,
+            read_only_ranges: Default::default(),
+            programmatic_edit: false,
             inline_tokens: None,
             pending_token: None,
             replaying_history: false,
@@ -874,8 +880,16 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub(super) fn with_edits_allowed(&mut self, f: impl FnOnce(&mut Self)) {
         let (was_disabled, was_readonly) = (self.disabled, self.readonly);
         (self.disabled, self.readonly) = (false, false);
+        let was_programmatic = std::mem::replace(&mut self.programmatic_edit, true);
         f(self);
+        self.programmatic_edit = was_programmatic;
         (self.disabled, self.readonly) = (was_disabled, was_readonly);
+    }
+
+    /// Whether a read-only range refuses an edit of `range`: only the user's
+    /// edits, never undo or the programmatic APIs.
+    pub(crate) fn refuses_edit(&self, range: &Range<usize>) -> bool {
+        !self.programmatic_edit && !self.replaying_history && self.read_only_ranges.refuses(range)
     }
 
     /// Insert text at the current cursor position.
@@ -3636,6 +3650,9 @@ impl<M: InputModeKind> InputBaseState<M> {
         if !self.is_editable() || edits.is_empty() {
             return;
         }
+        if edits.iter().any(|(range, _)| self.refuses_edit(range)) {
+            return;
+        }
 
         // Every edit invalidates provider responses for the previous document,
         // including deletion and indentation which do not trigger completion.
@@ -3709,6 +3726,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             self.text.replace(range.clone(), new_text);
 
             self.anchors.adjust_for_edit(range, new_text.len());
+            self.read_only_ranges.adjust_for_edit(range, new_text.len());
+            cx.emit(crate::BufferEdit { range: range.clone(), new_text: new_text.to_string() });
             self.highlight_layers.adjust_for_edit(range, new_text.len());
             M::adjust_annotations(self, range, new_text.len());
             recorded |= self.push_history(
@@ -3963,6 +3982,17 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             }))
             .unwrap_or(self.selected_range());
         let range = self.normalize_token_range(range);
+        if self.refuses_edit(&range) {
+            // A delete expanded the caret over what it would remove; put the
+            // caret back where the user left it.
+            match requested_intent {
+                Some(EditIntent::Backspace) => self.set_cursor_to(range.end),
+                Some(EditIntent::DeleteForward) => self.set_cursor_to(range.start),
+                _ => {}
+            }
+            cx.notify();
+            return;
+        }
 
         // Skip-over as a pure cursor move: a typed closer that already follows
         // the cursor moves past it without touching text or history, so Undo
@@ -4091,6 +4121,8 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             M::reset_annotations(self);
         } else {
             self.anchors.adjust_for_edit(&range, new_text.len());
+            self.read_only_ranges.adjust_for_edit(&range, new_text.len());
+            cx.emit(crate::BufferEdit { range: range.clone(), new_text: new_text.to_string() });
             self.highlight_layers.adjust_for_edit(&range, new_text.len());
             M::adjust_annotations(self, &range, new_text.len());
         }
@@ -4211,6 +4243,12 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             }))
             .unwrap_or(self.selected_range());
         let range = self.normalize_token_range(range);
+        if self.refuses_edit(&range) {
+            if starts_composition {
+                self.undo_manager.commit_transaction();
+            }
+            return;
+        }
 
         let auto_closed_pairs_before = self.mode.auto_closed_pairs().clone();
         let old_text = self.text.clone();
@@ -4234,6 +4272,8 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
         }
 
         self.anchors.adjust_for_edit(&range, new_text.len());
+        self.read_only_ranges.adjust_for_edit(&range, new_text.len());
+        cx.emit(crate::BufferEdit { range: range.clone(), new_text: new_text.to_string() });
         self.highlight_layers.adjust_for_edit(&range, new_text.len());
         M::adjust_annotations(self, &range, new_text.len());
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
