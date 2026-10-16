@@ -130,6 +130,11 @@ XCODE_SHORTCUTS = [
     ("cmd-y", "zcode::ToggleBreakpointsActive", "Debug ▸ Activate Breakpoints"),
     ("cmd-alt-\\", "zcode::CreateSymbolicBreakpoint", "Debug ▸ Breakpoints ▸ Create Symbolic Breakpoint…"),
     ("cmd-k", "zcode::ClearConsole", "Debug ▸ Debug Workflow ▸ Clear Console"),
+    ("ctrl-\\", "zcode::NextChange", "Navigate ▸ Jump to Next Change"),
+    ("ctrl-shift-\\", "zcode::PreviousChange", "Navigate ▸ Jump to Previous Change"),
+    ("ctrl-shift-cmd-a", "zcode::ShowAuthors", "Editor ▸ Authors"),
+    ("cmd-alt-c", "zcode::Commit", "Integrate ▸ Commit…"),
+    ("cmd-alt-x", "zcode::Pull", "Integrate ▸ Pull…"),
 ]
 
 
@@ -1909,6 +1914,255 @@ def bookmark_checks(samples):
     finally:
         z.quit()
 
+# git in tests: never the user's global or system configuration (no
+# signing, hooks or aliases), and only on temporary repositories.
+GIT_ENV = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True, env=GIT_ENV).stdout
+
+
+def init_repo(path):
+    git(path, "init", "-q", "-b", "main")
+    git(path, "config", "user.name", "E2E Author")
+    git(path, "config", "user.email", "e2e@example.com")
+    git(path, "config", "commit.gpgsign", "false")
+
+
+def git_checks(samples):
+    """Source control on a copy of ZKit made a git repository, with a local
+    bare repository as its `origin`: change bars as you type, the hunk
+    popover, inline blame and Authors, Code Review, the commit sheet,
+    branches, Push, Fetch and Pull, and changes made outside zcode."""
+    project = os.path.realpath(os.path.join(WORK, "GitKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    with open(os.path.join(project, ".gitignore"), "w") as f:
+        f.write(".build/\n.swiftpm/\n")
+    init_repo(project)
+    git(project, "add", "-A")
+    git(project, "commit", "-q", "-m", "Initial commit")
+    origin = os.path.realpath(os.path.join(WORK, "GitKitOrigin.git"))
+    git(WORK, "init", "-q", "--bare", "-b", "main", origin)
+    git(project, "remote", "add", "origin", origin)
+    git(project, "push", "-q", "-u", "origin", "main")
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    rel = "Sources/ZKit/Greeter.swift"
+    original = open(greeter).read()
+    name_line, init_line = line_of(greeter, "public let name"), line_of(greeter, "public init")
+    z = Zcode(project)
+
+    def g(s=None):
+        return (s or z.dump())["git"]
+
+    def hunks(s=None):
+        return [(h["kind"], h["lines"][0], h["staging"]) for h in g(s)["hunks"]["list"]]
+
+    def settled(s):
+        return g(s)["busy"] is None
+
+    def bars_follow_typing():
+        z.wait_for(lambda s: g(s)["branch"] == "main" and g(s)["root"] == project, timeout=30)
+        z.run(f"open {greeter}:{name_line}", "wait 300")
+        z.wait_for(lambda s: g(s)["hunks"] and g(s)["hunks"]["tracked"], timeout=15, interval=0.3)
+        assert hunks() == [], hunks()
+        # Modify a line, add one, delete one: the bars follow without a save.
+        z.run("keys cmd-right", "type  // edited", "wait 300")
+        s = z.wait_for(lambda s: hunks(s) == [("Modified", name_line, "Unstaged")], timeout=10, interval=0.2)
+        assert not os.path.exists(greeter + ".orig") and open(greeter).read() == original, "nothing saved"
+        assert [b["line"] for b in g(s)["hunks"]["bars"]] == [name_line], g(s)["hunks"]["bars"]
+        z.run(f"open {greeter}:{init_line}", "keys cmd-right", "keys enter", "type let added = 1", "wait 300")
+        z.wait_for(lambda s: ("Added", init_line + 1, "Unstaged") in hunks(s), timeout=10, interval=0.2)
+        z.run(f"open {greeter}:1", "keys cmd-x", "wait 300")
+        s = z.wait_for(lambda s: hunks(s)[:1] == [("Deleted", 1, "Unstaged")], timeout=10, interval=0.2)
+        assert len(hunks(s)) == 3, hunks(s)
+        z.run("screenshot " + os.path.join(WORK, "git-bars.png"))
+
+    def popover_discard_and_undo():
+        # Click the modified line's bar: the popover shows the change.
+        s = z.dump()
+        bar = next(b for b in g(s)["hunks"]["bars"] if b["line"] == name_line - 1)
+        z.run(f"click {bar['x']} {bar['y']}", "wait 300")
+        p = g()["popover"]
+        assert p and p["kind"] == "Modified" and p["new"][0].endswith("// edited") and not p["old"][0].endswith("// edited"), p
+        z.run("screenshot " + os.path.join(WORK, "git-popover.png"))
+        z.run("git popover discard", "wait 300")
+        s = z.wait_for(lambda s: [h[0] for h in hunks(s)] == ["Deleted", "Added"], timeout=10, interval=0.2)
+        assert "// edited" not in s["active"]["text"] and not s["modal_open"], hunks(s)
+        # ⌘Z brings the change back, and its bar.
+        z.run("keys cmd-z", "wait 300")
+        z.wait_for(lambda s: [h[0] for h in hunks(s)] == ["Deleted", "Modified", "Added"], timeout=10, interval=0.2)
+        # Next / Previous Change go from hunk to hunk.
+        z.run(f"open {greeter}:1", "keys ctrl-\\", "wait 200")
+        assert z.dump()["active"]["line"] == name_line - 1, z.dump()["active"]["line"]
+        z.run("keys ctrl-\\", "wait 200")
+        assert z.dump()["active"]["line"] == init_line, z.dump()["active"]["line"]
+        z.run("keys ctrl-shift-\\", "wait 200")
+        assert z.dump()["active"]["line"] == name_line - 1
+
+    def stage_and_unstage_a_hunk():
+        # Staged from the popover: the index has the editor's line, drawn hollow.
+        z.run("keys cmd-s", "wait 300")
+        modified = next(i for i, h in enumerate(hunks()) if h[0] == "Modified")
+        bar = next(b for b in g()["hunks"]["bars"] if b["line"] == hunks()[modified][1])
+        z.run(f"click {bar['x']} {bar['y']}", "wait 300", "git popover stage")
+        s = z.wait_for(lambda s: settled(s) and ("Modified", name_line - 1, "Staged") in hunks(s), timeout=15, interval=0.3)
+        cached = git(project, "diff", "--cached")
+        assert "// edited" in cached and "let added" not in cached, cached
+        assert f"M {rel}" in g(s)["staged"] and f"M {rel}" in g(s)["unstaged"], g(s)
+        z.run(f"git unstage-hunk {modified}", "wait 300")
+        z.wait_for(lambda s: settled(s) and ("Modified", name_line - 1, "Unstaged") in hunks(s), timeout=15, interval=0.3)
+        assert git(project, "diff", "--cached") == ""
+
+    def inline_blame_and_authors():
+        z.run("git inline-blame on", f"open {greeter}:{init_line + 3}", "wait 200")
+        s = z.wait_for(lambda s: g(s)["blame"]["inline"], timeout=20, interval=0.3)
+        inline = g(s)["blame"]["inline"]
+        assert inline["line"] == init_line + 3 and inline["text"].startswith("You, ") and inline["text"].endswith("• Initial commit"), inline
+        # Typing hides it; it comes back once the blame is read again.
+        z.run("type x", "wait 100")
+        assert not g()["blame"]["inline"], g()["blame"]
+        z.run("keys backspace")
+        z.wait_for(lambda s: g(s)["blame"]["inline"] and not g(s)["blame"]["stale"], timeout=20, interval=0.3)
+        # Editor ▸ Authors: names in the gutter; edited lines aren't committed yet.
+        z.run("keys ctrl-shift-cmd-a", "wait 300")
+        s = z.wait_for(lambda s: g(s)["blame"]["painted_authors"], timeout=20, interval=0.3)
+        authors = g(s)["blame"]["authors"]
+        assert authors[name_line - 2] == "Not Committed Yet" and authors[init_line + 3] == "E2E Author", authors[:12]
+        z.run("screenshot " + os.path.join(WORK, "git-authors.png"))
+        first = g(s)["blame"]["painted_authors"][0]
+        z.run(f"click {first['x']} {first['y']}", "wait 300")
+        assert z.dump()["modal_open"]
+        z.run("keys escape", "keys ctrl-shift-cmd-a", "wait 300")
+        assert not g()["show_authors"] and not g()["blame"]["painted_authors"]
+
+    def code_review():
+        z.run("action zcode::SideBySideComparison", f"open {greeter}:{name_line}", "keys alt-shift-cmd-enter", "wait 500")
+        s = z.dump()
+        assert s["panes"]["list"][0]["active"] == "Greeter.swift (Changes)", s["panes"]["list"][0]
+        d = z.wait_for(lambda s: g(s)["diff"] and len(g(s)["diff"]["hunks"]) == 3, timeout=10, interval=0.3)["git"]["diff"]
+        assert d["side_by_side"] and d["base_text"] == original, d["hunks"]
+        # The added line pads HEAD's side; the deleted one pads the local side.
+        assert d["base_blocks"] and d["current_blocks"], d
+        z.run("screenshot " + os.path.join(WORK, "git-diff-side-by-side.png"))
+        # Typing on the local side edits the file and the comparison follows.
+        z.run("keys cmd-down", "type // review", "wait 400")
+        d = z.wait_for(lambda s: len(g(s)["diff"]["hunks"]) == 4, timeout=10, interval=0.3)["git"]["diff"]
+        assert "Greeter.swift" in z.dump()["buffers"]
+        # Inline: deleted lines are blocks under the line before them (the
+        # deleted first line, and the modified line's old text).
+        z.run("action zcode::InlineComparison", "wait 300")
+        d = g()["diff"]
+        assert not d["side_by_side"] and d["current_blocks"] == [[1, 1], [1, 1]], d["current_blocks"]
+        z.run("screenshot " + os.path.join(WORK, "git-diff-inline.png"))
+        z.run("action zcode::SideBySideComparison", "keys cmd-z", "keys alt-shift-cmd-enter", "wait 400")
+        s = z.dump()
+        assert s["panes"]["list"][0]["active"] == "Greeter.swift" and "// review" not in s["active"]["text"], s["panes"]["list"][0]
+
+    def commit_sheet():
+        z.run("keys cmd-alt-c", "wait 500")
+        c = z.wait_for(lambda s: g(s)["commit_sheet"] and g(s)["commit_sheet"]["unstaged"] is not None, timeout=15, interval=0.3)["git"]["commit_sheet"]
+        assert c["files"] == [f"Unstaged M {rel}"] and len(c["unstaged"]) == 3, c
+        assert not c["can_commit"]
+        # Stage one hunk, write a message, commit.
+        z.run("git commit stage-hunk 1", "wait 300")
+        c = z.wait_for(lambda s: settled(s) and len(g(s)["commit_sheet"]["staged"] or []) == 1, timeout=15, interval=0.3)["git"]["commit_sheet"]
+        assert c["files"] == [f"Partial M {rel}"] and len(c["unstaged"]) == 2, c
+        z.run("type Edit the name line", "wait 200")
+        c = g()["commit_sheet"]
+        assert c["message"] == "Edit the name line" and c["can_commit"], c
+        z.run("screenshot " + os.path.join(WORK, "git-commit.png"))
+        z.run("git commit commit", "wait 300")
+        z.wait_for(lambda s: settled(s) and g(s)["last_commit"], timeout=20, interval=0.3)
+        log = git(project, "log", "--format=%s")
+        assert log.splitlines()[0] == "Edit the name line", log
+        assert "// edited" in git(project, "show", f"HEAD:{rel}") and "let added" not in git(project, "show", f"HEAD:{rel}")
+        # The committed change's bar goes; the others stay.
+        z.wait_for(lambda s: [h[0] for h in hunks(s)] == ["Deleted", "Added"], timeout=15, interval=0.3)
+        # Amend starts from the last message and keeps one commit.
+        z.run("keys cmd-alt-c", "wait 500", "git commit toggle-file " + rel, "wait 300")
+        z.wait_for(lambda s: settled(s) and g(s)["commit_sheet"]["files"] == [f"Staged M {rel}"], timeout=15, interval=0.3)
+        z.run("git commit amend on", "wait 500")
+        c = z.wait_for(lambda s: g(s)["commit_sheet"]["message"] == "Edit the name line", timeout=10, interval=0.3)["git"]["commit_sheet"]
+        z.run("git commit message Edit the greeter\\n\\nAmended.", "git commit commit", "wait 300")
+        z.wait_for(lambda s: settled(s) and not g(s)["staged"] and not g(s)["unstaged"], timeout=20, interval=0.3)
+        assert git(project, "log", "--format=%B", "-1").strip() == "Edit the greeter\n\nAmended."
+        assert git(project, "rev-list", "--count", "HEAD").strip() == "2"
+        assert hunks() == [], hunks()
+
+    def branches_and_push():
+        z.run("action zcode::NewBranch", "wait 300", "type topic", "wait 300", "keys enter")
+        z.wait_for(lambda s: settled(s) and g(s)["branch"] == "topic", timeout=15, interval=0.3)
+        z.run(f"open {greeter}:{name_line}", "keys cmd-right", "type  // topic", "keys cmd-s", "wait 300",
+              "keys cmd-alt-c", "wait 500", "git commit toggle-file " + rel, "wait 500")
+        z.wait_for(lambda s: settled(s) and g(s)["commit_sheet"]["files"] == [f"Staged M {rel}"], timeout=15, interval=0.3)
+        z.run("git commit message On the topic branch", "git commit commit", "wait 300")
+        z.wait_for(lambda s: settled(s) and not g(s)["staged"], timeout=20, interval=0.3)
+        # Push… offers a new remote branch named after the local one.
+        z.run("action zcode::Push", "wait 300")
+        r = g()["remote_sheet"]
+        assert r["action"] == "Push" and r["selected"] == "origin/topic" and "origin/main" in r["choices"], r
+        z.run("git remote confirm", "wait 300")
+        s = z.wait_for(lambda s: settled(s) and g(s)["upstream"] == "origin/topic", timeout=30, interval=0.3)
+        assert git(origin, "log", "--format=%s", "-1", "topic").strip() == "On the topic branch"
+        # Switch back to main from the picker: the file goes back too.
+        z.run("action zcode::SwitchBranch", "wait 300", "type main", "wait 300", "keys enter")
+        z.wait_for(lambda s: settled(s) and g(s)["branch"] == "main" and "// topic" not in s["active"]["text"], timeout=20, interval=0.3)
+        assert "* main" in g()["branches"] and "topic" in g()["branches"], g()["branches"]
+
+    def fetch_and_pull():
+        other = os.path.realpath(os.path.join(WORK, "GitKitOther"))
+        git(WORK, "clone", "-q", origin, other)
+        git(other, "config", "user.name", "Someone Else")
+        git(other, "config", "user.email", "else@example.com")
+        git(other, "config", "commit.gpgsign", "false")
+        with open(os.path.join(other, "Sources", "ZKit", "Greeter.swift"), "a") as f:
+            f.write("// from another clone\n")
+        git(other, "commit", "-q", "-am", "From another clone")
+        git(other, "push", "-q", "origin", "main")
+        z.run("action zcode::FetchChanges", "wait 300")
+        z.wait_for(lambda s: settled(s) and g(s)["behind"] == 1, timeout=30, interval=0.3)
+        z.run("keys cmd-alt-x", "wait 300")
+        r = g()["remote_sheet"]
+        assert r["action"] == "Pull" and r["selected"] == "origin/main", r
+        z.run("git remote confirm", "wait 300")
+        s = z.wait_for(lambda s: settled(s) and g(s)["behind"] == 0 and "// from another clone" in s["active"]["text"], timeout=30, interval=0.3)
+        assert not s["active"]["dirty"]
+        # Inline blame names the other author's line.
+        last = len(s["active"]["text"].splitlines())
+        z.run(f"open {greeter}:{last}", "wait 200")
+        z.wait_for(lambda s: g(s)["blame"]["inline"] and g(s)["blame"]["inline"]["text"].startswith("Someone Else, "), timeout=20, interval=0.3)
+
+    def outside_changes():
+        # Edited and committed in a terminal: the status and bars catch up.
+        with open(greeter, "a") as f:
+            f.write("// outside\n")
+        z.wait_for(lambda s: "// outside" in s["active"]["text"] and hunks(s) == [("Added", len(s["active"]["text"].splitlines()), "Unstaged")],
+                   timeout=20, interval=0.5)
+        git(project, "commit", "-q", "-am", "Outside zcode")
+        z.wait_for(lambda s: hunks(s) == [] and not g(s)["unstaged"], timeout=20, interval=0.5)
+        # Discard Changes on a file from the navigator.
+        z.run("type // scratch", "keys cmd-s", "wait 300")
+        z.wait_for(lambda s: g(s)["unstaged"] == [f"M {rel}"], timeout=10, interval=0.3)
+        z.run("keys cmd-2", "wait 300", "screenshot " + os.path.join(WORK, "git-navigator.png"))
+        assert z.dump()["navigator"] == "SourceControl"
+        z.run(f"git discard {greeter}", "wait 300")
+        z.wait_for(lambda s: settled(s) and not g(s)["unstaged"] and "// scratch" not in s["active"]["text"], timeout=15, interval=0.3)
+        z.run("keys cmd-1")
+
+    try:
+        check("Git: change bars follow typing (modified, added, deleted) against HEAD, before a save", bars_follow_typing)
+        check("Git: a bar's popover shows the change; Discard Change, ⌘Z; ⌃\\\\ and ⌃⇧\\\\ step through changes", popover_discard_and_undo)
+        check("Git: Stage Change from the popover writes the index (hollow bar); Unstage", stage_and_unstage_a_hunk)
+        check("Git: inline blame on the cursor's line hides while typing; Editor ▸ Authors (⌃⇧⌘A) and its commit popover", inline_blame_and_authors)
+        check("Git: Code Review (⌥⇧⌘↩) side by side and inline, edited on its local side", code_review)
+        check("Git: Commit… (⌥⌘C) with one hunk staged, then Amend", commit_sheet)
+        check("Git: New Branch, a commit, Push… to a new remote branch, Switch Branch back", branches_and_push)
+        check("Git: Fetch Changes and Pull… (⌥⌘X) from a local origin; the open file reloads", fetch_and_pull)
+        check("Git: a commit made outside zcode clears the bars; Discard Changes on a file", outside_changes)
+    finally:
+        z.quit()
+
 
 def tally_repo():
     """The Tally fixture package as a bare git repository with release tags."""
@@ -2313,6 +2567,9 @@ def main():
 
     print("Editor panes (a copy of samples/ZKit):")
     pane_checks(samples)
+
+    print("Source control (a copy of samples/ZKit in a new repository, with a local origin):")
+    git_checks(samples)
 
     print("Package dependencies (offline, a local repository of the Tally fixture):")
     package_dependency_checks(samples)
