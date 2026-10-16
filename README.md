@@ -35,6 +35,11 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | Running on a simulator boots it, opens Simulator.app, installs and launches the app, and streams the app's stdout/stderr into the console. Mac executables and Swift packages run directly. | — |
 | | Build output streams into the debug area as a condensed Xcode-style activity log, or as the raw `xcodebuild` log. Errors and warnings appear inline, in the Issue navigator and with next/previous issue keys. | ⇧⌘Y, ⇧⌘C, ⌘K, ⌘' ⌘" |
 | | Test results from XCTest and Swift Testing populate the Test navigator, and Swift Testing failures appear as issues at the failing line. On a simulator, unit tests run inside the host app by injecting the test bundle (XCTest's own hosted-test mechanism). That is faster than `xcodebuild test` and doesn't depend on its test-runner service. | ⌘U |
+| **Testing** | Test diamonds in the editor gutter on XCTest classes and `test…` methods, Swift Testing `@Suite` types and `@Test` functions (found in source as you type, Objective-C XCTest too). They show the last result; clicking one runs just that test or class. | — |
+| | Test Selected Items runs the test (or class) at the cursor or selected in the Test navigator; Test Again repeats the last test run; Re-run Failed Tests runs what failed last; Clear Test Results. | ⌃⌥⌘U, ⌃⌥⌘G, ⌃⌥⌘K |
+| | The Test navigator lists targets, classes, suites and tests from source with their results; each row runs on its play button or context menu. Results of tests a run doesn't include stay, as in Xcode. | ⌘6 |
+| | Test plans: the scheme's `.xctestplan`s in Product ▸ Choose Test Plan… and the Test navigator; ⌘U and Test Again run the chosen plan, and tests it leaves out are dimmed. | — |
+| | Every runner gets the selection: `xcodebuild test -only-testing:`/`-testPlan`, `swift test --filter`, and in the simulator an XCTest scope for the injected bundle (which also selects Swift Testing tests), honoring the plan's skipped and selected tests, environment and arguments. | — |
 | **Debugging** (lldb-dap) | Breakpoints (toggle, deactivate all, persisted per project). ⌘R runs under the debugger whenever breakpoints are active, as in Xcode. Simulator apps launch with `--wait-for-debugger` and lldb attaches to them. | ⌘\\, ⌘Y |
 | | Pause/continue, step over/into/out, the stopped line highlighted in green, threads and frames in the Debug navigator, and an expandable Variables view next to the console. | ⌃⌘Y, F6, F7, F8 |
 | **Monitoring** | Memory is sampled every 2 s for the life of the app. The status bar shows zcode's footprint and the language server's (including its `SourceKitService` XPC helpers), and turns orange above 1.5 GB idle for zcode or 4 GB for the language server. View ▸ Performance shows startup timings, the current and 30 s idle-baseline footprint, peak, and a history graph. `--perf-log <file>` (or `ZCODE_PERF_LOG`) appends every sample as a JSON line for long-term tracking. `zcode --startup-bench` prints startup and memory as JSON and quits. | — |
@@ -123,6 +128,7 @@ src/
   lsp/              JSON-RPC client, document sync store, editor provider adapters
   build/            xcodebuild/swift/simctl queries, streaming runner, log/issue/test parsing,
                     compilation-database extraction
+  testing/          tests found in source, test plans, test selections per runner, results → tests
   debugger/         DAP client and debugger model (lldb-dap)
   project.rs        project detection and gitignore-aware scanning
   xcodeproj.rs      project.pbxproj parser and in-place editor (build settings)
@@ -162,6 +168,10 @@ saved breakpoints can't leak in. It covers:
   then a build of the edited project; and in the synchronized HelloZ, the same
   operations leave `project.pbxproj` untouched
 * the build-error → issue flow
+* test diamonds: one Swift Testing test from its diamond (`xcodebuild
+  -only-testing`), Test Selected Items at the cursor, Test Again, a whole
+  suite, and the Greeting test plan; in a Swift package a test and an XCTest
+  class (`swift test --filter`) and Re-run Failed Tests after a fix
 * run, test and debug for a Swift package
 * cold launch: first frame before the minimal native AppKit app and under 250 ms (medians of 5); opening a project through an already-running instance (< 150 ms)
 * every Xcode 27 default shortcut for the MVP commands (from
@@ -169,7 +179,8 @@ saved breakpoints can't leak in. It covers:
   keymap
 * memory monitoring: sampler history, language-server and `SourceKitService`
   memory, the status-bar label and the `--perf-log` file
-* with `--simulator`: unit tests, run and debug on an iOS simulator
+* with `--simulator`: unit tests, one test and one suite from their diamonds,
+  the Smoke test plan, and run and debug on an iOS simulator
 
 The control channel also takes window screenshots
 (`screenshot <path>`), which doesn't need Screen Recording permission.
@@ -190,7 +201,19 @@ The control channel also takes window screenshots
   renaming them to a path.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas, Instruments or
   physical-device deployment.
+* Tests are found by reading source, so tests that only exist at run time
+  (XCTest methods added dynamically, tests from macros other than `@Test` and
+  `@Suite`) have no diamond; their results still appear under Other Results
+  in the Test navigator. Swift Testing's console names a test but not its
+  suite, so where names repeat across suites zcode runs Swift Testing one
+  test at a time (`swift test --no-parallel`; in Xcode projects XCTest
+  already does) to tell results apart.
+* A test plan with several configurations runs each one in the simulator,
+  but the Test navigator keeps one result per test (the last configuration's).
+  Test plans can be chosen, not edited.
+* Hostless (library) test bundles on a simulator get the same selection, but
+  that path is untested here: every sample's tests are hosted.
 * UI test bundles are skipped by the in-simulator unit-test runner and still
-  need `xcodebuild test`. On this machine that fails ("The test runner hung
+  need `xcodebuild test` (running only UI tests from a diamond uses it). On this machine that fails ("The test runner hung
   before establishing connection") because of the simulator runtime, with
   either installed Xcode, independent of zcode.

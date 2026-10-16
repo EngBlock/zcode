@@ -26,7 +26,9 @@ which was extracted from Xcode 27's own command definitions.
 | Item | Status | Notes |
 |---|---|---|
 | Debugging with lldb-dap: breakpoints (⌘\\, ⌘Y), pause/continue (⌃⌘Y), step (F6/F7/F8), Debug navigator, Variables view, Breakpoints navigator | ✅ | Attaches to simulator apps and launches Mac executables; breakpoints are persisted. No LLDB REPL or conditional breakpoints yet |
-| Test (⌘U), Tests navigator | ✅ | Unit tests run in the simulator by injecting the bundle into the host app; XCTest and Swift Testing results; failures shown as issues. No run-single-test yet; UI tests need `xcodebuild test` |
+| Test (⌘U), Tests navigator | ✅ | Unit tests run in the simulator by injecting the bundle into the host app; XCTest and Swift Testing results; failures shown as issues. UI tests need `xcodebuild test` |
+| Test diamonds, run one test or class (gutter, Test navigator), Test Selected Items (⌃⌥⌘U), Test Again (⌃⌥⌘G), Clear Test Results (⌃⌥⌘K), re-run failed | ✅ | Tests found in source (Swift and Objective-C); selections reach xcodebuild (`-only-testing`), `swift test` (`--filter`) and the in-simulator runner (XCTest scope). Re-run failed has no Xcode menu equivalent (Xcode offers it in test reports). No Test Without Building, Test Repeatedly or Profile Test |
+| Test plans | 🟡 | Choose a scheme's plan (Product ▸ Choose Test Plan…, Test navigator); runs honor it with every runner. No test plan editor (⌘>) |
 | Navigation history ⌃⌘← ⌃⌘→, counterpart ⌃⌘↑, reveal ⇧⌘J | ✅ | |
 | Rename, Edit All in Scope (⌃⌘E), fix-its (⌃⌥⌘F) | ✅ | Rename opens affected files as unsaved tabs for review; the index refreshes in the background after save |
 | Re-indent (⌃I), Format File (⌃⇧I) | ✅ | Via sourcekit-lsp (swift-format) |

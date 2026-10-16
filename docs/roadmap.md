@@ -20,7 +20,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 ## Phase 1: a normal iOS day without opening Xcode
 
 1. Test ergonomics: gutter diamonds to run one test or class, re-run failed,
-   test plan selection.
+   test plan selection. ✅
 2. Edit Scheme (minimal): run arguments, environment variables, launch options.
 3. Debugger depth: LLDB console (`po`/`p`/`expr`), conditional, log-message,
    symbolic and Swift error/exception breakpoints.
