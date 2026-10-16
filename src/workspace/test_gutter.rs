@@ -3,41 +3,20 @@
 //! green check: passed, red cross: failed). Hovering shows a play button;
 //! clicking runs that test or class.
 //!
-//! The editor engine has no gutter-marker API, so the diamonds are a canvas
-//! layered over the editor. It paints after the editor in the same frame
-//! and asks it where each line landed, so the diamonds follow scrolling,
-//! folding and soft wrap without lagging a frame.
-
-use std::cell::{Cell, RefCell};
+//! The diamonds are a gutter lane over the line numbers (`zcode-editor`'s
+//! `gutter.rs`), so the editor lays them out with its lines and they follow
+//! scrolling, folding and soft wrap.
 
 use gpui_kit::component::ActiveTheme as _;
-use zcode_editor::{EditorState, RopeExt as _};
+use zcode_editor::{EditorState, GutterItem, GutterLane};
 use gpui_kit::*;
 
 use super::Workspace;
 use crate::build::log::TestStatus;
 
-/// The editor gutter's fold-chevron column and the space before it, to the
-/// right of the line numbers (`gpui-base`'s `FOLD_ICON_HITBOX_WIDTH` and
-/// `LINE_NUMBER_RIGHT_MARGIN`).
-pub(super) const FOLD_COLUMN: f32 = 18. + 6.;
+/// The gutter lane of test diamonds.
+pub(super) const TEST_LANE: &str = "tests";
 const DIAMOND_SIZE: f32 = 14.;
-
-/// A diamond to draw: the 0-based line, the test item and its status.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct Diamond {
-    pub line: u32,
-    pub item: usize,
-    pub status: Option<TestStatus>,
-}
-
-/// Where diamonds were painted last frame (window coordinates), for clicks
-/// and for the test harness.
-#[derive(Default)]
-pub(super) struct GutterState {
-    pub painted: RefCell<Vec<(Bounds<Pixels>, Diamond)>>,
-    pub hovered: Cell<Option<usize>>,
-}
 
 pub(super) struct DiamondColors {
     pub idle: Hsla,
@@ -132,137 +111,63 @@ pub(super) fn diamond_icon(status: Option<TestStatus>, cx: &App) -> impl IntoEle
         .flex_none()
 }
 
-/// The width of the editor's gutter (line numbers and fold chevrons): how
-/// far right of the text bounds a visible line's first character starts.
-pub(super) fn gutter_width(state: &EditorState) -> Option<Pixels> {
-    let rows = state.visible_row_range()?;
-    let text = state.text();
-    let row = rows.start.min(text.lines_len().saturating_sub(1));
-    let offset = text.line_start_offset(row);
-    let line = state.range_to_bounds(&(offset..offset))?;
-    Some(line.origin.x - state.text_bounds()?.origin.x)
-}
-
 impl Workspace {
-    /// The diamonds overlay for `editor`, or `None` when the file has no tests.
-    pub(super) fn render_test_gutter(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let path = self.active_buffer()?.path.clone();
-        let statuses = self.test_statuses(cx);
-        let mut diamonds: Vec<Diamond> = vec![];
-        for (ix, item) in self.tests.index.items.iter().enumerate() {
-            // One diamond per line; a class or suite sorts before its tests.
-            if item.file == path && diamonds.last().is_none_or(|d| d.line != item.line) {
-                diamonds.push(Diamond { line: item.line, item: ix, status: statuses.get(ix).copied().flatten() });
-            }
-        }
-        if diamonds.is_empty() {
-            self.gutter.painted.borrow_mut().clear();
-            return None;
-        }
-        let editor = editor.clone();
-        let gutter = self.gutter.clone();
+    /// The diamonds in `editor`'s gutter, over the line numbers.
+    pub(super) fn test_lane(&self, editor: &Entity<EditorState>, cx: &Context<Self>) -> GutterLane {
         let workspace = cx.weak_entity();
-        let colors = DiamondColors::new(cx);
-        let background = cx
-            .theme()
-            .highlight_theme
-            .style
-            .editor_gutter_background
-            .or(cx.theme().highlight_theme.style.editor_background)
-            .unwrap_or(cx.theme().background);
-        Some(
-            canvas(
-                {
-                    let editor = editor.clone();
-                    move |_, window, cx| {
-                        // The gutter strip, from the editor's last layout.
-                        let state = editor.read(cx);
-                        let input = state.input_bounds();
-                        let strip = Bounds::new(input.origin, size(gutter_width(state)?, input.size.height));
-                        Some(window.insert_hitbox(strip, HitboxBehavior::Normal))
-                    }
-                },
-                move |_, hitbox, window, cx| {
-                    let Some(hitbox) = hitbox else { return };
-                    let state = editor.read(cx);
-                    let (Some(width), Some(line_height)) = (gutter_width(state), state.line_height()) else { return };
-                    let input = state.input_bounds();
-                    // The line numbers' column, left of the fold chevrons.
-                    let numbers_right = input.origin.x + width - px(FOLD_COLUMN);
-                    let rope = state.text().clone();
-                    let mouse = window.mouse_position();
-                    let mut painted = vec![];
-                    for diamond in &diamonds {
-                        let row = diamond.line as usize;
-                        if row >= rope.lines_len() {
-                            continue;
-                        }
-                        let offset = rope.line_start_offset(row);
-                        let Some(line) = state.range_to_bounds(&(offset..offset)) else { continue };
-                        let column = Bounds::new(point(input.origin.x, line.origin.y), size((numbers_right - input.origin.x).max(px(DIAMOND_SIZE)), line_height));
-                        if !input.intersects(&column) {
-                            continue;
-                        }
-                        let side = px(DIAMOND_SIZE).min(line_height - px(2.));
-                        let target = Bounds::new(
-                            point(column.right() - side - px(2.), column.origin.y + (line_height - side) / 2.),
-                            size(side, side),
-                        );
-                        painted.push((target, *diamond));
-                    }
-                    let hovered = painted
-                        .iter()
-                        .find(|(b, _)| hitbox.is_hovered(window) && b.dilate(px(2.)).contains(&mouse))
-                        .map(|(_, d)| d.item);
-                    for (target, diamond) in &painted {
+        let editor_id = editor.entity_id();
+        GutterLane::new(TEST_LANE, move |rows, cx| {
+            let Some(this) = workspace.upgrade() else { return vec![] };
+            let this = this.read(cx);
+            let Some(path) = this.buffer_path_of(editor_id) else { return vec![] };
+            let statuses = this.current_test_statuses(cx);
+            let colors = std::rc::Rc::new(DiamondColors::new(cx));
+            let mut items: Vec<GutterItem> = vec![];
+            let mut last_line = None;
+            for (ix, item) in this.tests.index.items.iter().enumerate() {
+                // One diamond per line; a class or suite sorts before its tests.
+                if item.file != path || last_line == Some(item.line) || !rows.rows.contains(&item.line) {
+                    continue;
+                }
+                last_line = Some(item.line);
+                let status = statuses.get(ix).copied().flatten();
+                let colors = colors.clone();
+                let workspace = workspace.clone();
+                items.push(
+                    GutterItem::new(item.line, move |paint, window, _| {
                         // The diamond replaces the line number, as in Xcode.
+                        let target = paint.bounds;
                         let cover = Bounds::new(
-                            point(input.origin.x, target.origin.y - px(1.)),
-                            size(target.right() - input.origin.x + px(2.), target.size.height + px(2.)),
+                            point(paint.cell.left(), target.origin.y - px(1.)),
+                            size(target.right() - paint.cell.left() + px(2.), target.size.height + px(2.)),
                         );
-                        window.paint_quad(fill(cover, background));
-                        paint_diamond(window, *target, diamond.status, hovered == Some(diamond.item), &colors);
-                    }
-                    if hovered.is_some() {
-                        window.set_cursor_style(CursorStyle::PointingHand, &hitbox);
-                    }
-                    if gutter.hovered.get() != hovered {
-                        gutter.hovered.set(hovered);
-                    }
-                    *gutter.painted.borrow_mut() = painted.clone();
+                        window.paint_quad(fill(cover, paint.background));
+                        paint_diamond(window, target, status, paint.hovered, &colors);
+                    })
+                    // At the right of the number column.
+                    .bounds(|cell, line_height| {
+                        let side = px(DIAMOND_SIZE).min(line_height - px(2.));
+                        let right = cell.left() + cell.size.width.max(px(DIAMOND_SIZE));
+                        Bounds::new(point(right - side - px(2.), cell.top() + (line_height - side) / 2.), size(side, side))
+                    })
+                    .cursor(CursorStyle::PointingHand)
+                    .on_click(move |_, window, cx| workspace.update(cx, |this, cx| this.run_test_items(vec![ix], window, cx)).is_ok()),
+                );
+            }
+            items
+        })
+        .order(2)
+    }
 
-                    let gutter_for_move = gutter.clone();
-                    let move_hitbox = hitbox.clone();
-                    let targets = painted.clone();
-                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, _| {
-                        if phase != DispatchPhase::Bubble {
-                            return;
-                        }
-                        let now = targets
-                            .iter()
-                            .find(|(b, _)| move_hitbox.is_hovered(window) && b.dilate(px(2.)).contains(&event.position))
-                            .map(|(_, d)| d.item);
-                        if now != gutter_for_move.hovered.get() {
-                            window.refresh();
-                        }
-                    });
-                    let workspace = workspace.clone();
-                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                        if phase != DispatchPhase::Bubble || event.button != MouseButton::Left || !hitbox.is_hovered(window) {
-                            return;
-                        }
-                        let Some((_, diamond)) = painted.iter().find(|(b, _)| b.dilate(px(2.)).contains(&event.position)) else { return };
-                        cx.stop_propagation();
-                        let item = diamond.item;
-                        workspace.update(cx, |this, cx| this.run_test_items(vec![item], window, cx)).ok();
-                    });
-                },
-            )
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .into_any_element(),
-        )
+    /// The test item each painted diamond stands for: (bounds, line, item).
+    pub(super) fn painted_diamonds(&self, cx: &App) -> Vec<(Bounds<Pixels>, u32, usize)> {
+        let Some(path) = self.active_buffer().map(|b| b.path.clone()) else { return vec![] };
+        self.painted_gutter(TEST_LANE, cx)
+            .into_iter()
+            .filter_map(|(line, bounds)| {
+                let ix = self.tests.index.items.iter().position(|item| item.file == path && item.line + 1 == line)?;
+                Some((bounds, line, ix))
+            })
+            .collect()
     }
 }

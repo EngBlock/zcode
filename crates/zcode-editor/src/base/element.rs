@@ -7,7 +7,7 @@ use gpui::{
 };
 use gpui::{
     HighlightStyle, Hitbox, HitboxBehavior, Hsla, InteractiveElement, IntoElement, LayoutId,
-    LongPressEvent, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement as _, Path, Pixels,
+    LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Path, Pixels,
     Point, Position, ShapedLine, SharedString, Size, Style, Styled as _, TextAlign, TextRun,
     TextStyle, TouchDragEvent, TouchPhase, UnderlineStyle, Window, fill, point, px, relative, size,
 };
@@ -15,6 +15,7 @@ use ropey::Rope;
 use smallvec::SmallVec;
 use std::{ops::Range, rc::Rc};
 
+use crate::gutter::{GutterGeometry, GutterLayout};
 use crate::{RopeExt as _, blink_cursor::CURSOR_WIDTH, display_map::LineLayout};
 use gpui_base::Scrollbar;
 
@@ -518,6 +519,57 @@ impl<M: InputModeKind> TextElement<M> {
                     state.selecting = false;
                     state.column_select_start = None;
                 });
+            }
+        });
+    }
+
+    /// Clicks on gutter items and lanes, and the hovered item.
+    fn paint_gutter_listeners(&self, gutter: Rc<GutterLayout>, hitbox: Hitbox, window: &mut Window) {
+        if hitbox.is_hovered(window)
+            && let Some((_, _, Some(cursor))) = gutter.hover_at(window.mouse_position())
+        {
+            window.set_cursor_style(cursor, &hitbox);
+        }
+        window.on_mouse_event({
+            let gutter = gutter.clone();
+            let hitbox = hitbox.clone();
+            move |event: &MouseDownEvent, phase, window, cx| {
+                if phase.bubble()
+                    && hitbox.is_hovered(window)
+                    && gutter.dispatch_mouse_down(event.position, event.button, event.click_count, event.modifiers, window, cx)
+                {
+                    cx.stop_propagation();
+                }
+            }
+        });
+        let state = self.state.clone();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            if !phase.bubble() {
+                return;
+            }
+            let now = hitbox
+                .is_hovered(window)
+                .then(|| gutter.hover_at(event.position))
+                .flatten();
+            let key = now.as_ref().map(|(key, _, _)| key.clone());
+            let previous = state.update(cx, |state, cx| {
+                if state.gutter.hovered == key {
+                    return None;
+                }
+                cx.notify();
+                Some(std::mem::replace(&mut state.gutter.hovered, key))
+            });
+            let Some(previous) = previous else { return };
+            if let Some((lane, row)) = previous
+                && let Some(left) = gutter.items.iter().find(|laid| {
+                    laid.item.row() == row && gutter.lanes[laid.lane].id() == &lane
+                })
+                && let Some(on_hover) = left.item.on_hover.clone()
+            {
+                on_hover(false, window, cx);
+            }
+            if let Some((_, Some(on_hover), _)) = now {
+                on_hover(true, window, cx);
             }
         });
     }
@@ -1091,8 +1143,9 @@ impl<M: InputModeKind> TextElement<M> {
         font_size: Pixels,
         style: &TextStyle,
         window: &mut Window,
-    ) -> (Pixels, usize) {
+    ) -> (Pixels, usize, Pixels, Pixels) {
         let total_lines = text.lines_len();
+        let mut numbers_width = px(0.);
         // Reserve three digits for small documents, then follow the actual
         // line count up to seven digits.
         let line_number_len = line_number_len(total_lines);
@@ -1112,6 +1165,7 @@ impl<M: InputModeKind> TextElement<M> {
                 None,
             );
 
+            numbers_width = empty_line_number.width;
             empty_line_number.width + LINE_NUMBER_RIGHT_MARGIN
         } else if state.is_code_editor() {
             LINE_NUMBER_RIGHT_MARGIN
@@ -1124,7 +1178,12 @@ impl<M: InputModeKind> TextElement<M> {
             line_number_width += FOLD_ICON_HITBOX_WIDTH
         }
 
-        (line_number_width, line_number_len)
+        // Gutter lanes with columns of their own sit before and after the
+        // numbers, so the numbers and the fold chevrons move over for them.
+        let (before, after) = state.gutter.column_widths();
+        line_number_width += before + after;
+
+        (line_number_width, line_number_len, before, numbers_width)
     }
 
     /// Layout shaped lines for whitespace indicators (space and tab).
@@ -2309,6 +2368,11 @@ pub(super) struct PrepaintState {
     /// First line of inline completion (painted after cursor on same line)
     ghost_first_line: Option<ShapedLine>,
     ghost_lines_height: Pixels,
+    /// Where the line numbers start, after the gutter columns before them.
+    numbers_x: Pixels,
+    gutter: Option<Rc<GutterLayout>>,
+    gutter_hitbox: Option<Hitbox>,
+    gutter_geometry: GutterGeometry,
 }
 
 impl PrepaintState {
@@ -2553,7 +2617,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         };
 
         // Calculate the width of the line numbers
-        let (line_number_width, line_number_len) =
+        let (line_number_width, line_number_len, numbers_x, numbers_width) =
             Self::layout_line_numbers(&state, &text, text_size, &text_style, window);
 
         let mut bounds = bounds;
@@ -2972,6 +3036,49 @@ impl<M: InputModeKind> Element for TextElement<M> {
             self.layout_fold_icons(original_x, &bounds, &last_layout, window, cx);
         let hitbox = window.insert_hitbox(input_bounds, HitboxBehavior::Normal);
 
+        // The gutter's rows and number column, and its lanes' items. Rows
+        // carry their wrapped height, and the ghost block below the cursor
+        // row moves the rows after it.
+        let mut gutter_rows = Vec::with_capacity(last_layout.visible_buffer_lines.len());
+        let mut row_y = bounds.origin.y + last_layout.visible_top;
+        for (line, &buffer_line) in last_layout.lines.iter().zip(last_layout.visible_buffer_lines.iter()) {
+            let height = line.size(line_height).height;
+            gutter_rows.push((buffer_line as u32, row_y, height));
+            row_y += height;
+            if current_row == Some(buffer_line) {
+                row_y += ghost_lines_height;
+            }
+        }
+        let numbers_start = input_bounds.origin.x + numbers_x;
+        let gutter_geometry = GutterGeometry {
+            numbers: Bounds::new(
+                point(numbers_start, input_bounds.origin.y),
+                size(numbers_width, input_bounds.size.height),
+            ),
+            rows: gutter_rows.clone(),
+        };
+        let state = self.state.read(cx);
+        let gutter = (!state.gutter.is_empty()).then(|| {
+            Rc::new(GutterLayout::new(
+                &state.gutter,
+                &state.text,
+                &state.anchors,
+                Bounds::new(input_bounds.origin, size(line_number_width, input_bounds.size.height)),
+                numbers_start..numbers_start + numbers_width,
+                input_bounds.origin.x,
+                gutter_rows,
+                line_height,
+                style.font(),
+                text_size,
+                state
+                    .editor_style
+                    .editor_gutter_background
+                    .unwrap_or(state.editor_style.background),
+                cx,
+            ))
+        });
+        let gutter_hitbox = gutter.as_ref().map(|gutter| window.insert_hitbox(gutter.bounds, HitboxBehavior::Normal));
+
         let token_elements = self.prepaint_tokens(&last_layout, bounds, token_elements, window, cx);
         PrepaintState {
             token_elements,
@@ -2995,6 +3102,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
             ghost_first_line,
             ghost_lines,
             ghost_lines_height,
+            numbers_x,
+            gutter,
+            gutter_hitbox,
+            gutter_geometry,
         }
     }
 
@@ -3260,7 +3371,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 .iter()
                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
             {
-                let p = point(input_bounds.origin.x, origin.y + offset_y);
+                let p = point(input_bounds.origin.x + prepaint.numbers_x, origin.y + offset_y);
                 let is_active = prepaint.current_row == Some(buffer_line);
 
                 let height = line_height * lines.len() as f32;
@@ -3289,6 +3400,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
             }
         }
 
+        // Gutter lanes paint over the numbers, below the fold chevrons.
+        if let Some(gutter) = prepaint.gutter.as_ref() {
+            let hovered = self.state.read(cx).gutter.hovered.clone();
+            gutter.paint(&hovered, window, cx);
+        }
+
         // Paint fold icons (only visible on hover or for current line)
         self.paint_fold_icons(
             &mut prepaint.fold_icon_layout,
@@ -3306,6 +3423,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         || layout.line_height != prepaint.last_layout.line_height
                 });
             state.last_layout = Some(prepaint.last_layout.clone());
+            state.gutter.painted = prepaint.gutter.as_ref().map(|gutter| gutter.painted()).unwrap_or_default();
+            state.gutter.geometry = std::mem::take(&mut prepaint.gutter_geometry);
             state.last_bounds = Some(bounds);
             state.last_cursor = Some(state.cursor());
             state.set_input_bounds(input_bounds, cx);
@@ -3350,6 +3469,9 @@ impl<M: InputModeKind> Element for TextElement<M> {
         }
 
         self.paint_mouse_listeners(&prepaint.hitbox, window, cx);
+        if let (Some(gutter), Some(hitbox)) = (prepaint.gutter.clone(), prepaint.gutter_hitbox.clone()) {
+            self.paint_gutter_listeners(gutter, hitbox, window);
+        }
     }
 }
 

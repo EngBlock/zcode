@@ -173,3 +173,45 @@ as moved, deleted or restored; a breakpoint or bookmark deleted with its
 line is kept with the anchor and comes back (same id, same place in the
 bookmark list) with the undo that restores the line, which the invisible
 decorations could never do.
+
+### Gutter decorations (`gutter.rs`)
+
+```rust
+editor.set_gutter_lane(
+    GutterLane::new("breakpoints", |rows: &GutterRows, cx| {
+        // the items on rows.rows (visible 0-based rows), read straight from
+        // the owner's model; rows.anchor_row(a) resolves anchors
+        vec![GutterItem::new(row, |paint: &GutterPaint, window, cx| { /* paint in paint.bounds */ })
+            .bounds(|cell, line_height| /* part of the cell */)
+            .on_click(|e: &GutterEvent, window, cx| true)          // handled?
+            .on_double_click(..).on_secondary_click(..)
+            .on_hover(|hovered, window, cx| ..)
+            .cursor(CursorStyle::PointingHand)]
+    })
+    .order(0)                                       // bottom to top, left to right
+    .placement(GutterPlacement::OverNumbers)        // or BeforeNumbers(w) / AfterNumbers(w)
+    .on_click(|e, window, cx| true),                // rows without an item
+    cx,
+);
+editor.painted_gutter_items();   // lane, row, bounds as painted last frame
+editor.gutter_geometry();        // number column and visible rows
+```
+
+The element asks each lane for its items in prepaint, for the visible rows
+only, and paints them after the line numbers and before the fold chevrons.
+Lanes with a column of their own widen the gutter and move the numbers and
+chevrons over; lanes over the numbers stack by order. A mouse down goes to
+the topmost item under the pointer whose handler takes it, then to the
+topmost lane with a handler for rows without an item; the editor tracks the
+hovered item, repaints it with `hovered` set and sets its cursor.
+`GutterPaint::paint_line_number` repaints the number in another color (white
+on a breakpoint).
+
+Ported: breakpoint markers (order 0, over the numbers, reaching into the
+fold column; click, double-click, right-click, click on an empty row adds
+one), bookmark ribbons (order 1, right-click menu, left clicks fall through
+to the breakpoint lane) and test diamonds (order 2, hover shows the play
+glyph, click runs). The three canvases layered over the editor, their
+`gutter_width` arithmetic with gpui-base's private constants, and their
+own hit-testing are gone. Git change bars (2.3) will be a
+`BeforeNumbers(px(3.))` lane over the hunks' anchors.

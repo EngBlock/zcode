@@ -85,6 +85,7 @@ mod touch;
 mod undo_manager;
 
 mod anchors;
+mod gutter;
 mod history;
 #[cfg(test)]
 mod test_support;
@@ -108,6 +109,10 @@ pub(crate) fn test_init(cx: &mut App) {
 pub use gpui_base::{NumberInputEvent, NumberStep};
 pub use base::InputContextMenuCapabilities;
 pub use anchors::{Anchor, AnchorBias, AnchorRow};
+pub use gutter::{
+    GutterEvent, GutterGeometry, GutterItem, GutterLane, GutterPaint, GutterPlacement, GutterRows,
+    PaintedGutterItem,
+};
 pub use cursor::Selection;
 pub use decorations::{
     RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, TextDecoration,

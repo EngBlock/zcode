@@ -21,7 +21,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use zcode_editor::{EditorState, RopeExt as _};
+use zcode_editor::{EditorState, GutterItem, GutterLane, RopeExt as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{ActiveTheme as _, Icon, Selectable as _, Sizable as _, WindowExt as _, h_flex, v_flex};
@@ -32,7 +32,6 @@ use super::bookmark_dialog::BookmarkDialog;
 use super::line_anchors::LineChange;
 use super::navigator::{empty, row, section_header};
 use super::pickers::file_icon;
-use super::test_gutter::{FOLD_COLUMN, gutter_width};
 use super::{NavigatorTab, Target, Workspace};
 use crate::actions::PickerDismiss;
 use crate::bookmarks::{Bookmark, Location, SectionKey, SortBy, file_name, matches_filter};
@@ -42,7 +41,8 @@ const RIBBON_WIDTH: f32 = 7.;
 
 /// Rows and ribbons as painted: their bounds and what they show.
 type PaintedRows = Rc<RefCell<Vec<(Bounds<Pixels>, RowId, String)>>>;
-type PaintedRibbons = Rc<RefCell<Vec<(Bounds<Pixels>, u64, u32)>>>;
+/// The gutter lane of bookmark ribbons.
+pub(super) const BOOKMARK_LANE: &str = "bookmarks";
 /// What a menu item does to the workspace.
 type MenuAction = Box<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
 
@@ -66,10 +66,9 @@ pub(super) struct BookmarksUi {
     /// The bookmark last opened and the file and line it opened at, so
     /// In Workspace steps go on from it while the cursor stays there.
     last_opened: Option<(u64, PathBuf, u32)>,
-    /// Where rows and gutter ribbons were painted last frame (window
-    /// coordinates), for the test harness and the ribbon's menu.
+    /// Where rows were painted last frame (window coordinates), for the
+    /// test harness and drag and drop.
     rows: PaintedRows,
-    gutter: PaintedRibbons,
     pub dialog: Option<WeakEntity<BookmarkDialog>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -460,83 +459,38 @@ impl Workspace {
     // ------------------------------------------------------------------
     // Gutter
 
-    /// The ribbons at the left of the active editor's line numbers, and
-    /// their menu on a right-click.
-    pub(super) fn render_bookmark_gutter(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let path = self.active_buffer()?.path.clone();
-        let ribbons: Vec<(u64, u32, bool)> = self
-            .bookmarks
-            .all()
-            .filter(|b| b.location.path() == path)
-            .filter_map(|b| Some((b.id, b.location.line()?, b.completed)))
-            .collect();
-        if ribbons.is_empty() {
-            self.bookmarks_ui.gutter.borrow_mut().clear();
-            return None;
-        }
-        let editor = editor.clone();
-        let gutter = self.bookmarks_ui.gutter.clone();
+    /// The ribbons at the left of `editor`'s line numbers, and their menu
+    /// on a right-click (a left click goes on to the breakpoint below).
+    pub(super) fn bookmark_lane(&self, editor: &Entity<EditorState>, cx: &Context<Self>) -> GutterLane {
         let workspace = cx.weak_entity();
-        let outline = cx
-            .theme()
-            .highlight_theme
-            .style
-            .editor_gutter_background
-            .or(cx.theme().highlight_theme.style.editor_background)
-            .unwrap_or(cx.theme().background);
-        Some(
-            canvas(
-                {
-                    let editor = editor.clone();
-                    move |_, window, cx| {
-                        let state = editor.read(cx);
-                        let input = state.input_bounds();
-                        let numbers = gutter_width(state)? - px(FOLD_COLUMN);
-                        Some(window.insert_hitbox(Bounds::new(input.origin, size(numbers, input.size.height)), HitboxBehavior::Normal))
-                    }
-                },
-                move |_, hitbox, window, cx| {
-                    let Some(hitbox) = hitbox else { return };
-                    let state = editor.read(cx);
-                    let Some(line_height) = state.line_height() else { return };
-                    let input = state.input_bounds();
-                    let rope = state.text().clone();
-                    let mut painted = vec![];
-                    for &(id, line, completed) in &ribbons {
-                        let row = line.saturating_sub(1) as usize;
-                        if row >= rope.lines_len() {
-                            continue;
-                        }
-                        let offset = rope.line_start_offset(row);
-                        let Some(bounds) = state.range_to_bounds(&(offset..offset)) else { continue };
-                        let ribbon = Bounds::new(
-                            point(input.origin.x + px(1.), bounds.origin.y + px(2.)),
-                            size(px(RIBBON_WIDTH), line_height - px(4.)),
-                        );
-                        if input.intersects(&ribbon) && painted.iter().all(|(_, _, l)| *l != line) {
-                            paint_ribbon(window, ribbon, ribbon_color(completed), outline);
-                            painted.push((ribbon, id, line));
-                        }
-                    }
-                    *gutter.borrow_mut() = painted.clone();
+        let editor_id = editor.entity_id();
+        GutterLane::new(BOOKMARK_LANE, move |rows, cx| {
+            let Some(this) = workspace.upgrade() else { return vec![] };
+            let this = this.read(cx);
+            let Some(path) = this.buffer_path_of(editor_id) else { return vec![] };
+            let mut seen = HashSet::new();
+            this.bookmarks
+                .all()
+                .filter(|b| b.location.path() == path)
+                .filter_map(|b| Some((b.id, b.location.line()?, b.completed)))
+                // One ribbon per line.
+                .filter(|&(_, line, _)| rows.rows.contains(&line.saturating_sub(1)) && seen.insert(line))
+                .map(|(id, line, completed)| {
                     let workspace = workspace.clone();
-                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                        if phase != DispatchPhase::Bubble || event.button != MouseButton::Right || !hitbox.is_hovered(window) {
-                            return;
-                        }
-                        let Some(&(_, id, _)) = painted.iter().find(|(b, _, _)| b.dilate(px(2.)).contains(&event.position)) else { return };
-                        cx.stop_propagation();
+                    GutterItem::new(line - 1, move |paint, window, _| {
+                        paint_ribbon(window, paint.bounds, ribbon_color(completed), paint.background);
+                    })
+                    .bounds(|cell, line_height| {
+                        Bounds::new(point(cell.left() + px(1.), cell.top() + px(2.)), size(px(RIBBON_WIDTH), line_height - px(4.)))
+                    })
+                    .on_secondary_click(move |event, window, cx| {
                         let position = event.position;
-                        workspace.update(cx, |this, cx| this.bookmark_menu_at(id, position, window, cx)).ok();
-                    });
-                },
-            )
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .into_any_element(),
-        )
+                        workspace.update(cx, |this, cx| this.bookmark_menu_at(id, position, window, cx)).is_ok()
+                    })
+                })
+                .collect()
+        })
+        .order(1)
     }
 
     fn bookmark_menu_at(&mut self, id: u64, position: Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
@@ -834,13 +788,11 @@ impl Workspace {
             })
             .collect();
         let gutter: Vec<serde_json::Value> = self
-            .bookmarks_ui
-            .gutter
-            .borrow()
-            .iter()
-            .map(|(bounds, _, line)| {
-                let mut ribbon = point_json(bounds);
-                ribbon["line"] = (*line).into();
+            .painted_gutter(BOOKMARK_LANE, cx)
+            .into_iter()
+            .map(|(line, bounds)| {
+                let mut ribbon = point_json(&bounds);
+                ribbon["line"] = line.into();
                 ribbon
             })
             .collect();
@@ -891,7 +843,12 @@ impl Workspace {
             }
             "menu" => {
                 let id = nth(self, arg)?;
-                let position = self.bookmarks_ui.gutter.borrow().iter().find(|(_, b, _)| *b == id).map(|(bounds, _, _)| bounds.center());
+                let line = self.bookmarks.get(id).and_then(|b| b.location.line());
+                let position = self
+                    .painted_gutter(BOOKMARK_LANE, cx)
+                    .into_iter()
+                    .find(|(painted, _)| Some(*painted) == line)
+                    .map(|(_, bounds)| bounds.center());
                 self.bookmark_menu_at(id, position.ok_or("its ribbon isn't on screen")?, window, cx);
             }
             "sort" => self.sort_bookmarks(

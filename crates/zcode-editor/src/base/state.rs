@@ -175,6 +175,8 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(super) undo_manager: UndoManager,
     /// Positions that follow edits (`anchors.rs`).
     pub(crate) anchors: crate::anchors::Anchors,
+    /// Lanes of gutter marks (`gutter.rs`).
+    pub(crate) gutter: crate::gutter::Gutter,
     pub(super) inline_tokens: Option<Box<super::inline_tokens::InlineTokenStore>>,
     pub(super) pending_token: Option<super::InlineToken>,
     pub(super) replaying_history: bool,
@@ -582,6 +584,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             blink_cursor,
             undo_manager,
             anchors: Default::default(),
+            gutter: Default::default(),
             inline_tokens: None,
             pending_token: None,
             replaying_history: false,

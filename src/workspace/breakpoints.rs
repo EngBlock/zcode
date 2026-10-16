@@ -8,13 +8,13 @@
 //! (`line_anchors.rs`), so inserting lines above one moves it down.
 //! Deleting a breakpoint's line deletes the breakpoint.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use zcode_editor::{EditorState, RopeExt as _};
+use zcode_editor::{EditorState, GutterItem, GutterLane};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -24,7 +24,6 @@ use super::breakpoint_editor::BreakpointEditor;
 use super::line_anchors::LineChange;
 use super::navigator::{empty, row, section_header};
 use super::pickers::file_icon;
-use super::test_gutter::{FOLD_COLUMN, gutter_width};
 use super::{NavigatorTab, Target, Workspace};
 use crate::debugger::Breakpoint;
 use crate::debugger::breakpoints::{ExceptionLanguage, ExceptionPhase, Kind};
@@ -32,11 +31,12 @@ use crate::debugger::breakpoints::{ExceptionLanguage, ExceptionPhase, Kind};
 /// How far a marker's point reaches into the fold column.
 const MARKER_TIP: f32 = 7.;
 
-/// Where markers were painted last frame (window coordinates): for
-/// opening the editor next to one, and for the test harness.
+/// The gutter lane of breakpoint markers.
+pub(super) const BREAKPOINT_LANE: &str = "breakpoints";
+
+/// Gutter clicks on breakpoints.
 #[derive(Default)]
 pub(super) struct BreakpointGutter {
-    pub painted: RefCell<Vec<(Bounds<Pixels>, u64, u32)>>,
     /// The breakpoint the last click added or toggled, and whether it was
     /// enabled before, so a double-click (edit) can undo that click.
     pressed: Cell<Option<(u64, bool)>>,
@@ -82,25 +82,6 @@ fn marker_icon(enabled: bool, active: bool) -> impl IntoElement {
         .w(px(22.))
         .h(px(12.))
         .flex_none()
-}
-
-/// The 1-based line under window position `y` in the editor's gutter.
-fn line_at(state: &EditorState, y: Pixels) -> Option<u32> {
-    let rows = state.visible_row_range()?;
-    let text = state.text();
-    let mut found = None;
-    for row in rows {
-        if row >= text.lines_len() {
-            break;
-        }
-        let offset = text.line_start_offset(row);
-        let Some(bounds) = state.range_to_bounds(&(offset..offset)) else { continue };
-        if bounds.origin.y > y {
-            break;
-        }
-        found = Some(row as u32 + 1);
-    }
-    found
 }
 
 impl Workspace {
@@ -157,108 +138,70 @@ impl Workspace {
     // ------------------------------------------------------------------
     // Gutter
 
-    /// The breakpoint markers over the active editor's line numbers, and
-    /// the clicks on them.
-    pub(super) fn render_breakpoint_gutter(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let path = self.active_buffer()?.path.clone();
-        let debugger = self.debugger.read(cx);
-        let active = debugger.breakpoints_active;
-        let markers: Vec<(u64, u32, bool)> = debugger
-            .line_breakpoints(&path)
-            .filter_map(|bp| Some((bp.id, bp.line()?, bp.enabled)))
-            .collect();
-        let editor = editor.clone();
-        let gutter = self.breakpoint_gutter.clone();
+    /// The breakpoint markers over `editor`'s line numbers, and the clicks
+    /// on them: a click on the numbers adds a breakpoint, a click on a
+    /// marker disables or enables it, a double-click edits it, a right-click
+    /// shows its menu.
+    pub(super) fn breakpoint_lane(&self, editor: &Entity<EditorState>, cx: &Context<Self>) -> GutterLane {
         let workspace = cx.weak_entity();
-        let font = font(cx.theme().mono_font_family.clone());
-        let font_size = px(self.font_size);
-        Some(
-            canvas(
-                {
-                    let editor = editor.clone();
-                    move |_, window, cx| {
-                        // The line numbers' column, from the editor's last layout.
-                        let state = editor.read(cx);
-                        let input = state.input_bounds();
-                        let numbers = gutter_width(state)? - px(FOLD_COLUMN) + px(MARKER_TIP);
-                        Some(window.insert_hitbox(Bounds::new(input.origin, size(numbers, input.size.height)), HitboxBehavior::Normal))
-                    }
-                },
-                move |_, hitbox, window, cx| {
-                    let Some(hitbox) = hitbox else { return };
-                    let state = editor.read(cx);
-                    let (Some(width), Some(line_height)) = (gutter_width(state), state.line_height()) else { return };
-                    let input = state.input_bounds();
-                    let numbers_right = input.origin.x + width - px(FOLD_COLUMN);
-                    let rope = state.text().clone();
-                    let mut visible = vec![];
-                    for &(id, line, enabled) in &markers {
-                        let row = line.saturating_sub(1) as usize;
-                        if row >= rope.lines_len() {
-                            continue;
-                        }
-                        let offset = rope.line_start_offset(row);
-                        let Some(bounds) = state.range_to_bounds(&(offset..offset)) else { continue };
-                        let marker = Bounds::new(
-                            point(input.origin.x + px(2.), bounds.origin.y + px(1.)),
-                            size(numbers_right + px(MARKER_TIP) - input.origin.x - px(2.), line_height - px(2.)),
-                        );
-                        if input.intersects(&marker) {
-                            visible.push((marker, bounds.origin.y, id, line, enabled));
-                        }
-                    }
-                    let mut painted = vec![];
-                    for (marker, top, id, line, enabled) in visible {
-                        paint_marker(window, marker, marker_color(enabled, active));
-                        // The line number, white on the marker.
-                        let number: SharedString = line.to_string().into();
-                        let run = TextRun {
-                            len: number.len(),
-                            font: font.clone(),
-                            color: white(),
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        };
-                        let shaped = window.text_system().shape_line(number, font_size, &[run], None);
-                        let origin = point(numbers_right - shaped.width, top);
-                        shaped.paint(origin, line_height, TextAlign::Left, None, window, cx).ok();
-                        painted.push((marker, id, line));
-                    }
-                    *gutter.painted.borrow_mut() = painted;
-
-                    let editor = editor.clone();
+        let editor_id = editor.entity_id();
+        let lane_workspace = workspace.clone();
+        GutterLane::new(BREAKPOINT_LANE, move |rows, cx| {
+            let Some(this) = workspace.upgrade() else { return vec![] };
+            let this = this.read(cx);
+            let Some(path) = this.buffer_path_of(editor_id) else { return vec![] };
+            let debugger = this.debugger.read(cx);
+            let active = debugger.breakpoints_active;
+            debugger
+                .line_breakpoints(&path)
+                .filter_map(|bp| Some((bp.line()?, bp.enabled)))
+                .filter(|&(line, _)| rows.rows.contains(&line.saturating_sub(1)))
+                .map(|(line, enabled)| {
                     let workspace = workspace.clone();
+                    let click = workspace.clone();
+                    let double = workspace.clone();
                     let path = path.clone();
-                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                        if phase != DispatchPhase::Bubble || !hitbox.is_hovered(window) {
-                            return;
-                        }
-                        let Some(line) = line_at(editor.read(cx), event.position.y) else { return };
-                        let (button, clicks, position) = (event.button, event.click_count, event.position);
-                        let path = path.clone();
-                        let handled = workspace
-                            .update(cx, |this, cx| match button {
-                                MouseButton::Left => {
-                                    this.gutter_click(path, line, clicks, position, window, cx);
-                                    true
-                                }
-                                MouseButton::Right => this.breakpoint_menu_at(&path, line, position, window, cx),
-                                _ => false,
-                            })
-                            .unwrap_or(false);
-                        if handled {
-                            cx.stop_propagation();
-                        }
-                    });
-                },
-            )
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            .into_any_element(),
-        )
+                    let (click_path, double_path, menu_path) = (path.clone(), path.clone(), path);
+                    GutterItem::new(line - 1, move |paint, window, cx| {
+                        paint_marker(window, paint.bounds, marker_color(enabled, active));
+                        // The line number, white on the marker.
+                        paint.paint_line_number(white(), window, cx);
+                    })
+                    // From the gutter's edge to a point in the fold column.
+                    .bounds(|cell, line_height| {
+                        Bounds::new(
+                            point(cell.left() + px(2.), cell.top() + px(1.)),
+                            size(cell.size.width + px(MARKER_TIP) - px(2.), line_height - px(2.)),
+                        )
+                    })
+                    .on_click(move |event, window, cx| {
+                        let position = event.position;
+                        click.update(cx, |this, cx| this.gutter_click(click_path.clone(), line, 1, position, window, cx)).is_ok()
+                    })
+                    .on_double_click(move |event, window, cx| {
+                        let position = event.position;
+                        double.update(cx, |this, cx| this.gutter_click(double_path.clone(), line, 2, position, window, cx)).is_ok()
+                    })
+                    .on_secondary_click(move |event, window, cx| {
+                        let position = event.position;
+                        workspace
+                            .update(cx, |this, cx| this.breakpoint_menu_at(&menu_path, line, position, window, cx))
+                            .unwrap_or(false)
+                    })
+                })
+                .collect()
+        })
+        .order(0)
+        .on_click(move |event, window, cx| {
+            let (row, position, clicks) = (event.row, event.position, event.click_count);
+            lane_workspace
+                .update(cx, |this, cx| {
+                    let Some(path) = this.buffer_path_of(editor_id) else { return false };
+                    this.gutter_click(path, row + 1, clicks, position, window, cx);
+                    true
+                })
+                .unwrap_or(false)
+        })
     }
 
     /// A click on the line numbers: adds a breakpoint, or disables or
@@ -281,7 +224,7 @@ impl Workspace {
                     self.debugger.update(cx, |d, cx| d.set_breakpoint_enabled(id, before, cx));
                 }
                 // Below the marker, as Xcode's popover hangs from it.
-                let marker = self.marker_anchor(id);
+                let marker = self.marker_anchor(id, cx);
                 self.edit_breakpoint(id, marker.or(Some(position)), window, cx);
             }
             return;
@@ -338,7 +281,7 @@ impl Workspace {
     pub(super) fn edit_breakpoint(&mut self, id: u64, position: Option<Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(bp) = self.debugger.read(cx).breakpoint(id).cloned() else { return };
         // Below the marker when it's on screen.
-        let position = position.or_else(|| self.marker_anchor(id));
+        let position = position.or_else(|| self.marker_anchor(id, cx));
         let workspace = cx.weak_entity();
         let editor = cx.new(|cx| BreakpointEditor::new(workspace, bp, window, cx));
         self.breakpoint_editor = Some(editor.downgrade());
@@ -346,13 +289,12 @@ impl Workspace {
     }
 
     /// Where a popover for breakpoint `id` hangs from its marker.
-    fn marker_anchor(&self, id: u64) -> Option<Point<Pixels>> {
-        self.breakpoint_gutter
-            .painted
-            .borrow()
-            .iter()
-            .find(|(_, painted, _)| *painted == id)
-            .map(|(bounds, _, _)| point(bounds.left(), bounds.bottom()))
+    fn marker_anchor(&self, id: u64, cx: &App) -> Option<Point<Pixels>> {
+        let line = self.debugger.read(cx).breakpoint(id)?.line()?;
+        self.painted_gutter(BREAKPOINT_LANE, cx)
+            .into_iter()
+            .find(|(painted, _)| *painted == line)
+            .map(|(_, bounds)| point(bounds.left(), bounds.bottom()))
     }
 
     /// Saves what the breakpoint editor changed (it closes however it closes).
@@ -570,27 +512,19 @@ impl Workspace {
         // markers painted last frame.
         let gutter = self.active_buffer().and_then(|buffer| {
             let state = buffer.editor.read(cx);
-            let input = state.input_bounds();
-            let x = input.origin.x + (gutter_width(state)? - px(FOLD_COLUMN)) / 2.;
+            let geometry = state.gutter_geometry();
             let line_height = state.line_height()?;
-            let text = state.text();
-            let rows: Vec<serde_json::Value> = state
-                .visible_row_range()?
-                .filter(|&row| row < text.lines_len())
-                .filter_map(|row| {
-                    let offset = text.line_start_offset(row);
-                    let bounds = state.range_to_bounds(&(offset..offset))?;
-                    Some(serde_json::json!([row + 1, f32::from(bounds.origin.y + line_height / 2.)]))
-                })
+            let rows: Vec<serde_json::Value> = geometry
+                .rows
+                .iter()
+                .map(|&(row, top, _)| serde_json::json!([row + 1, f32::from(top + line_height / 2.)]))
                 .collect();
-            Some(serde_json::json!({ "x": f32::from(x), "rows": rows }))
+            Some(serde_json::json!({ "x": f32::from(geometry.numbers.center().x), "rows": rows }))
         });
         let markers: Vec<serde_json::Value> = self
-            .breakpoint_gutter
-            .painted
-            .borrow()
-            .iter()
-            .map(|(bounds, _, line)| serde_json::json!({ "line": line, "x": f32::from(bounds.center().x), "y": f32::from(bounds.center().y) }))
+            .painted_gutter(BREAKPOINT_LANE, cx)
+            .into_iter()
+            .map(|(line, bounds)| serde_json::json!({ "line": line, "x": f32::from(bounds.center().x), "y": f32::from(bounds.center().y) }))
             .collect();
         serde_json::json!({
             "list": list,

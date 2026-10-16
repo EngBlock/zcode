@@ -184,7 +184,6 @@ pub struct Workspace {
     pub outline_generation: u64,
     session: Session,
     pub tests: testing::TestsState,
-    gutter: Rc<test_gutter::GutterState>,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
     outline_task: Option<Task<()>>,
@@ -305,7 +304,6 @@ impl Workspace {
             outline_generation: 0,
             session,
             tests: Default::default(),
-            gutter: Default::default(),
             _subscriptions: subscriptions,
             _tasks: vec![],
             outline_task: None,
@@ -714,6 +712,36 @@ impl Workspace {
         self.active_buffer().filter(|b| b.shown_plist().is_none()).map(|b| b.editor.clone())
     }
 
+    /// The path of the buffer `editor` (an entity id) edits; it follows
+    /// renames, which a path captured when the editor opened wouldn't.
+    fn buffer_path_of(&self, editor: EntityId) -> Option<PathBuf> {
+        self.buffers.iter().find(|b| b.editor.entity_id() == editor).map(|b| b.path.clone())
+    }
+
+    /// The active editor's gutter items of `lane` as painted last frame:
+    /// 1-based line and bounds.
+    fn painted_gutter(&self, lane: &str, cx: &App) -> Vec<(u32, Bounds<Pixels>)> {
+        let Some(editor) = self.active_editor() else { return vec![] };
+        editor
+            .read(cx)
+            .painted_gutter_items()
+            .iter()
+            .filter(|item| item.lane.as_ref() == lane)
+            .map(|item| (item.row + 1, item.bounds))
+            .collect()
+    }
+
+    /// The gutter's lanes: breakpoint markers, bookmark ribbons over them,
+    /// test diamonds over both, each taking its clicks first.
+    fn install_gutter_lanes(&self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let lanes = [self.breakpoint_lane(editor, cx), self.bookmark_lane(editor, cx), self.test_lane(editor, cx)];
+        editor.update(cx, |state, cx| {
+            for lane in lanes {
+                state.set_gutter_lane(lane, cx);
+            }
+        });
+    }
+
     fn language_for(path: &Path) -> &'static str {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -816,6 +844,7 @@ impl Workspace {
                 .default_value(text)
         });
         editor.update(cx, |state, cx| state.set_read_only(read_only, cx));
+        self.install_gutter_lanes(&editor, cx);
 
         let lsp_language = lsp::language_id_for(&path);
         if let Some(language_id) = lsp_language {

@@ -136,6 +136,11 @@ impl Anchors {
         }
     }
 
+    pub(crate) fn row(&self, anchor: Anchor, text: &Rope) -> Option<u32> {
+        let entry = self.entries.get(&anchor.0)?;
+        (!entry.deleted).then(|| text.offset_to_point(entry.start.min(text.len())).row as u32)
+    }
+
     /// The anchors the last edit moved irreversibly.
     pub(crate) fn take_moved(&mut self) -> Vec<AnchorSnapshot> {
         std::mem::take(&mut self.moved)

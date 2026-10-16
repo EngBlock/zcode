@@ -535,9 +535,6 @@ impl Workspace {
                 .into_any_element();
         }
         let editor = buffer.editor.clone();
-        let markers = self.render_breakpoint_gutter(&editor, cx);
-        let ribbons = self.render_bookmark_gutter(&editor, cx);
-        let diamonds = self.render_test_gutter(&editor, cx);
         v_flex()
             .size_full()
             .child(self.render_tabs(cx))
@@ -554,12 +551,7 @@ impl Workspace {
                             .h_full()
                             .font_family(theme.mono_font_family.clone())
                             .text_size(px(self.font_size)),
-                    )
-                    // Ribbons paint over markers, diamonds over both, and
-                    // each takes its clicks first.
-                    .children(markers)
-                    .children(ribbons)
-                    .children(diamonds),
+                    ),
             )
             .into_any_element()
     }

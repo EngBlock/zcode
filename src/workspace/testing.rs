@@ -259,15 +259,23 @@ impl Workspace {
     pub(super) fn test_statuses(&mut self, cx: &App) -> Rc<Vec<Option<TestStatus>>> {
         let build = self.build.read(cx);
         let key = (self.tests.index.generation, build.tests_generation);
+        let statuses = self.current_test_statuses(cx);
+        self.tests.statuses = Some((key.0, key.1, statuses.clone()));
+        statuses
+    }
+
+    /// The statuses, from the cache when it's current (the gutter reads them
+    /// while painting, where it can't update the cache).
+    pub(super) fn current_test_statuses(&self, cx: &App) -> Rc<Vec<Option<TestStatus>>> {
+        let build = self.build.read(cx);
+        let key = (self.tests.index.generation, build.tests_generation);
         if let Some((index, results, statuses)) = &self.tests.statuses
             && (*index, *results) == key
         {
             return statuses.clone();
         }
         let modules: Vec<Option<String>> = self.tests.index.targets.iter().map(|t| t.as_ref().map(|t| t.module.clone())).collect();
-        let statuses = Rc::new(testing::statuses(&self.tests.index.items, &modules, &build.tests));
-        self.tests.statuses = Some((key.0, key.1, statuses.clone()));
-        statuses
+        Rc::new(testing::statuses(&self.tests.index.items, &modules, &build.tests))
     }
 
     // ------------------------------------------------------------------
@@ -743,10 +751,10 @@ impl Workspace {
         serde_json::json!({
             "loaded": index.loaded,
             "items": (0..index.items.len()).map(|ix| format!("{} {}", status(ix), label(ix))).collect::<Vec<_>>(),
-            "gutter": self.gutter.painted.borrow().iter().map(|(bounds, d)| serde_json::json!({
-                "line": d.line + 1,
-                "test": label(d.item),
-                "status": status(d.item),
+            "gutter": self.painted_diamonds(cx).into_iter().map(|(bounds, line, item)| serde_json::json!({
+                "line": line,
+                "test": label(item),
+                "status": status(item),
                 "x": f32::from(bounds.center().x),
                 "y": f32::from(bounds.center().y),
             })).collect::<Vec<_>>(),
