@@ -73,7 +73,7 @@ impl NavigatorTab {
     }
 }
 
-fn row(id: impl Into<ElementId>) -> Stateful<Div> {
+pub(super) fn row(id: impl Into<ElementId>) -> Stateful<Div> {
     h_flex().id(id).w_full().px_2().py(px(3.)).gap_1p5().text_sm()
 }
 
@@ -682,74 +682,6 @@ impl Workspace {
                         this.debugger.update(cx, |d, cx| d.select_frame(ix, cx));
                     })),
             );
-        }
-        list
-    }
-
-    fn render_breakpoint_navigator(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let debugger = self.debugger.read(cx);
-        let breakpoints = debugger.breakpoints.clone();
-        let active = debugger.breakpoints_active;
-        let mut list = v_flex()
-            .id("breakpoints")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                h_flex()
-                    .justify_between()
-                    .child(section_header(if active { "Breakpoints" } else { "Breakpoints (deactivated)" }, cx))
-                    .child(
-                        Button::new("clear-breakpoints")
-                            .icon(IconName::Trash)
-                            .ghost()
-                            .xsmall()
-                            .tooltip("Delete All Breakpoints")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.debugger.update(cx, |d, cx| d.remove_all_breakpoints(cx));
-                            })),
-                    ),
-            );
-        if breakpoints.is_empty() {
-            return list.child(empty("No breakpoints. Use ⌘\\ on a line to add one.", cx));
-        }
-        for (file_ix, (path, lines)) in breakpoints.into_iter().enumerate() {
-            list = list.child(
-                row(("bp-file", file_ix))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(Icon::new(file_icon(&path)).small().text_color(theme.muted_foreground))
-                    .child(path.file_name().unwrap_or_default().to_string_lossy().to_string()),
-            );
-            for line in lines {
-                let open = path.clone();
-                let remove = path.clone();
-                list = list.child(
-                    row(SharedString::from(format!("bp-{file_ix}-{line}")))
-                        .pl_6()
-                        .text_xs()
-                        .hover(|el| el.bg(theme.sidebar_accent))
-                        .child(Icon::new(IconName::Tag).xsmall().text_color(if active {
-                            theme.primary
-                        } else {
-                            theme.muted_foreground
-                        }))
-                        .child(div().flex_1().child(format!("line {line}")))
-                        .child(
-                            Button::new(SharedString::from(format!("bp-remove-{file_ix}-{line}")))
-                                .icon(IconName::X)
-                                .ghost()
-                                .xsmall()
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    let path = remove.clone();
-                                    this.debugger.update(cx, |d, cx| d.toggle_breakpoint(path, line, cx));
-                                })),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            let target = Target::Line { line: line.saturating_sub(1), column: 0 };
-                            this.open_file(open.clone(), Some(target), true, window, cx);
-                        })),
-                );
-            }
         }
         list
     }

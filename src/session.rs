@@ -21,9 +21,29 @@ pub struct ProjectSession {
     pub show_navigator: Option<bool>,
     pub show_debug_area: Option<bool>,
     pub show_inspector: Option<bool>,
-    /// File → 1-based breakpoint lines.
+    /// File → 1-based breakpoint lines, as sessions saved them before
+    /// breakpoints had options; read into `breakpoints_v2`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub breakpoints: std::collections::BTreeMap<PathBuf, Vec<u32>>,
+    /// Every breakpoint with its options (Xcode's file is Breakpoints_v2).
+    pub breakpoints_v2: Vec<crate::debugger::Breakpoint>,
     pub breakpoints_active: Option<bool>,
+}
+
+impl ProjectSession {
+    /// The saved breakpoints, including ones from older sessions.
+    pub fn all_breakpoints(&self) -> Vec<crate::debugger::Breakpoint> {
+        use crate::debugger::{Breakpoint, breakpoints::Kind};
+        let mut all = self.breakpoints_v2.clone();
+        for (path, lines) in &self.breakpoints {
+            for &line in lines {
+                if !all.iter().any(|bp| bp.is_at(path, line)) {
+                    all.push(Breakpoint::new(Kind::Line { path: path.clone(), line }));
+                }
+            }
+        }
+        all
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -72,5 +92,24 @@ impl Session {
 
     pub fn set_project(&mut self, root: &Path, state: ProjectSession) {
         self.projects.insert(root.to_string_lossy().to_string(), state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn breakpoints_from_older_sessions_are_kept() {
+        let old: ProjectSession =
+            serde_json::from_str(r#"{ "breakpoints": { "/a.swift": [3, 9] }, "breakpoints_active": true }"#).unwrap();
+        let all = old.all_breakpoints();
+        assert_eq!(all.len(), 2);
+        assert!(all[0].is_at(Path::new("/a.swift"), 3) && all[1].is_at(Path::new("/a.swift"), 9));
+        let saved = ProjectSession { breakpoints_v2: all, ..Default::default() };
+        let text = serde_json::to_string(&saved).unwrap();
+        assert!(!text.contains("\"breakpoints\":"), "the old map isn't written: {text}");
+        let reread: ProjectSession = serde_json::from_str(&text).unwrap();
+        assert_eq!(reread.all_breakpoints(), saved.breakpoints_v2);
     }
 }

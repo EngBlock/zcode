@@ -8,6 +8,7 @@
 //!   keys <keystroke> ...       simulate keystrokes, e.g. `keys cmd-shift-o`
 //!   type <text>                type text into the focused input
 //!   mouse <x> <y> / click <x> <y>  move / click at window coordinates (points)
+//!   double-click <x> <y> / right-click <x> <y>
 //!   open <path>[:line]         open a file in the frontmost workspace
 //!   wait <ms>                  pause
 //!   rename <path> -> <name>    rename a file or folder (a name containing `/` moves it)
@@ -19,6 +20,10 @@
 //!   membership <target> on|off toggle a Target Membership checkbox in the inspector
 //!   run-test <Target/Class/test> run a test, class or target as the Test navigator's play button does
 //!   edit-scheme <field> [<value>]  edit the open scheme editor (see `EditSchemeDialog::set_field`)
+//!   breakpoint <field> [<value>]   edit the open breakpoint editor (see `BreakpointEditor::set_field`)
+//!   console <command>          run a command at the LLDB console's prompt
+//!   variable <name> copy|describe  the Variables view's Copy Value / Print Description
+//!   hover                      log the editor's hover (Quick Help or a data tip) at the cursor
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -56,6 +61,10 @@ pub fn start(cx: &mut App, workspaces: impl Fn(&mut App) -> Vec<Entity<Workspace
                         cx.update(|cx| cx.quit());
                         Ok(String::new())
                     }
+                    "hover" => match cx.update(|cx| start_hover(&workspaces, cx)) {
+                        Ok(task) => task.await.map_err(|e| format!("{e:#}")).map(|hover| hover_text(hover.as_ref())),
+                        Err(err) => Err(err),
+                    },
                     _ => cx.update(|cx| run_command(cmd, &arg, &workspaces, cx)),
                 };
                 let mut log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).ok();
@@ -117,7 +126,7 @@ fn run_command(
             }
             Ok(String::new())
         }
-        "mouse" | "click" => {
+        "mouse" | "click" | "double-click" | "right-click" => {
             let mut parts = arg.split_whitespace().filter_map(|p| p.parse::<f32>().ok());
             let (Some(x), Some(y)) = (parts.next(), parts.next()) else {
                 return Err("usage: mouse <x> <y> (window points)".into());
@@ -133,23 +142,29 @@ fn run_command(
                         }),
                         cx,
                     );
-                    if cmd == "click" {
+                    let (button, clicks) = match cmd {
+                        "click" => (MouseButton::Left, 1),
+                        "double-click" => (MouseButton::Left, 2),
+                        "right-click" => (MouseButton::Right, 1),
+                        _ => (MouseButton::Left, 0),
+                    };
+                    for click_count in 1..=clicks {
                         window.dispatch_event(
                             PlatformInput::MouseDown(MouseDownEvent {
-                                button: MouseButton::Left,
+                                button,
                                 position,
                                 modifiers: Modifiers::default(),
-                                click_count: 1,
+                                click_count,
                                 first_mouse: false,
                             }),
                             cx,
                         );
                         window.dispatch_event(
                             PlatformInput::MouseUp(MouseUpEvent {
-                                button: MouseButton::Left,
+                                button,
                                 position,
                                 modifiers: Modifiers::default(),
-                                click_count: 1,
+                                click_count,
                             }),
                             cx,
                         );
@@ -227,6 +242,25 @@ fn run_command(
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
         }
+        "breakpoint" | "console" | "variable" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| {
+                    workspace.update(cx, |ws, cx| match cmd {
+                        "breakpoint" => {
+                            let (field, value) = arg.split_once(' ').unwrap_or((arg, ""));
+                            ws.breakpoint_editor_field(field, value, window, cx)
+                        }
+                        "console" => ws.console_command(arg, window, cx),
+                        _ => {
+                            let (name, command) = arg.rsplit_once(' ').ok_or("usage: variable <name> copy|describe")?;
+                            ws.variable_command(name, command, cx)
+                        }
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
+        }
         "run-test" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window
@@ -282,6 +316,28 @@ fn run_command(
         }
         other => Err(format!("unknown command {other}")),
     }
+}
+
+/// Asks the active editor's hover provider about the cursor's position.
+fn start_hover(
+    workspaces: &dyn Fn(&mut App) -> Vec<Entity<Workspace>>,
+    cx: &mut App,
+) -> Result<Task<anyhow::Result<Option<lsp_types::Hover>>>, String> {
+    let window = front_window(cx).ok_or("no window")?;
+    let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+    window
+        .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.hover_at_cursor(window, cx)))
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no editor with a hover provider".to_string())
+}
+
+fn hover_text(hover: Option<&lsp_types::Hover>) -> String {
+    let Some(hover) = hover else { return "{}".into() };
+    let text = match &hover.contents {
+        lsp_types::HoverContents::Markup(markup) => markup.value.clone(),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    };
+    serde_json::json!({ "hover": text }).to_string()
 }
 
 /// Captures zcode's key (or main) window. A process may capture its own

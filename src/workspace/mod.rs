@@ -1,6 +1,9 @@
 //! The project window: navigator, editor tabs, debug area, toolbar, status.
 
 mod add_files;
+mod breakpoint_editor;
+mod breakpoints;
+mod console;
 mod edit_scheme;
 mod editing;
 mod inspector;
@@ -64,7 +67,7 @@ pub struct Buffer {
     saved_text: gpui_kit::component::input::Rope,
     pub language: SharedString,
     mtime: Option<SystemTime>,
-    breakpoint_marks: Option<RangeDecorationCollection>,
+    breakpoint_anchors: Vec<breakpoints::Anchor>,
     exec_mark: Option<RangeDecorationCollection>,
     _subscriptions: Vec<Subscription>,
 }
@@ -80,6 +83,8 @@ impl Buffer {
 
 struct Modal {
     view: AnyView,
+    /// Where a popover points (window coordinates); sheets are centered.
+    position: Option<Point<Pixels>>,
     _subscription: Subscription,
 }
 
@@ -115,6 +120,10 @@ pub struct Workspace {
     project_edit_lock: Arc<parking_lot::Mutex<()>>,
     add_files_dialog: Option<WeakEntity<add_files::AddFilesDialog>>,
     edit_scheme_dialog: Option<WeakEntity<edit_scheme::EditSchemeDialog>>,
+    breakpoint_editor: Option<WeakEntity<breakpoint_editor::BreakpointEditor>>,
+    breakpoint_gutter: Rc<breakpoints::BreakpointGutter>,
+    popup_menu: Option<breakpoints::PopupMenuState>,
+    console: console::Console,
     pub show_inspector: bool,
     /// What the File inspector shows when it isn't the active file (a
     /// folder picked in the navigator).
@@ -214,6 +223,10 @@ impl Workspace {
             project_edit_lock: Default::default(),
             add_files_dialog: None,
             edit_scheme_dialog: None,
+            breakpoint_editor: None,
+            breakpoint_gutter: Default::default(),
+            popup_menu: None,
+            console: Default::default(),
             show_inspector: saved.show_inspector.unwrap_or(false),
             inspected: None,
             inspector_info: None,
@@ -272,12 +285,12 @@ impl Workspace {
         }
         this.restore_destination = saved.destination.clone();
         this.debugger.update(cx, |d, _| {
-            d.breakpoints = saved
-                .breakpoints
-                .iter()
-                .filter(|(path, _)| path.exists())
-                .map(|(path, lines)| (path.clone(), lines.iter().copied().collect()))
+            let breakpoints = saved
+                .all_breakpoints()
+                .into_iter()
+                .filter(|bp| bp.path().is_none_or(Path::exists))
                 .collect();
+            d.restore_breakpoints(breakpoints);
             d.breakpoints_active = saved.breakpoints_active.unwrap_or(true);
         });
 
@@ -442,6 +455,7 @@ impl Workspace {
         while let Some(ix) = self.buffers.iter().position(|b| b.path.starts_with(&path)) {
             self.force_close(ix, window, cx);
         }
+        self.debugger.update(cx, |d, cx| d.remove_breakpoints_in(&path, cx));
         self.rescan(cx);
         self.refresh_scm(cx);
         self.remove_from_projects(path, window, cx);
@@ -480,6 +494,7 @@ impl Workspace {
             self.notify_error(format!("Couldn’t rename: {err}"), window, cx);
             return;
         }
+        self.debugger.update(cx, |d, cx| d.move_files(&path, &target, cx));
         let mut reopen = vec![];
         while let Some(ix) = self.buffers.iter().position(|b| b.path.starts_with(&path)) {
             let old = self.buffers[ix].path.clone();
@@ -559,6 +574,8 @@ impl Workspace {
         if let Some(text) = text {
             self.lsp.update(cx, |lsp, cx| lsp.document_changed(path, text, cx));
         }
+        // Replacing the text collapsed the anchors; breakpoints keep their lines.
+        self.anchor_breakpoints(path, true, cx);
     }
 
     fn restore_tabs(
@@ -595,13 +612,8 @@ impl Workspace {
             show_navigator: Some(self.show_navigator),
             show_debug_area: Some(self.show_debug_area),
             show_inspector: Some(self.show_inspector),
-            breakpoints: self
-                .debugger
-                .read(cx)
-                .breakpoints
-                .iter()
-                .map(|(path, lines)| (path.clone(), lines.iter().copied().collect()))
-                .collect(),
+            breakpoints: Default::default(),
+            breakpoints_v2: self.debugger.read(cx).breakpoints.clone(),
             breakpoints_active: Some(self.debugger.read(cx).breakpoints_active),
         };
         self.session = Session::load();
@@ -768,9 +780,12 @@ impl Workspace {
                             .update(cx, |lsp, cx| lsp.document_changed(&path, text, cx));
                     }
                     this.schedule_test_reparse(&path, cx);
+                    this.track_breakpoints(&path, cx);
                 }
             }
         });
+        // Variable values on hover while paused, in front of Quick Help.
+        crate::debugger::hover::install(&editor, self.debugger.downgrade(), cx);
         let observe = cx.observe(&editor, |_, _, cx| cx.notify());
 
         let saved_text = editor.read(cx).text().clone();
@@ -781,13 +796,13 @@ impl Workspace {
             dirty: false,
             language: language.into(),
             mtime,
-            breakpoint_marks: None,
+            breakpoint_anchors: vec![],
             exec_mark: None,
             _subscriptions: vec![change, observe],
         });
         let ix = self.buffers.len() - 1;
         self.refresh_diagnostics_for(&path, cx);
-        self.refresh_breakpoint_marks(&path, cx);
+        self.anchor_breakpoints(&path, false, cx);
         self.activate(ix, window, cx);
         if let Some(target) = target {
             self.reveal_target(ix, target.clone(), window, cx);
@@ -1206,8 +1221,15 @@ impl Workspace {
                 let line = line.clone();
                 self.build.update(cx, |b, cx| b.append_console(line, cx));
             }
-            DebuggerEvent::BreakpointsChanged(path) => self.refresh_breakpoint_marks(path, cx),
+            DebuggerEvent::BreakpointsChanged => {
+                let paths: Vec<PathBuf> = self.buffers.iter().map(|b| b.path.clone()).collect();
+                for path in paths {
+                    self.anchor_breakpoints(&path, false, cx);
+                }
+            }
             DebuggerEvent::Stopped { path, line } => {
+                // The console's `(lldb)` prompt appears while paused.
+                self.console_input(window, cx);
                 self.show_debug_area = true;
                 self.debug_tab = DebugTab::Console;
                 self.navigator = NavigatorTab::Debug;
@@ -1240,37 +1262,6 @@ impl Workspace {
         let start = text.line_start_offset(row);
         let end = (text.line_end_offset(row) + 1).min(text.len());
         (end > start).then_some(start..end)
-    }
-
-    pub(super) fn refresh_breakpoint_marks(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let (lines, active) = {
-            let debugger = self.debugger.read(cx);
-            (
-                debugger.breakpoints.get(path).cloned().unwrap_or_default(),
-                debugger.breakpoints_active,
-            )
-        };
-        let color = if active {
-            gpui_kit::hsla(0.6, 0.85, 0.55, 0.22)
-        } else {
-            gpui_kit::hsla(0.6, 0.1, 0.55, 0.18)
-        };
-        let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) else { return };
-        let text = buffer.editor.read(cx).text().clone();
-        let decorations: Vec<_> = lines
-            .iter()
-            .filter_map(|&line| Self::line_range(&text, line))
-            .map(|range| RangeDecoration::new(range).with_style(RangeDecorationStyle::Fill).with_color(color))
-            .collect();
-        match &buffer.breakpoint_marks {
-            Some(marks) => marks.set(decorations, cx),
-            None => {
-                let marks = buffer
-                    .editor
-                    .update(cx, |state, cx| state.create_range_decorations_collection(decorations, cx));
-                buffer.breakpoint_marks = Some(marks);
-            }
-        }
     }
 
     /// Highlights the line execution stopped on (green, like Xcode).
@@ -1541,12 +1532,21 @@ impl Workspace {
     where
         V: Render + EventEmitter<DismissEvent> + Focusable,
     {
+        self.show_modal_at(view, None, window, cx);
+    }
+
+    /// Shows a popover pointing at `position`, or a centered sheet.
+    pub fn show_modal_at<V>(&mut self, view: Entity<V>, position: Option<Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>)
+    where
+        V: Render + EventEmitter<DismissEvent> + Focusable,
+    {
         let subscription = cx.subscribe_in(&view, window, |this, _, _: &DismissEvent, window, cx| {
             this.dismiss_modal(window, cx);
         });
         view.read(cx).focus_handle(cx).focus(window, cx);
         self.modal = Some(Modal {
             view: view.into(),
+            position,
             _subscription: subscription,
         });
         cx.notify();
@@ -1557,6 +1557,10 @@ impl Workspace {
         if let Some(dialog) = self.edit_scheme_dialog.take().and_then(|d| d.upgrade()) {
             let options = dialog.read(cx).edited(cx);
             self.save_edited_scheme(options, window, cx);
+        }
+        // So does the breakpoint editor.
+        if let Some(editor) = self.breakpoint_editor.take().and_then(|e| e.upgrade()) {
+            self.apply_breakpoint_edit(&editor, cx);
         }
         if self.modal.take().is_some() {
             match self.active_editor() {
@@ -1729,7 +1733,7 @@ impl Workspace {
             "issues": issues.iter().map(|i| format!("{:?} {}:{} {}", i.severity, i.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), i.line.unwrap_or(0), i.message)).collect::<Vec<_>>(),
             "tests": build.tests.iter().map(|t| format!("{:?} {}", t.status, t.full_name())).collect::<Vec<_>>(),
             "testing": testing,
-            "console_tail": build.console.iter().rev().take(8).rev().cloned().collect::<Vec<_>>(),
+            "console_tail": build.console.iter().rev().take(40).rev().cloned().collect::<Vec<_>>(),
             "log_lines": build.log.len(),
             "reports": build.reports.len(),
             "find_results": self.find.results.iter().map(|f| f.matches.len()).sum::<usize>(),
@@ -1743,10 +1747,11 @@ impl Workspace {
                 "state": format!("{:?}", self.debugger.read(cx).state),
                 "frames": self.debugger.read(cx).frames.iter().take(4).map(|f| format!("{} {}:{}", f.name, f.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), f.line)).collect::<Vec<_>>(),
                 "variables": self.debugger.read(cx).variables.iter().take(8).map(|v| format!("{} = {}", v.name, v.value)).collect::<Vec<_>>(),
-                "breakpoints": self.debugger.read(cx).breakpoints.values().map(|l| l.len()).sum::<usize>(),
             },
         });
         // Added separately: one `json!` this size reaches the macro recursion limit.
+        state["breakpoints"] = self.breakpoints_summary(cx);
+        state["console"] = self.console_summary(cx);
         state["last_log"] = serde_json::json!(build.reports.first().map(|r| r.log_path.clone()));
         state["scheme_options"] = serde_json::json!(build.scheme_options.as_ref().map(edit_scheme::options_summary));
         state["edit_scheme"] =

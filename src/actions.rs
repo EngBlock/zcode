@@ -100,6 +100,10 @@ gpui_kit::actions!(
         ToggleBreakpoint,
         ToggleBreakpointsActive,
         DeleteAllBreakpoints,
+        EditBreakpoint,
+        CreateSymbolicBreakpoint,
+        CreateSwiftErrorBreakpoint,
+        CreateExceptionBreakpoint,
         DebugContinue,
         StepOver,
         StepInto,
@@ -220,6 +224,7 @@ pub fn bind_keys(cx: &mut App) {
         // Debug
         KeyBinding::new("cmd-k", ClearConsole, None),
         KeyBinding::new("cmd-\\", ToggleBreakpoint, None),
+        KeyBinding::new("cmd-alt-\\", CreateSymbolicBreakpoint, None),
         KeyBinding::new("cmd-y", ToggleBreakpointsActive, None),
         KeyBinding::new("ctrl-cmd-y", DebugContinue, None),
         KeyBinding::new("f6", StepOver, None),
@@ -238,6 +243,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", PickerConfirm, Some("AddFilesDialog")),
         KeyBinding::new("escape", PickerDismiss, Some("AddFilesDialog")),
         KeyBinding::new("escape", PickerDismiss, Some("EditSchemeDialog")),
+        KeyBinding::new("escape", PickerDismiss, Some("BreakpointEditor")),
+        // The LLDB console's history.
+        KeyBinding::new("up", PickerSelectPrevious, Some("LldbConsole > Input")),
+        KeyBinding::new("down", PickerSelectNext, Some("LldbConsole > Input")),
     ]);
 }
 
@@ -364,9 +373,14 @@ pub fn commands() -> Vec<Command> {
         cmd!("Debug", "Step Into", StepInto),
         cmd!("Debug", "Step Out", StepOut),
         cmd!("Debug", "-", Quit),
-        cmd!("Debug", "Breakpoint at Current Line", ToggleBreakpoint),
         cmd!("Debug", "Activate/Deactivate Breakpoints", ToggleBreakpointsActive),
-        cmd!("Debug", "Delete All Breakpoints", DeleteAllBreakpoints),
+        cmd!("Debug ▸ Breakpoints", "Create Breakpoint at Current Line", ToggleBreakpoint),
+        cmd!("Debug ▸ Breakpoints", "Create Symbolic Breakpoint…", CreateSymbolicBreakpoint),
+        cmd!("Debug ▸ Breakpoints", "Create Swift Error Breakpoint", CreateSwiftErrorBreakpoint),
+        cmd!("Debug ▸ Breakpoints", "Create Exception Breakpoint…", CreateExceptionBreakpoint),
+        cmd!("Debug ▸ Breakpoints", "-", Quit),
+        cmd!("Debug ▸ Breakpoints", "Edit Breakpoint…", EditBreakpoint),
+        cmd!("Debug ▸ Breakpoints", "Delete All Breakpoints", DeleteAllBreakpoints),
         cmd!("Debug", "-", Quit),
         cmd!("Debug", "Clear Console", ClearConsole),
     ]

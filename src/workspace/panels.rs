@@ -6,7 +6,7 @@ use std::ops::Range;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Disableable as _, Selectable as _};
 use gpui_kit::component::input::Editor;
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, TitleBar, h_flex, v_flex};
@@ -518,6 +518,7 @@ impl Workspace {
                 .into_any_element();
         };
         let editor = buffer.editor.clone();
+        let markers = self.render_breakpoint_gutter(&editor, cx);
         let diamonds = self.render_test_gutter(&editor, cx);
         v_flex()
             .size_full()
@@ -536,6 +537,8 @@ impl Workspace {
                             .font_family(theme.mono_font_family.clone())
                             .text_size(px(self.font_size)),
                     )
+                    // Diamonds paint over markers and take their clicks first.
+                    .children(markers)
                     .children(diamonds),
             )
             .into_any_element()
@@ -651,6 +654,7 @@ impl Workspace {
             );
 
         let count = self.debug_line_count(cx);
+        let prompt = self.render_console_prompt(cx);
         let body = if count == 0 {
             div()
                 .p_3()
@@ -679,7 +683,7 @@ impl Workspace {
                     .flex_1()
                     .min_h_0()
                     .when(debugging, |el| el.child(self.render_variables(cx)))
-                    .child(div().flex_1().h_full().min_w_0().child(body)),
+                    .child(v_flex().flex_1().h_full().min_w_0().child(div().flex_1().min_h_0().child(body)).children(prompt)),
             )
     }
 
@@ -688,6 +692,7 @@ impl Workspace {
         let theme = cx.theme().clone();
         let variables = self.debugger.read(cx).variables.clone();
         let mono = theme.mono_font_family.clone();
+        let workspace = cx.weak_entity();
         v_flex()
             .id("variables")
             .w(px(380.))
@@ -732,6 +737,10 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.debugger.update(cx, |d, cx| d.toggle_variable(ix, cx));
                     }))
+                    .context_menu({
+                        let workspace = workspace.clone();
+                        move |menu, _, _| Workspace::variable_menu(menu, ix, &var.name, var.value.clone(), workspace.clone())
+                    })
             }))
     }
 
@@ -1174,11 +1183,7 @@ impl Render for Workspace {
                 this.show_debug_area = !this.show_debug_area;
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &ActivateConsole, _, cx| {
-                this.show_debug_area = true;
-                this.debug_tab = DebugTab::Console;
-                cx.notify();
-            }))
+            .on_action(cx.listener(|this, _: &ActivateConsole, window, cx| this.activate_console(window, cx)))
             .on_action(cx.listener(|this, _: &IncreaseFontSize, _, cx| this.change_font_size(1., cx)))
             .on_action(cx.listener(|this, _: &DecreaseFontSize, _, cx| this.change_font_size(-1., cx)))
             .on_action(cx.listener(|this, _: &ResetFontSize, _, cx| this.change_font_size(0., cx)))
@@ -1196,6 +1201,12 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ToggleBreakpointsActive, _, cx| {
                 this.debugger.update(cx, |d, cx| d.toggle_breakpoints_active(cx));
             }))
+            .on_action(cx.listener(|this, _: &EditBreakpoint, window, cx| this.edit_breakpoint_at_cursor(window, cx)))
+            .on_action(cx.listener(|this, _: &CreateSymbolicBreakpoint, window, cx| this.create_symbolic_breakpoint(window, cx)))
+            .on_action(cx.listener(|this, _: &CreateSwiftErrorBreakpoint, window, cx| {
+                this.create_swift_error_breakpoint(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &CreateExceptionBreakpoint, window, cx| this.create_exception_breakpoint(window, cx)))
             .on_action(cx.listener(|this, _: &DeleteAllBreakpoints, _, cx| {
                 this.debugger.update(cx, |d, cx| d.remove_all_breakpoints(cx));
             }))
@@ -1216,7 +1227,8 @@ impl Render for Workspace {
             .child(self.render_toolbar(cx))
             .child(div().flex_1().min_h_0().child(main))
             .child(self.render_status_bar(cx))
-            .when_some(self.modal.as_ref().map(|m| m.view.clone()), |el, view| {
+            .when_some(self.modal.as_ref().map(|m| (m.view.clone(), m.position)), |el, (view, position)| {
+                let content = div().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(view);
                 el.child(
                     div()
                         .absolute()
@@ -1229,11 +1241,18 @@ impl Render for Workspace {
                             MouseButton::Left,
                             cx.listener(|this, _, window, cx| this.dismiss_modal(window, cx)),
                         )
-                        .child(
-                            div()
-                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .child(view),
-                        ),
+                        .map(|el| match position {
+                            // A popover beside what it edits, kept in the window.
+                            Some(position) => el.child(
+                                anchored().position(position + point(px(0.), px(2.))).snap_to_window_with_margin(px(8.)).child(content),
+                            ),
+                            None => el.child(content),
+                        }),
+                )
+            })
+            .when_some(self.popup_menu.as_ref().map(|p| (p.menu.clone(), p.position)), |el, (menu, position)| {
+                el.child(
+                    deferred(anchored().position(position).snap_to_window_with_margin(px(8.)).child(menu)).with_priority(1),
                 )
             })
     }

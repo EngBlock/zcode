@@ -20,7 +20,7 @@ use crate::build::log::TestStatus;
 /// The editor gutter's fold-chevron column and the space before it, to the
 /// right of the line numbers (`gpui-base`'s `FOLD_ICON_HITBOX_WIDTH` and
 /// `LINE_NUMBER_RIGHT_MARGIN`).
-const FOLD_COLUMN: f32 = 18. + 6.;
+pub(super) const FOLD_COLUMN: f32 = 18. + 6.;
 const DIAMOND_SIZE: f32 = 14.;
 
 /// A diamond to draw: the 0-based line, the test item and its status.
@@ -134,7 +134,7 @@ pub(super) fn diamond_icon(status: Option<TestStatus>, cx: &App) -> impl IntoEle
 
 /// The width of the editor's gutter (line numbers and fold chevrons): how
 /// far right of the text bounds a visible line's first character starts.
-fn gutter_width(state: &EditorState) -> Option<Pixels> {
+pub(super) fn gutter_width(state: &EditorState) -> Option<Pixels> {
     let rows = state.visible_row_range()?;
     let text = state.text();
     let row = rows.start.min(text.lines_len().saturating_sub(1));
