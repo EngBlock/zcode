@@ -32,6 +32,8 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | **Navigators** | Project (file tree with New File / Add Files / Rename / Move to Trash / Show File Inspector / Show in Finder), Source Control (git status), Symbols, Find (find in workspace with case, word and regex options), Issues (live + build), Tests, Debug (threads and frames), Breakpoints and Reports (build/run/test history with full logs). | ⌘1 … ⌘9 |
 | **Build & run** | Scheme, configuration and run destination pickers. Destinations are My Mac plus every available simulator, filtered by the scheme's `SUPPORTED_PLATFORMS`. | ⌃0, ⌃⇧0 |
 | | Build, Run, Test, Stop and Clean. Files are saved first. | ⌘B, ⌘R, ⌘U, ⌘., ⇧⌘K |
+| | Edit Scheme for the Run and Test actions: build configuration, Debug executable, arguments passed on launch and environment variables (each with its checkbox; `$(BUILD_SETTING)`s expand), working directory, launching without state restoration, and the Address, Thread and Undefined Behavior Sanitizers, Main Thread Checker, Malloc Scribble, Guard Edges and Stack Logging, and Zombie Objects. Changes are written in place to the scheme's `.xcscheme` (shared or the user's), the rest of the file left byte for byte; Swift packages keep them in zcode's session. Run… and Test… open the editor with a button that starts the action. Product ▸ Scheme also has Next and Previous Scheme. | ⌘<, ⌥⌘R, ⌥⌘U, ⌃⌘] ⌃⌘[ |
+| | The scheme's options reach every launch: simulator apps (`simctl launch` with `SIMCTL_CHILD_` variables), Mac apps, package products and lldb-dap; sanitizers reach `xcodebuild` and `swift build`/`swift test`, tests build with the Test action's configuration, and the Test action's environment reaches `swift test` and the in-simulator runner. The toolbar's build configuration is the Run action's. Mac executables and package products run on a pseudo-terminal, as in Xcode's console, so their output streams as it is printed. | — |
 | | Running on a simulator boots it, opens Simulator.app, installs and launches the app, and streams the app's stdout/stderr into the console. Mac executables and Swift packages run directly. | — |
 | | Build output streams into the debug area as a condensed Xcode-style activity log, or as the raw `xcodebuild` log. Errors and warnings appear inline, in the Issue navigator and with next/previous issue keys. | ⇧⌘Y, ⇧⌘C, ⌘K, ⌘' ⌘" |
 | | Test results from XCTest and Swift Testing populate the Test navigator, and Swift Testing failures appear as issues at the failing line. On a simulator, unit tests run inside the host app by injecting the test bundle (XCTest's own hosted-test mechanism). That is faster than `xcodebuild test` and doesn't depend on its test-runner service. | ⌘U |
@@ -129,6 +131,7 @@ src/
   build/            xcodebuild/swift/simctl queries, streaming runner, log/issue/test parsing,
                     compilation-database extraction
   testing/          tests found in source, test plans, test selections per runner, results → tests
+  scheme/           Edit Scheme options: .xcscheme read and edited in place, what launches get
   debugger/         DAP client and debugger model (lldb-dap)
   project.rs        project detection and gitignore-aware scanning
   xcodeproj.rs      project.pbxproj parser and in-place editor (build settings)
@@ -173,6 +176,11 @@ saved breakpoints can't leak in. It covers:
   suite, and the Greeting test plan; in a Swift package a test and an XCTest
   class (`swift test --filter`) and Re-run Failed Tests after a fix
 * run, test and debug for a Swift package
+* Edit Scheme: arguments, environment variables and diagnostics written into
+  HelloClassic's shared scheme (checked line by line, and byte for byte once
+  undone), a Mac app run that receives them, the Test action's configuration;
+  Run… and Test… on a Swift package with options kept in the session (also
+  under lldb-dap, and after a relaunch); a project without scheme files
 * cold launch: first frame before the minimal native AppKit app and under 250 ms (medians of 5); opening a project through an already-running instance (< 150 ms)
 * every Xcode 27 default shortcut for the MVP commands (from
   `docs/xcode-inventory.md`) is bound to the matching zcode command in the live
@@ -180,7 +188,8 @@ saved breakpoints can't leak in. It covers:
 * memory monitoring: sampler history, language-server and `SourceKitService`
   memory, the status-bar label and the `--perf-log` file
 * with `--simulator`: unit tests, one test and one suite from their diamonds,
-  the Smoke test plan, and run and debug on an iOS simulator
+  the Smoke test plan, and run (with the scheme's arguments and environment)
+  and debug on an iOS simulator
 
 The control channel also takes window screenshots
 (`screenshot <path>`), which doesn't need Screen Recording permission.
@@ -201,6 +210,19 @@ The control channel also takes window screenshots
   renaming them to a path.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas, Instruments or
   physical-device deployment.
+* Edit Scheme covers the Run and Test actions only (not Build, Profile,
+  Analyze or Archive, nor pre- and post-actions), and doesn't create,
+  duplicate, share or delete schemes. It has no App Language or Region,
+  location simulation, StoreKit or "Pause on issues" options. Main Thread
+  Checker applies under the debugger, as in Xcode.
+* A scheme that runs test plans takes its test arguments, environment and
+  diagnostics from the plan (as `xcodebuild` does), and plans can't be edited
+  yet. `swift test` doesn't pass launch arguments to tests. Schemes
+  `xcodebuild` makes up for projects without scheme files keep their options
+  in zcode's session instead of a new user scheme, so Xcode doesn't see them;
+  their test environment reaches `xcodebuild test` (as `TEST_RUNNER_`
+  variables) but their test launch arguments only reach the in-simulator
+  runner.
 * Tests are found by reading source, so tests that only exist at run time
   (XCTest methods added dynamically, tests from macros other than `@Test` and
   `@Suite`) have no diamond; their results still appear under Other Results

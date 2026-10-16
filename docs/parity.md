@@ -35,7 +35,8 @@ which was extracted from Xcode 27's own command definitions.
 | Split panes / assistant | ⬜ | |
 | Git: change gutter, blame, commit | 🟡 | Read-only Source Control navigator (status and branch) |
 | Swift packages: build, run, test | ✅ | Resolve/Update are handled implicitly by `swift build` |
-| Build configuration picker | ✅ | Run options dialog (arguments, environment) not yet |
+| Build configuration picker | ✅ | The Run action's configuration, written to the scheme |
+| Edit Scheme (⌘<), Run… (⌥⌘R), Test… (⌥⌘U), Next / Previous Scheme | ✅ | Run and Test actions: configuration, Debug executable, arguments and environment variables with checkboxes, working directory, persistent state, sanitizers, Main Thread Checker and memory diagnostics, written in place to the `.xcscheme` (packages: session). Applied to simulator, Mac, package and lldb-dap launches and to tests. No Build/Profile/Analyze/Archive actions, pre/post actions, scheme management, language/region or location options; test plans own their schemes' test options |
 | Project editor (click the project in the navigator) | 🟡 | General fields and every build setting, per configuration, for the project and each target, written in place to `project.pbxproj`. No Signing & Capabilities, Info, Build Phases or Build Rules tabs, and no adding targets or configurations |
 | Physical devices (devicectl) | ⬜ | |
 
