@@ -1,12 +1,15 @@
 //! Language-server integration (sourcekit-lsp for Swift, C, C++, Objective-C).
 
 mod client;
+pub mod hierarchy;
+pub mod inlay_hints;
 mod providers;
+pub mod semantic_tokens;
 mod store;
 
 pub use client::{LanguageServer, ServerEvent};
 pub use providers::{ApplyEditFn, DocumentProviders, definition_links};
-pub use store::{LspStatus, LspStore, LspStoreEvent};
+pub use store::{Features, LspStatus, LspStore, LspStoreEvent, SignatureTriggers};
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr as _;

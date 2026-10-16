@@ -341,6 +341,8 @@ fn client_capabilities() -> Value {
             "workspaceEdit": { "documentChanges": true },
             "symbol": { "symbolKind": { "valueSet": (1..=26).collect::<Vec<_>>() } },
             "didChangeWatchedFiles": { "dynamicRegistration": true },
+            "inlayHint": { "refreshSupport": true },
+            "semanticTokens": { "refreshSupport": true },
         },
         "textDocument": {
             "synchronization": { "didSave": true, "willSave": false, "dynamicRegistration": false },
@@ -355,7 +357,14 @@ fn client_capabilities() -> Value {
                 },
             },
             "hover": { "contentFormat": ["markdown", "plaintext"] },
-            "signatureHelp": { "signatureInformation": { "documentationFormat": ["markdown", "plaintext"] } },
+            "signatureHelp": {
+                "signatureInformation": {
+                    "documentationFormat": ["markdown", "plaintext"],
+                    "parameterInformation": { "labelOffsetSupport": true },
+                    "activeParameterSupport": true,
+                },
+                "contextSupport": true,
+            },
             "definition": { "linkSupport": true },
             "declaration": { "linkSupport": true },
             "typeDefinition": { "linkSupport": true },
@@ -380,6 +389,19 @@ fn client_capabilities() -> Value {
             },
             "publishDiagnostics": { "relatedInformation": true, "codeDescriptionSupport": true },
             "callHierarchy": {},
+            "typeHierarchy": {},
+            "inlayHint": {},
+            "semanticTokens": {
+                "requests": { "range": true, "full": true },
+                "tokenTypes": [
+                    "namespace", "type", "class", "enum", "interface", "struct", "typeParameter", "parameter",
+                    "variable", "property", "enumMember", "function", "method", "macro", "decorator",
+                ],
+                "tokenModifiers": [],
+                "formats": ["relative"],
+                "multilineTokenSupport": false,
+                "overlappingTokenSupport": false,
+            },
         },
     })
 }

@@ -27,6 +27,69 @@ pub enum LspStoreEvent {
     StatusChanged,
     /// The server asked us to apply an edit (e.g. from a code action command).
     ApplyEdit(lsp_types::WorkspaceEdit),
+    /// The server's answers changed without an edit (sourcekit-lsp sends
+    /// these once a file's build settings are known): ask again.
+    RefreshInlayHints,
+    RefreshSemanticTokens,
+}
+
+/// What the running server offers beyond completion, hover, definitions,
+/// references, rename and code actions, read from its `initialize` response.
+/// A feature it doesn't advertise is never asked for.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Features {
+    pub inlay_hints: bool,
+    /// The legend, when it has semantic tokens; `semantic_tokens_full`
+    /// when it answers for a whole document (otherwise for a range).
+    pub semantic_tokens: Option<super::semantic_tokens::Legend>,
+    pub semantic_tokens_full: bool,
+    pub signature_help: Option<SignatureTriggers>,
+    pub call_hierarchy: bool,
+    pub type_hierarchy: bool,
+}
+
+/// Characters that open signature help, and ones that update it while it's
+/// open (`(` and `,` for sourcekit-lsp).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SignatureTriggers {
+    pub triggers: Vec<String>,
+    pub retriggers: Vec<String>,
+}
+
+impl Features {
+    pub fn from_capabilities(capabilities: &Value) -> Self {
+        let on = |pointer: &str| !matches!(capabilities.pointer(pointer), None | Some(Value::Null) | Some(Value::Bool(false)));
+        let strings = |pointer: &str| -> Vec<String> {
+            capabilities
+                .pointer(pointer)
+                .and_then(Value::as_array)
+                .map(|list| list.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                .unwrap_or_default()
+        };
+        let semantic = capabilities.get("semanticTokensProvider").filter(|_| on("/semanticTokensProvider"));
+        Self {
+            inlay_hints: on("/inlayHintProvider"),
+            semantic_tokens: semantic.and_then(super::semantic_tokens::Legend::from_capability),
+            semantic_tokens_full: semantic.is_some_and(|_| on("/semanticTokensProvider/full")),
+            signature_help: on("/signatureHelpProvider").then(|| SignatureTriggers {
+                triggers: strings("/signatureHelpProvider/triggerCharacters"),
+                retriggers: strings("/signatureHelpProvider/retriggerCharacters"),
+            }),
+            call_hierarchy: on("/callHierarchyProvider"),
+            type_hierarchy: on("/typeHierarchyProvider"),
+        }
+    }
+
+    pub fn summary(&self) -> Value {
+        json!({
+            "inlay_hints": self.inlay_hints,
+            "semantic_tokens": self.semantic_tokens.is_some(),
+            "semantic_tokens_full": self.semantic_tokens_full,
+            "signature_help": self.signature_help.as_ref().map(|s| &s.triggers),
+            "call_hierarchy": self.call_hierarchy,
+            "type_hierarchy": self.type_hierarchy,
+        })
+    }
 }
 
 struct Document {
@@ -44,6 +107,7 @@ pub struct LspStore {
     extra_args: Vec<String>,
     server: Option<Arc<LanguageServer>>,
     status: LspStatus,
+    features: Features,
     documents: HashMap<PathBuf, Document>,
     diagnostics: BTreeMap<PathBuf, Vec<lsp_types::Diagnostic>>,
     progress: BTreeMap<String, String>,
@@ -61,6 +125,7 @@ impl LspStore {
             extra_args,
             server: None,
             status: LspStatus::Idle,
+            features: Features::default(),
             documents: HashMap::new(),
             diagnostics: BTreeMap::new(),
             progress: BTreeMap::new(),
@@ -78,6 +143,17 @@ impl LspStore {
         self.server
             .clone()
             .filter(|_| self.status == LspStatus::Ready)
+    }
+
+    /// What the server offers; nothing until it's ready.
+    pub fn features(&self) -> &Features {
+        &self.features
+    }
+
+    /// The version of the text the server has, or will have at the next
+    /// flush: a response to a request made at one version is for that text.
+    pub fn document_version(&self, path: &Path) -> Option<i32> {
+        self.documents.get(path).map(|d| d.version)
     }
 
     /// The current `$/progress` titles (e.g. "Indexing").
@@ -114,6 +190,7 @@ impl LspStore {
         }
         self.diagnostics.clear();
         self.progress.clear();
+        self.features = Features::default();
         self.status = LspStatus::Idle;
         if !self.documents.is_empty() {
             self.ensure_started(cx);
@@ -134,7 +211,11 @@ impl LspStore {
         self._start_task = Some(cx.spawn(async move |this, cx| {
             let started = cx
                 .background_spawn(async move {
-                    let binary = crate::toolchain::find_tool("sourcekit-lsp")?;
+                    // A stand-in (a recording proxy in the e2e tests) when set.
+                    let binary = match std::env::var_os("ZCODE_SOURCEKIT_LSP") {
+                        Some(binary) => PathBuf::from(binary),
+                        None => crate::toolchain::find_tool("sourcekit-lsp")?,
+                    };
                     let log = crate::paths::logs_dir().join("sourcekit-lsp.log");
                     let server = LanguageServer::spawn(
                         "sourcekit-lsp",
@@ -157,6 +238,7 @@ impl LspStore {
                     cx.update_global::<Perf, _>(|perf, _| {
                         perf.language_server = Some((server.pid(), Default::default()));
                     });
+                    this.features = Features::from_capabilities(&server.capabilities());
                     this.server = Some(server);
                     this.status = LspStatus::Ready;
                     this.open_pending_documents(cx);
@@ -254,6 +336,14 @@ impl LspStore {
                         }
                         json!({ "applied": true })
                     }
+                    "workspace/inlayHint/refresh" => {
+                        cx.emit(LspStoreEvent::RefreshInlayHints);
+                        Value::Null
+                    }
+                    "workspace/semanticTokens/refresh" => {
+                        cx.emit(LspStoreEvent::RefreshSemanticTokens);
+                        Value::Null
+                    }
                     _ => Value::Null,
                 };
                 server.respond(id, result);
@@ -262,6 +352,7 @@ impl LspStore {
                 if self.status == LspStatus::Ready {
                     self.status = LspStatus::Exited;
                     self.server = None;
+                    self.features = Features::default();
                     cx.emit(LspStoreEvent::StatusChanged);
                 }
             }
@@ -457,5 +548,33 @@ impl LspStore {
                 server.shutdown().await;
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn features_follow_what_the_server_advertises() {
+        // As sourcekit-lsp (Xcode 27) answers `initialize`, trimmed.
+        let sourcekit = json!({
+            "inlayHintProvider": { "resolveProvider": true },
+            "semanticTokensProvider": { "range": true, "full": true, "legend": { "tokenTypes": ["type", "keyword"], "tokenModifiers": [] } },
+            "signatureHelpProvider": { "triggerCharacters": ["(", "["], "retriggerCharacters": [",", ":"] },
+            "callHierarchyProvider": true,
+            "typeHierarchyProvider": true,
+        });
+        let features = Features::from_capabilities(&sourcekit);
+        assert!(features.inlay_hints && features.call_hierarchy && features.type_hierarchy && features.semantic_tokens_full);
+        assert!(features.semantic_tokens.is_some());
+        assert_eq!(features.signature_help.unwrap().retriggers, [",", ":"]);
+
+        // An older server: range tokens only, nothing else.
+        let older = json!({ "semanticTokensProvider": { "range": true, "legend": { "tokenTypes": [], "tokenModifiers": [] } }, "callHierarchyProvider": false });
+        let features = Features::from_capabilities(&older);
+        assert!(features.semantic_tokens.is_some() && !features.semantic_tokens_full);
+        assert!(!features.inlay_hints && !features.call_hierarchy && features.signature_help.is_none());
+        assert_eq!(Features::from_capabilities(&Value::Null), Features::default());
     }
 }

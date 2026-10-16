@@ -44,6 +44,7 @@ impl Workspace {
             LspStoreEvent::ApplyEdit(edit) => {
                 self.apply_workspace_edit(edit.clone(), window, cx);
             }
+            LspStoreEvent::RefreshInlayHints | LspStoreEvent::RefreshSemanticTokens => {}
         }
     }
 
