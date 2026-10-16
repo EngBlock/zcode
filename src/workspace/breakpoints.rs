@@ -289,8 +289,17 @@ impl Workspace {
     ) {
         let menu = PopupMenu::build(window, cx, build);
         menu.focus_handle(cx).focus(window, cx);
-        let subscription = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
+        let subscription = cx.subscribe_in(&menu, window, |this, menu, _: &DismissEvent, window, cx| {
             this.popup_menu = None;
+            // Give focus back, or shortcuts would go to the closed menu
+            // (unless its item focused something, such as a popover).
+            let focused = menu.focus_handle(cx);
+            if focused.contains_focused(window, cx) || window.focused(cx).is_none() {
+                match this.active_editor() {
+                    Some(editor) => editor.update(cx, |state, cx| state.focus(window, cx)),
+                    None => this.focus_handle.focus(window, cx),
+                }
+            }
             cx.notify();
         });
         self.popup_menu = Some(PopupMenuState { menu, position, _subscription: subscription });
