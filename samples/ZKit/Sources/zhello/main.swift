@@ -12,3 +12,14 @@ if !arguments.isEmpty {
 for i in 1...3 {
     print("tick \(i)")
 }
+
+// Thrown and caught on every run, for the debugger's Swift Error Breakpoint.
+struct Unverified: Error {
+    let name: String
+}
+func verify(_ name: String) throws {
+    throw Unverified(name: name)
+}
+if (try? verify(name)) == nil {
+    print("unverified: \(name)")
+}
