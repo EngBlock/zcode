@@ -154,6 +154,11 @@ impl Workspace {
     }
 
     fn set_package_items(&mut self, dependencies: Dependencies, files: HashMap<String, Vec<PathBuf>>, cx: &mut Context<Self>) {
+        // Nothing changed (most refreshes after a build): keep the tree and
+        // its selection.
+        if *self.packages.dependencies == dependencies && (dependencies.packages.is_empty() || !self.packages.items.is_empty()) {
+            return;
+        }
         let mut expanded = HashSet::new();
         expanded_ids(&self.packages.items, &mut expanded);
         // The section starts expanded and its packages collapsed, as in Xcode.
