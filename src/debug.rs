@@ -11,6 +11,7 @@
 //!   open <path>[:line]         open a file in the frontmost workspace
 //!   wait <ms>                  pause
 //!   dump                       log workspace state as JSON
+//!   keymap                     log every command's key bindings as JSON
 //!   quit
 
 use std::io::Write as _;
@@ -175,6 +176,31 @@ fn run_command(
                 })
                 .map_err(|e| e.to_string())?;
             Ok(String::new())
+        }
+        "keymap" => {
+            // Every menu/Quick Actions command with all keystrokes bound to it.
+            // Includes context-specific (editor-only) bindings.
+            let mut map = serde_json::Map::new();
+            let keymap = cx.key_bindings();
+            let keymap = keymap.borrow();
+            for command in crate::actions::commands() {
+                if command.name == "-" {
+                    continue;
+                }
+                let action = (command.action)();
+                let keys: Vec<serde_json::Value> = keymap
+                    .bindings()
+                    .filter(|b| b.action().partial_eq(action.as_ref()))
+                    .map(|b| {
+                        serde_json::Value::String(
+                            b.keystrokes().iter().map(|k| k.unparse()).collect::<Vec<_>>().join(" "),
+                        )
+                    })
+                    .collect();
+                map.insert(action.name().to_string(), serde_json::Value::Array(keys));
+            }
+            let _ = window;
+            Ok(serde_json::Value::Object(map).to_string())
         }
         "dump" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;

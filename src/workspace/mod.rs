@@ -1533,6 +1533,15 @@ impl Workspace {
             })
         });
         let issues = self.all_issues(cx);
+        let perf = crate::perf::Perf::global(cx);
+        let memory = serde_json::json!({
+            "samples": perf.history.len(),
+            "footprint_mb": crate::perf::mb(perf.current().footprint),
+            "baseline_footprint_mb": crate::perf::mb(perf.baseline_footprint()),
+            "language_server_mb": perf.language_server.map(|(_, s)| crate::perf::mb(s.footprint)),
+            "status_label": perf.status_label(),
+            "warning": perf.memory_warning(),
+        });
         serde_json::json!({
             "project": self.project.name,
             "kind": self.project.kind.label(),
@@ -1560,6 +1569,7 @@ impl Workspace {
             "scm_branch": self.scm_branch,
             "scm_changes": self.scm_status.len(),
             "font_size": self.font_size,
+            "memory": memory,
             "history": { "back": self.back.len(), "forward": self.forward.len() },
             "debugger": {
                 "state": format!("{:?}", self.debugger.read(cx).state),

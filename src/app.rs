@@ -16,20 +16,27 @@ use crate::workspace::Workspace;
 struct Args {
     path: Option<PathBuf>,
     startup_bench: bool,
+    /// Start the resident instance without a window (e.g. as a login item),
+    /// so every later `zcode <path>` is a warm open.
+    background: bool,
+    perf_log: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
     let mut args = Args::default();
-    for arg in std::env::args().skip(1) {
+    let mut argv = std::env::args().skip(1);
+    while let Some(arg) = argv.next() {
         match arg.as_str() {
             "--startup-bench" => args.startup_bench = true,
+            "--background" => args.background = true,
+            "--perf-log" => args.perf_log = argv.next().map(PathBuf::from),
             "--version" | "-v" => {
                 println!("zcode {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             "--help" | "-h" => {
                 println!(
-                    "zcode {}\n\nUSAGE:\n    zcode [PATH] [--startup-bench]\n\nPATH may be a folder, .xcodeproj, .xcworkspace, Package.swift or a file.\n--startup-bench prints startup timings and memory as JSON, then quits.",
+                    "zcode {}\n\nUSAGE:\n    zcode [PATH] [--startup-bench] [--background] [--perf-log FILE]\n\nPATH may be a folder, .xcodeproj, .xcworkspace, Package.swift or a file.\nWhen zcode is already running, PATH opens in that instance (~70 ms).\n\n--startup-bench    print startup timings and memory as JSON, then quit\n--background       start the resident instance without a window (login item)\n--perf-log FILE    append a JSON memory sample every 2 s to FILE",
                     env!("CARGO_PKG_VERSION")
                 );
                 std::process::exit(0);
@@ -132,6 +139,30 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
                 .ok();
         }
         Err(err) => log::error!("failed to open window: {err:#}"),
+    }
+}
+
+fn prewarm_hidden_window(cx: &mut App) {
+    // Shown (so the compositor and renderer are set up) but off-screen and
+    // without focus; it closes after its first frames.
+    let mut options = window_options("zcode", size(px(1440.), px(900.)), cx);
+    options.window_bounds = Some(WindowBounds::Windowed(Bounds::new(
+        point(px(-30000.), px(-30000.)),
+        size(px(400.), px(300.)),
+    )));
+    options.focus = false;
+    let opened = gpui_kit::open_window(options, cx, |window, cx| {
+        sync_theme(window, cx);
+        cx.new(Welcome::new)
+    });
+    if let Ok((window, _)) = opened {
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(Duration::from_millis(300)).await;
+            cx.update(|cx| {
+                window.update(cx, |_, window, _| window.remove_window()).ok();
+            });
+        })
+        .detach();
     }
 }
 
@@ -260,7 +291,11 @@ pub fn run() {
                 crate::instance::listen(cx);
             }
 
+            if let Some(path) = args.perf_log.clone() {
+                cx.global_mut::<Perf>().log_path = Some(path);
+            }
             match args.path.clone() {
+                _ if args.background && single_instance => {}
                 Some(path) if path.exists() => open_project(path, cx),
                 Some(path) => {
                     eprintln!("zcode: {} does not exist", path.display());
@@ -300,6 +335,13 @@ pub fn run() {
                     .ok();
             }
             perf::start_sampler(cx);
+            if args.background && single_instance {
+                // Resident and listening; windows open on request. Lay out
+                // and draw one hidden window first so the first real open
+                // doesn't pay one-time renderer, font and theme setup.
+                prewarm_hidden_window(cx);
+                return;
+            }
             crate::debug::start(cx, |cx| {
                 cx.default_global::<Workspaces>()
                     .0

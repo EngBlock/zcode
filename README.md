@@ -34,7 +34,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | Test results from XCTest and Swift Testing populate the Test navigator, and Swift Testing failures appear as issues at the failing line. On a simulator, unit tests run inside the host app by injecting the test bundle (XCTest's own hosted-test mechanism). That is faster than `xcodebuild test` and doesn't depend on its test-runner service. | ⌘U |
 | **Debugging** (lldb-dap) | Breakpoints (toggle, deactivate all, persisted per project). ⌘R runs under the debugger whenever breakpoints are active, as in Xcode. Simulator apps launch with `--wait-for-debugger` and lldb attaches to them. | ⌘\\, ⌘Y |
 | | Pause/continue, step over/into/out, the stopped line highlighted in green, threads and frames in the Debug navigator, and an expandable Variables view next to the console. | ⌃⌘Y, F6, F7, F8 |
-| **Monitoring** | The status bar shows zcode's memory and the language server's memory (including `SourceKitService` XPC helpers). View ▸ Performance shows startup timings and memory history. `zcode --startup-bench` prints the same data as JSON and quits. | — |
+| **Monitoring** | Memory is sampled every 2 s for the life of the app. The status bar shows zcode's footprint and the language server's (including its `SourceKitService` XPC helpers), and turns orange above 1.5 GB idle for zcode or 4 GB for the language server. View ▸ Performance shows startup timings, the current and 30 s idle-baseline footprint, peak, and a history graph. `--perf-log <file>` (or `ZCODE_PERF_LOG`) appends every sample as a JSON line for long-term tracking. `zcode --startup-bench` prints startup and memory as JSON and quits. | — |
 
 The full Xcode 27 menu and shortcut inventory this was matched against is in
 [`docs/xcode-inventory.md`](docs/xcode-inventory.md), and remaining gaps are in
@@ -50,7 +50,8 @@ Measured on an M4 Max with macOS 27.2 and a release build.
 | Cold launch, welcome window | ~360 ms (8 ms of it before `main()`) |
 | Cold launch, project with 2 Swift tabs restored | ~370–410 ms |
 
-* **Single instance.** zcode keeps running when its last window closes, as Xcode and other Mac document apps do. `zcode <path>` hands the path to the running instance over a Unix socket and exits, and the warm instance opens the project window in ~70 ms. `ZCODE_NEW_INSTANCE=1` forces a separate process.
+* **Single instance.** zcode keeps running when its last window closes, as Xcode and other Mac document apps do. `zcode <path>` hands the path to the running instance over a Unix socket and exits, and the warm instance opens the project window in ~50–75 ms. `ZCODE_NEW_INSTANCE=1` forces a separate process.
+* **Always warm.** `zcode --background` starts the resident instance with no window. Run it as a login item (System Settings ▸ General ▸ Login Items, or a LaunchAgent), and even the first open of the day takes the warm path.
 * Resident memory at first frame is ~106 MB for the welcome window and ~124 MB with a project open.
 * The first launch after each rebuild also includes macOS scanning the new binary.
 
@@ -112,6 +113,11 @@ saved breakpoints can't leak in. It covers:
 * the build-error → issue flow
 * run, test and debug for a Swift package
 * opening a project through an already-running instance (< 150 ms to first frame)
+* every Xcode 27 default shortcut for the MVP commands (from
+  `docs/xcode-inventory.md`) is bound to the matching zcode command in the live
+  keymap
+* memory monitoring: sampler history, language-server and `SourceKitService`
+  memory, the status-bar label and the `--perf-log` file
 * with `--simulator`: unit tests, run and debug on an iOS simulator
 
 The control channel also takes window screenshots

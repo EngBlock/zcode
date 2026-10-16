@@ -5,6 +5,8 @@
 //! compressed and GPU-shared pages that RSS hides.
 
 use std::collections::VecDeque;
+use std::io::Write as _;
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui_kit::{App, Global};
@@ -130,7 +132,15 @@ pub struct Perf {
     pub peak_footprint: u64,
     /// Footprints of child processes we spawned (e.g. the language server).
     pub language_server: Option<(i32, MemorySample)>,
+    /// When set (`--perf-log <file>` / `ZCODE_PERF_LOG`), every sample is
+    /// appended to this file as a JSON line for long-running monitoring.
+    pub log_path: Option<PathBuf>,
 }
+
+/// Idle footprint above which the status bar flags zcode's memory.
+pub const WARN_BASELINE_FOOTPRINT: u64 = 1536 * 1024 * 1024;
+/// Footprint above which the status bar flags the language server's memory.
+pub const WARN_LANGUAGE_SERVER_FOOTPRINT: u64 = 4096 * 1024 * 1024;
 
 impl Global for Perf {}
 
@@ -149,6 +159,7 @@ impl Perf {
             history: VecDeque::with_capacity(HISTORY_LEN),
             peak_footprint: 0,
             language_server: None,
+            log_path: std::env::var_os("ZCODE_PERF_LOG").map(PathBuf::from),
         }
     }
 
@@ -186,6 +197,27 @@ impl Perf {
 
     pub fn current(&self) -> MemorySample {
         self.history.back().copied().unwrap_or_default()
+    }
+
+    /// Whether memory is high enough to flag in the status bar.
+    pub fn memory_warning(&self) -> bool {
+        self.history.len() >= 5 && self.baseline_footprint() > WARN_BASELINE_FOOTPRINT
+            || self
+                .language_server
+                .is_some_and(|(_, s)| s.footprint > WARN_LANGUAGE_SERVER_FOOTPRINT)
+    }
+
+    fn log_line(&self) -> String {
+        let mem = self.current();
+        serde_json::json!({
+            "ts_ms": SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+            "footprint_mb": mb(mem.footprint),
+            "baseline_footprint_mb": mb(self.baseline_footprint()),
+            "resident_mb": mb(mem.resident),
+            "peak_footprint_mb": mb(self.peak_footprint.max(mem.lifetime_peak)),
+            "language_server_footprint_mb": self.language_server.map(|(_, s)| mb(s.footprint)),
+        })
+        .to_string()
     }
 
     /// The status bar's memory text.
@@ -241,13 +273,22 @@ pub fn start_sampler(cx: &mut App) {
             let me = sample_self();
             let ls_pid = cx.update(|cx| cx.global::<Perf>().language_server.map(|(pid, _)| pid));
             let ls = ls_pid.and_then(|pid| sample_language_server(pid).map(|s| (pid, s)));
-            cx.update(|cx| {
+            let log = cx.update(|cx| {
                 let perf = cx.global_mut::<Perf>();
                 perf.record(me);
                 if ls_pid.is_some() {
                     perf.language_server = ls;
                 }
+                if perf.memory_warning() {
+                    log::warn!("high memory: {}", perf.status_label());
+                }
+                perf.log_path.clone().map(|path| (path, perf.log_line()))
             });
+            if let Some((path, line)) = log
+                && let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path)
+            {
+                writeln!(file, "{line}").ok();
+            }
             cx.background_executor()
                 .timer(Duration::from_secs(2))
                 .await;

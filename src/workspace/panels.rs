@@ -796,6 +796,7 @@ impl Workspace {
                     .px_1()
                     .rounded(theme.radius)
                     .hover(|el| el.bg(theme.secondary_hover))
+                    .when(perf.memory_warning(), |el| el.text_color(theme.warning))
                     .child(Icon::new(IconName::MemoryStick).xsmall())
                     .child(perf.status_label())
                     .on_click(cx.listener(|this, _, window, cx| this.show_performance(&ShowPerformance, window, cx))),

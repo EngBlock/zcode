@@ -21,16 +21,90 @@ SAMPLES = os.path.normpath(os.path.join(ROOT, "samples"))
 # Tests run against a private copy so edits, breakpoints and session state from
 # other work in the repo can't leak in (and test edits never touch the repo).
 WORK = tempfile.mkdtemp(prefix="zcode-e2e-samples-")
+PERF_LOG = os.path.join(WORK, "perf.jsonl")
 BINARY = os.path.join(ROOT, "target", "release", "zcode")
 DEBUG_DIR = tempfile.mkdtemp(prefix="zcode-e2e-")
 
 passed, failed = 0, 0
 
 
+# Xcode 27 default shortcuts (docs/xcode-inventory.md) → the zcode command
+# that must be bound to the same keystroke.
+XCODE_SHORTCUTS = [
+    ("cmd-o", "zcode::OpenProject", "File ▸ Open…"),
+    ("cmd-shift-o", "zcode::OpenQuickly", "File ▸ Open Quickly…"),
+    ("cmd-n", "zcode::NewFile", "File ▸ New ▸ File…"),
+    ("cmd-s", "zcode::Save", "File ▸ Save"),
+    ("cmd-alt-s", "zcode::SaveAll", "File ▸ Save All"),
+    ("cmd-w", "zcode::CloseTab", "File ▸ Close Tab"),
+    ("ctrl-alt-cmd-w", "zcode::CloseProject", "File ▸ Close Workspace"),
+    ("cmd-d", "zcode::DuplicateLine", "Edit ▸ Duplicate"),
+    ("cmd-/", "zcode::ToggleComment", "Editor ▸ Comment Selection"),
+    ("cmd-alt-[", "zcode::MoveLineUp", "Editor ▸ Move Line Up"),
+    ("cmd-alt-]", "zcode::MoveLineDown", "Editor ▸ Move Line Down"),
+    ("ctrl-i", "zcode::ReIndent", "Editor ▸ Structure ▸ Re-Indent"),
+    ("ctrl-shift-i", "zcode::FormatFile", "Editor ▸ Structure ▸ Format File"),
+    ("ctrl-cmd-e", "zcode::EditAllInScope", "Editor ▸ Edit All in Scope"),
+    ("ctrl-alt-cmd-f", "zcode::FixIssue", "Editor ▸ Fix All Issues"),
+    ("ctrl-space", "input::ShowCompletions", "Editor ▸ Show Completions"),
+    ("cmd-+", "zcode::IncreaseFontSize", "Editor ▸ Font Size ▸ Increase"),
+    ("cmd--", "zcode::DecreaseFontSize", "Editor ▸ Font Size ▸ Decrease"),
+    ("ctrl-cmd-0", "zcode::ResetFontSize", "Editor ▸ Font Size ▸ Reset"),
+    ("ctrl-shift-cmd-l", "zcode::ToggleSoftWrap", "Editor ▸ Wrap Lines"),
+    ("cmd-f", "zcode::FindInFile", "Find ▸ Find…"),
+    ("cmd-alt-f", "zcode::FindAndReplaceInFile", "Find ▸ Find and Replace…"),
+    ("cmd-alt-e", "zcode::SelectNextOccurrence", "Find ▸ Select Next Occurrence"),
+    ("cmd-shift-f", "zcode::FindInWorkspace", "Find ▸ Find in Workspace…"),
+    ("ctrl-shift-cmd-f", "zcode::FindSelectedSymbol", "Find ▸ Find Selected Symbol in Workspace"),
+    ("ctrl-cmd-j", "zcode::JumpToDefinition", "Navigate ▸ Jump to Definition"),
+    ("cmd-l", "zcode::JumpToLine", "Navigate ▸ Jump to…"),
+    ("ctrl-cmd-left", "zcode::GoBack", "Navigate ▸ Go Back"),
+    ("ctrl-cmd-right", "zcode::GoForward", "Navigate ▸ Go Forward"),
+    ("ctrl-cmd-up", "zcode::JumpToCounterpart", "Navigate ▸ Jump to Next Counterpart"),
+    ("cmd-'", "zcode::NextIssue", "Navigate ▸ Jump to Next Issue"),
+    ("cmd-shift-'", "zcode::PreviousIssue", "Navigate ▸ Jump to Previous Issue"),
+    ("ctrl-/", "zcode::NextPlaceholder", "Navigate ▸ Jump to Next Placeholder"),
+    ("cmd-shift-j", "zcode::RevealInNavigator", "Navigate ▸ Reveal in Project Navigator"),
+    ("cmd-shift-[", "zcode::PreviousTab", "Navigate ▸ Show Previous Tab"),
+    ("cmd-shift-]", "zcode::NextTab", "Navigate ▸ Show Next Tab"),
+    ("cmd-1", "zcode::ShowProjectNavigator", "View ▸ Navigators ▸ Project"),
+    ("cmd-2", "zcode::ShowSourceControlNavigator", "View ▸ Navigators ▸ Source Control"),
+    ("cmd-4", "zcode::ShowFindNavigator", "View ▸ Navigators ▸ Find"),
+    ("cmd-5", "zcode::ShowIssueNavigator", "View ▸ Navigators ▸ Issues"),
+    ("cmd-6", "zcode::ShowTestNavigator", "View ▸ Navigators ▸ Tests"),
+    ("cmd-7", "zcode::ShowDebugNavigator", "View ▸ Navigators ▸ Debug"),
+    ("cmd-8", "zcode::ShowBreakpointNavigator", "View ▸ Navigators ▸ Breakpoints"),
+    ("cmd-9", "zcode::ShowReportNavigator", "View ▸ Navigators ▸ Reports"),
+    ("cmd-shift-y", "zcode::ToggleDebugArea", "View ▸ Debug Area ▸ Show Debug Area"),
+    ("cmd-shift-c", "zcode::ActivateConsole", "View ▸ Debug Area ▸ Activate Console"),
+    ("ctrl-6", "zcode::ShowDocumentItems", "View ▸ Editor ▸ Document Items"),
+    ("cmd-shift-a", "zcode::QuickActions", "View ▸ Show Quick Actions…"),
+    ("cmd-b", "zcode::Build", "Product ▸ Build"),
+    ("cmd-r", "zcode::Run", "Product ▸ Run"),
+    ("cmd-u", "zcode::Test", "Product ▸ Test"),
+    ("cmd-.", "zcode::Stop", "Product ▸ Stop"),
+    ("cmd-shift-k", "zcode::Clean", "Product ▸ Clean Build Folder"),
+    ("ctrl-0", "zcode::ChooseScheme", "Product ▸ Scheme ▸ Choose Scheme"),
+    ("ctrl-shift-0", "zcode::ChooseDestination", "Product ▸ Destination ▸ Choose Destination"),
+    ("ctrl-cmd-y", "zcode::DebugContinue", "Debug ▸ Pause / Continue"),
+    ("f6", "zcode::StepOver", "Debug ▸ Step Over"),
+    ("f7", "zcode::StepInto", "Debug ▸ Step Into"),
+    ("f8", "zcode::StepOut", "Debug ▸ Step Out"),
+    ("cmd-\\", "zcode::ToggleBreakpoint", "Debug ▸ Breakpoints ▸ Create Breakpoint at Current Line"),
+    ("cmd-y", "zcode::ToggleBreakpointsActive", "Debug ▸ Activate Breakpoints"),
+    ("cmd-k", "zcode::ClearConsole", "Debug ▸ Debug Workflow ▸ Clear Console"),
+]
+
+
+def normalize_keys(keys):
+    *mods, key = keys.split("-") if not keys.endswith("--") else keys[:-2].split("-") + ["-"]
+    return frozenset(m for m in mods if m), key
+
+
 class Zcode:
-    def __init__(self, project):
+    def __init__(self, project, extra_env=None):
         self.log_offset = 0
-        env = dict(os.environ, ZCODE_DEBUG_DIR=DEBUG_DIR)
+        env = dict(os.environ, ZCODE_DEBUG_DIR=DEBUG_DIR, **(extra_env or {}))
         self.proc = subprocess.Popen([BINARY, project], env=env,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.run("wait 1")
@@ -212,7 +286,36 @@ def xcode_project_checks(z, samples, sim):
         assert f"ContentView.swift:{appear_line}" in s["debugger"]["frames"][0], s["debugger"]
         z.run(f"open {content}:{appear_line}", "keys cmd-\\", "keys cmd-.", "wait 1500")
 
+    def shortcut_parity():
+        keymap = json.loads(z.run("keymap")[-1])
+        bound = {action: {normalize_keys(k) for k in keys} for action, keys in keymap.items()}
+        missing = [
+            f"{label} ({keys})"
+            for keys, action, label in XCODE_SHORTCUTS
+            if normalize_keys(keys) not in bound.get(action, set())
+        ]
+        assert not missing, missing
+        print(f"    {len(XCODE_SHORTCUTS)} Xcode default shortcuts bound to the matching zcode command")
+
+    def memory_monitoring():
+        s = z.wait_for(lambda s: s["memory"]["samples"] >= 3 and s["memory"]["language_server_mb"], timeout=60)
+        memory = s["memory"]
+        assert memory["footprint_mb"] > 0 and "LSP" in memory["status_label"], memory
+        deadline = time.time() + 30
+        samples = []
+        while time.time() < deadline:
+            with open(PERF_LOG) as f:
+                samples = [json.loads(line) for line in f]
+            if len(samples) >= 3 and any(x["language_server_footprint_mb"] for x in samples):
+                break
+            time.sleep(1)
+        assert len(samples) >= 3 and samples[-1]["footprint_mb"] > 0, samples[-3:]
+        assert any(x["language_server_footprint_mb"] for x in samples), samples[-3:]
+        print(f"    {memory['status_label']} · {memory['samples']} samples · baseline {memory['baseline_footprint_mb']} MB · {len(samples)} lines in --perf-log")
+
+    check("Xcode default shortcuts (from the Xcode 27 inventory)", shortcut_parity)
     check("sourcekit-lsp ready with compile database (no false errors)", lsp_ready)
+    check("Memory monitoring: sampler, LSP + SourceKitService, perf log", memory_monitoring)
     check("Open Quickly (⇧⌘O)", open_quickly)
     check("Jump to Definition across files (⌃⌘J)", definition)
     check("Completion + placeholder Tab", completion)
@@ -260,19 +363,20 @@ def package_checks(z, samples):
     check("Swift package: breakpoint, variables, step over (F6)", debug_package)
 
 
-def warm_open(samples):
-    """Starts a regular (single-instance) zcode, then times `zcode <project>`."""
+def warm_open(samples, background=False, limit_ms=150):
+    """Starts a resident zcode (a regular window, or `--background`), then
+    times `zcode <project>` through it."""
     socket = os.path.expanduser("~/Library/Caches/zcode/zcode.sock")
     log = os.path.join(WORK, "instance.log")
     env = {k: v for k, v in os.environ.items() if k not in ("ZCODE_DEBUG_DIR",)}
     env["ZCODE_TRACE_STARTUP"] = "1"
     with open(log, "w") as out:
-        server = subprocess.Popen([BINARY], env=env, stdout=out, stderr=out)
+        server = subprocess.Popen([BINARY] + (["--background"] if background else []), env=env, stdout=out, stderr=out)
     try:
         deadline = time.time() + 15
         while not os.path.exists(socket) and time.time() < deadline:
             time.sleep(0.1)
-        time.sleep(1.0)
+        time.sleep(2.0 if background else 1.0)
         started = time.time()
         subprocess.run([BINARY, os.path.join(samples, "ZKit")], env=env, check=True, timeout=10)
         client_ms = (time.time() - started) * 1000
@@ -285,7 +389,7 @@ def warm_open(samples):
                     frame_ms = float(value[:-2]) if value.endswith("ms") else float(value[:-1]) * 1000
             time.sleep(0.1)
         print(f"    client returned in {client_ms:.0f} ms; new window's first frame after {frame_ms} ms")
-        assert frame_ms is not None and frame_ms < 150, frame_ms
+        assert frame_ms is not None and frame_ms < limit_ms, frame_ms
     finally:
         server.kill()
         server.wait()
@@ -309,7 +413,7 @@ def main():
     samples = os.path.realpath(samples)
 
     print("Xcode project (samples/HelloZ):")
-    z = Zcode(os.path.join(samples, "HelloZ"))
+    z = Zcode(os.path.join(samples, "HelloZ"), {"ZCODE_PERF_LOG": PERF_LOG})
     try:
         xcode_project_checks(z, samples, sim)
     finally:
@@ -318,6 +422,10 @@ def main():
     if warm_open_check_pending:
         print("Single instance:")
         check("Warm open through a running instance (< 150 ms to first frame)", lambda: warm_open(samples))
+        check(
+            "First open through a `--background` instance (< 200 ms to first frame)",
+            lambda: warm_open(samples, background=True, limit_ms=200),
+        )
 
     print("Swift package (samples/ZKit):")
     z = Zcode(os.path.join(samples, "ZKit"))

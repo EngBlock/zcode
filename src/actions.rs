@@ -133,6 +133,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-f", FindInWorkspace, Some(INPUT)),
         KeyBinding::new("ctrl-shift-cmd-f", FindSelectedSymbol, None),
         KeyBinding::new("cmd-alt-f", FindAndReplaceInFile, Some(EDITOR)),
+        // The editor handles ⌘F itself; this binding gives the Find menu its
+        // shortcut and works when focus is elsewhere.
+        KeyBinding::new("cmd-f", FindInFile, None),
         // Navigate
         KeyBinding::new("f12", JumpToDefinition, None),
         KeyBinding::new("ctrl-cmd-j", JumpToDefinition, None),
