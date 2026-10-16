@@ -2,7 +2,7 @@
 //! bar, jump bar and shown item.
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
+use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -20,6 +20,10 @@ impl Workspace {
             return self.render_pane(self.active_pane, cx);
         }
         let root = self.pane_group.root.clone();
+        // Sizes of splits that are gone go with them.
+        let mut keys = vec![];
+        root.split_keys(&mut keys);
+        self.split_states.retain(|key, _| keys.iter().any(|k| k == key.as_ref()));
         self.render_member(&root, cx)
     }
 
@@ -28,21 +32,19 @@ impl Workspace {
             Member::Pane(id) => return self.render_pane(*id, cx),
             Member::Split { axis, members } => (*axis, members),
         };
-        // Named after its panes, so a split that changes starts from equal
-        // sizes instead of the sizes of another one.
-        let mut panes = vec![];
-        for member in members {
-            if let Member::Pane(id) = member {
-                panes.push(id.0.to_string());
-            }
-        }
-        let id = SharedString::from(format!("panes-{}-{}", members.len(), panes.join("-")));
+        let key = SharedString::from(Member::split_key(members));
+        let state = self.split_states.entry(key.clone()).or_insert_with(|| cx.new(|_| ResizableState::default())).clone();
         let mut group = match axis {
-            SplitAxis::Horizontal => h_resizable(id),
-            SplitAxis::Vertical => v_resizable(id),
-        };
-        for member in members {
-            group = group.child(resizable_panel().child(self.render_member(member, cx)));
+            SplitAxis::Horizontal => h_resizable(key.clone()),
+            SplitAxis::Vertical => v_resizable(key.clone()),
+        }
+        .with_state(&state);
+        // Sizes from the session, for every pane but the last (which takes
+        // what's left, whatever the window's size now).
+        let restored = self.restored_split_sizes.get(&key).cloned().unwrap_or_default();
+        for (ix, member) in members.iter().enumerate() {
+            let panel = resizable_panel().when_some(restored.get(ix).filter(|_| ix + 1 < members.len()), |panel, size| panel.size(px(*size)));
+            group = group.child(panel.child(self.render_member(member, cx)));
         }
         group.into_any_element()
     }

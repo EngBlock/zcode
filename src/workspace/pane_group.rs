@@ -25,6 +25,27 @@ pub enum Member {
 }
 
 impl Member {
+    /// What a split is known by on screen and in the session: its panes, so
+    /// a split that changes starts from equal sizes, not another split's.
+    pub fn split_key(members: &[Member]) -> String {
+        let panes: Vec<String> = members
+            .iter()
+            .filter_map(|m| match m {
+                Member::Pane(id) => Some(id.0.to_string()),
+                Member::Split { .. } => None,
+            })
+            .collect();
+        format!("panes-{}-{}", members.len(), panes.join("-"))
+    }
+
+    /// The keys of every split under (and including) this member.
+    pub fn split_keys(&self, out: &mut Vec<String>) {
+        if let Member::Split { members, .. } = self {
+            out.push(Self::split_key(members));
+            members.iter().for_each(|m| m.split_keys(out));
+        }
+    }
+
     fn panes(&self, out: &mut Vec<PaneId>) {
         match self {
             Member::Pane(id) => out.push(*id),

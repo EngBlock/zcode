@@ -691,15 +691,21 @@ impl Workspace {
     // Session
 
     /// The editor area as the session keeps it.
-    pub(super) fn pane_layout(&self) -> PaneLayout {
+    pub(super) fn pane_layout(&self, cx: &App) -> PaneLayout {
         let order = self.pane_group.panes();
-        self.member_layout(&self.pane_group.root, &order)
+        self.member_layout(&self.pane_group.root, &order, cx)
     }
 
-    fn member_layout(&self, member: &Member, order: &[PaneId]) -> PaneLayout {
+    fn member_layout(&self, member: &Member, order: &[PaneId], cx: &App) -> PaneLayout {
         match member {
             Member::Split { axis, members } => {
-                PaneLayout::Split { axis: *axis, members: members.iter().map(|m| self.member_layout(m, order)).collect() }
+                let key = SharedString::from(Member::split_key(members));
+                let sizes = self
+                    .split_states
+                    .get(&key)
+                    .map(|state| state.read(cx).sizes().iter().map(|size| f32::from(*size)).collect())
+                    .unwrap_or_else(|| self.restored_split_sizes.get(&key).cloned().unwrap_or_default());
+                PaneLayout::Split { axis: *axis, members: members.iter().map(|m| self.member_layout(m, order, cx)).collect(), sizes }
             }
             Member::Pane(id) => {
                 let pane = self.pane(*id);
@@ -760,8 +766,12 @@ impl Workspace {
 
     fn restore_member(&mut self, layout: &PaneLayout, order: &mut Vec<PaneId>) -> Member {
         match layout {
-            PaneLayout::Split { axis, members } if members.len() > 1 => {
-                Member::Split { axis: *axis, members: members.iter().map(|m| self.restore_member(m, order)).collect() }
+            PaneLayout::Split { axis, members, sizes } if members.len() > 1 => {
+                let members: Vec<Member> = members.iter().map(|m| self.restore_member(m, order)).collect();
+                if sizes.len() == members.len() {
+                    self.restored_split_sizes.insert(Member::split_key(&members).into(), sizes.clone());
+                }
+                Member::Split { axis: *axis, members }
             }
             PaneLayout::Split { members, .. } => match members.first() {
                 Some(only) => self.restore_member(only, order),
@@ -800,6 +810,8 @@ impl Workspace {
                         "plist": item.shown_plist().is_some(),
                         "linked_views": state.linked_views().len(),
                         "click": first_row.map(|y| [f32::from(geometry.numbers.right()) + 60., y]),
+                        // The editor's left edge, just right of the pane's divider.
+                        "left": f32::from(geometry.numbers.left()),
                     })
                 });
                 serde_json::json!({
@@ -824,6 +836,10 @@ impl Workspace {
             "layout": layout_string(&self.pane_group.root, &order),
             "focused": order.iter().position(|p| *p == self.active_pane),
             "zoomed": self.zoomed,
+            "sizes": match self.pane_layout(cx) {
+                PaneLayout::Split { sizes, .. } => sizes,
+                PaneLayout::Pane(_) => vec![],
+            },
         })
     }
 

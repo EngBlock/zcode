@@ -1660,10 +1660,22 @@ def pane_checks(samples):
               f"open {greeter}:{greeting_line}", "wait 300")
         before = panes()
         assert before["layout"] == "h(v(0, 1), 2)", before["layout"]
+        # Drag the divider between the left column and the assistant left (the
+        # window's first drag can go to activating it; drag until it moves).
+        _, y = shown(before, 2)["click"]
+        for _ in range(3):
+            divider = shown(panes(), 2)["left"] - 5
+            z.run(f"mouse {divider} {y}", "wait 200", f"drag {divider} {y} {divider - 120} {y}", "wait 300")
+            before = panes()
+            if before["sizes"][0] < before["sizes"][1]:
+                break
+        width = before["sizes"]
+        assert len(width) == 2 and width[1] - width[0] > 200, width
         z.quit()
         z = Zcode(project)
         after = z.wait_for(lambda s: s["panes"]["layout"] != "0", timeout=30)["panes"]
         assert shape(after) == shape(before), (shape(after), shape(before))
+        assert abs(after["sizes"][0] - width[0]) < 2, (after["sizes"], width)
         assert shown(after, 1)["path"] == greeter and z.dump()["active"]["path"] == greeter, shown(after, 1)
         assert after["list"][2]["assists"] == 0
 

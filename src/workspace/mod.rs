@@ -101,6 +101,9 @@ pub struct Workspace {
     next_pane_id: u64,
     /// Focus Editor Pane: only the focused pane is shown.
     zoomed: bool,
+    /// Each split's pane sizes as dragged, and as the session had them.
+    split_states: std::collections::HashMap<SharedString, Entity<gpui_kit::component::resizable::ResizableState>>,
+    restored_split_sizes: std::collections::HashMap<SharedString, Vec<f32>>,
     /// The project editor, in whichever pane has its tab.
     pub project_settings: Option<Entity<ProjectSettings>>,
     project_settings_subscriptions: Vec<Subscription>,
@@ -221,6 +224,8 @@ impl Workspace {
             active_pane: PaneId(0),
             next_pane_id: 1,
             zoomed: false,
+            split_states: Default::default(),
+            restored_split_sizes: Default::default(),
             project_settings: None,
             project_settings_subscriptions: vec![],
             exec_location: None,
@@ -568,7 +573,7 @@ impl Workspace {
 
     pub fn save_session(&mut self, cx: &App) {
         let build = self.build.read(cx);
-        let layout = self.pane_layout();
+        let layout = self.pane_layout(cx);
         let mut open_files: Vec<PathBuf> = vec![];
         for pane in layout.panes() {
             open_files.extend(pane.files.iter().filter(|f| !open_files.contains(f)).cloned().collect::<Vec<_>>());

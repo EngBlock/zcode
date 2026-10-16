@@ -43,7 +43,13 @@ pub struct ProjectSession {
 #[serde(rename_all = "lowercase")]
 pub enum PaneLayout {
     Pane(PaneState),
-    Split { axis: crate::workspace::SplitAxis, members: Vec<PaneLayout> },
+    Split {
+        axis: crate::workspace::SplitAxis,
+        members: Vec<PaneLayout>,
+        /// The members' sizes along the axis, in points, as last dragged.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        sizes: Vec<f32>,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -171,12 +177,14 @@ mod tests {
             axis: SplitAxis::Horizontal,
             members: vec![
                 pane(&["/a.swift", "/b.swift"], false),
-                PaneLayout::Split { axis: SplitAxis::Vertical, members: vec![pane(&["/a.swift"], true), pane(&[], false)] },
+                PaneLayout::Split { axis: SplitAxis::Vertical, members: vec![pane(&["/a.swift"], true), pane(&[], false)], sizes: vec![] },
             ],
+            sizes: vec![640., 480.],
         };
         let saved = ProjectSession { panes: Some(layout.clone()), ..Default::default() };
         let text = serde_json::to_string(&saved).unwrap();
         assert!(text.contains(r#""axis":"vertical""#) && !text.contains("counterparts"), "{text}");
+        assert_eq!(text.matches("sizes").count(), 1, "{text}");
         let reread: ProjectSession = serde_json::from_str(&text).unwrap();
         assert_eq!(reread.panes, Some(layout));
         let panes = reread.panes.as_ref().unwrap().panes();
