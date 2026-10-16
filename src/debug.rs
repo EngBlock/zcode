@@ -9,6 +9,7 @@
 //!   type <text>                type text into the focused input
 //!   mouse <x> <y> / click <x> <y>  move / click at window coordinates (points)
 //!   double-click <x> <y> / right-click <x> <y>
+//!   drag <x1> <y1> <x2> <y2>   press at one point, move to the other and release (drag and drop)
 //!   open <path>[:line]         open a file in the frontmost workspace
 //!   wait <ms>                  pause
 //!   rename <path> -> <name>    rename a file or folder (a name containing `/` moves it)
@@ -27,6 +28,7 @@
 //!   edit-scheme <field> [<value>]  edit the open scheme editor (see `EditSchemeDialog::set_field`)
 //!   breakpoint <field> [<value>]   edit the open breakpoint editor (see `BreakpointEditor::set_field`)
 //!   console <command>          run a command at the LLDB console's prompt
+//!   bookmark <command>         a Bookmarks navigator command (see `Workspace::bookmark_command`)
 //!   package <field> [<value>]  Add Package Dependencies: `open [query]`, `local <path>` (after Add
 //!                              Local…'s panel), or a field of the open sheet (see `AddPackageDialog::set_field`)
 //!   package-menu update|remove <identity>  a package's Update Package / Remove Package
@@ -182,6 +184,47 @@ fn run_command(
                 .map_err(|e| e.to_string())?;
             Ok(String::new())
         }
+        "drag" => {
+            let coords: Vec<f32> = arg.split_whitespace().filter_map(|p| p.parse().ok()).collect();
+            let [x1, y1, x2, y2] = coords[..] else {
+                return Err("usage: drag <x1> <y1> <x2> <y2> (window points)".into());
+            };
+            let (from, to) = (point(px(x1), px(y1)), point(px(x2), px(y2)));
+            window
+                .update(cx, |_, window, cx| {
+                    let moved = |position, pressed_button| {
+                        PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button, modifiers: Modifiers::default() })
+                    };
+                    window.dispatch_event(moved(from, None), cx);
+                    window.dispatch_event(
+                        PlatformInput::MouseDown(MouseDownEvent {
+                            button: MouseButton::Left,
+                            position: from,
+                            modifiers: Modifiers::default(),
+                            click_count: 1,
+                            first_mouse: false,
+                        }),
+                        cx,
+                    );
+                    // In steps, as a hand would: the drag starts once the
+                    // pointer leaves the press point.
+                    for step in 1..=8 {
+                        let t = step as f32 / 8.;
+                        window.dispatch_event(moved(from + (to - from) * t, Some(MouseButton::Left)), cx);
+                    }
+                    window.dispatch_event(
+                        PlatformInput::MouseUp(MouseUpEvent {
+                            button: MouseButton::Left,
+                            position: to,
+                            modifiers: Modifiers::default(),
+                            click_count: 1,
+                        }),
+                        cx,
+                    );
+                })
+                .map_err(|e| e.to_string())?;
+            Ok(String::new())
+        }
         "open" => {
             let (path, line) = match arg.rsplit_once(':') {
                 Some((p, l)) if l.parse::<u32>().is_ok() => (p, l.parse::<u32>().ok()),
@@ -280,6 +323,13 @@ fn run_command(
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.edit_scheme_field(field, value, window, cx)))
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
+        }
+        "bookmark" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.bookmark_command(arg, window, cx)))
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
         }

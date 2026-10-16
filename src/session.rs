@@ -28,6 +28,9 @@ pub struct ProjectSession {
     /// Every breakpoint with its options (Xcode's file is Breakpoints_v2).
     pub breakpoints_v2: Vec<crate::debugger::Breakpoint>,
     pub breakpoints_active: Option<bool>,
+    /// Bookmarks and bookmarked searches, in the navigator's order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bookmarks: Vec<crate::bookmarks::Entry>,
 }
 
 impl ProjectSession {

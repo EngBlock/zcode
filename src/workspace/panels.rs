@@ -537,6 +537,7 @@ impl Workspace {
         let editor = buffer.editor.clone();
         let read_only = buffer.read_only;
         let markers = self.render_breakpoint_gutter(&editor, cx);
+        let ribbons = self.render_bookmark_gutter(&editor, cx);
         let diamonds = self.render_test_gutter(&editor, cx);
         v_flex()
             .size_full()
@@ -556,8 +557,10 @@ impl Workspace {
                             .font_family(theme.mono_font_family.clone())
                             .text_size(px(self.font_size)),
                     )
-                    // Diamonds paint over markers and take their clicks first.
+                    // Ribbons paint over markers, diamonds over both, and
+                    // each takes its clicks first.
                     .children(markers)
+                    .children(ribbons)
                     .children(diamonds),
             )
             .into_any_element()
@@ -1187,9 +1190,17 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowSourceControlNavigator, window, cx| {
                 this.show_navigator_tab(NavigatorTab::SourceControl, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &ShowSymbolNavigator, window, cx| {
-                this.show_navigator_tab(NavigatorTab::Symbols, window, cx)
+            .on_action(cx.listener(|this, _: &ShowBookmarksNavigator, window, cx| {
+                this.show_navigator_tab(NavigatorTab::Bookmarks, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &BookmarkLine, window, cx| this.bookmark_line(false, window, cx)))
+            .on_action(cx.listener(|this, _: &BookmarkLineWithDialog, window, cx| this.bookmark_line(true, window, cx)))
+            .on_action(cx.listener(|this, _: &BookmarkFile, window, cx| this.bookmark_file(false, window, cx)))
+            .on_action(cx.listener(|this, _: &BookmarkFileWithDialog, window, cx| this.bookmark_file(true, window, cx)))
+            .on_action(cx.listener(|this, _: &NextBookmark, window, cx| this.step_bookmark(true, false, window, cx)))
+            .on_action(cx.listener(|this, _: &PreviousBookmark, window, cx| this.step_bookmark(false, false, window, cx)))
+            .on_action(cx.listener(|this, _: &NextBookmarkInWorkspace, window, cx| this.step_bookmark(true, true, window, cx)))
+            .on_action(cx.listener(|this, _: &PreviousBookmarkInWorkspace, window, cx| this.step_bookmark(false, true, window, cx)))
             .on_action(cx.listener(|this, _: &ShowFindNavigator, window, cx| {
                 this.show_navigator_tab(NavigatorTab::Find, window, cx)
             }))

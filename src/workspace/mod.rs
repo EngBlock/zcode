@@ -2,6 +2,8 @@
 
 mod add_files;
 mod add_package;
+mod bookmark_dialog;
+mod bookmarks;
 mod breakpoint_editor;
 mod breakpoints;
 mod console;
@@ -75,6 +77,7 @@ pub struct Buffer {
     pub language: SharedString,
     mtime: Option<SystemTime>,
     breakpoint_anchors: line_anchors::LineAnchors,
+    bookmark_anchors: line_anchors::LineAnchors,
     exec_mark: Option<RangeDecorationCollection>,
     /// Property lists: the structured editor over the same text.
     pub plist: Option<PlistBuffer>,
@@ -150,6 +153,8 @@ pub struct Workspace {
     breakpoint_editor: Option<WeakEntity<breakpoint_editor::BreakpointEditor>>,
     breakpoint_gutter: Rc<breakpoints::BreakpointGutter>,
     popup_menu: Option<breakpoints::PopupMenuState>,
+    pub bookmarks: crate::bookmarks::Bookmarks,
+    bookmarks_ui: bookmarks::BookmarksUi,
     console: console::Console,
     pub show_inspector: bool,
     /// What the File inspector shows when it isn't the active file (a
@@ -262,6 +267,8 @@ impl Workspace {
             breakpoint_editor: None,
             breakpoint_gutter: Default::default(),
             popup_menu: None,
+            bookmarks: Default::default(),
+            bookmarks_ui: Default::default(),
             console: Default::default(),
             show_inspector: saved.show_inspector.unwrap_or(false),
             inspected: None,
@@ -329,12 +336,14 @@ impl Workspace {
             d.restore_breakpoints(breakpoints);
             d.breakpoints_active = saved.breakpoints_active.unwrap_or(true);
         });
+        this.bookmarks.restore(saved.bookmarks.clone());
 
         mark("state");
         this.rescan(cx);
         this.refresh_scm(cx);
         this.start_activity_ticker(cx);
         this.watch_files(cx);
+        this.prune_missing_bookmarks(cx);
         mark("background tasks");
         this.restore_tabs(saved, opened_path, window, cx);
         mark("restore tabs");
@@ -492,6 +501,9 @@ impl Workspace {
             self.force_close(ix, window, cx);
         }
         self.debugger.update(cx, |d, cx| d.remove_breakpoints_in(&path, cx));
+        if self.bookmarks.remove_in(&path) {
+            self.bookmarks_changed(true, cx);
+        }
         self.rescan(cx);
         self.refresh_scm(cx);
         self.remove_from_projects(path, window, cx);
@@ -531,6 +543,9 @@ impl Workspace {
             return;
         }
         self.debugger.update(cx, |d, cx| d.move_files(&path, &target, cx));
+        if self.bookmarks.move_files(&path, &target) {
+            self.save_session(cx);
+        }
         let mut reopen = vec![];
         while let Some(ix) = self.buffers.iter().position(|b| b.path.starts_with(&path)) {
             let old = self.buffers[ix].path.clone();
@@ -628,8 +643,10 @@ impl Workspace {
         if let Some(plist) = self.buffers.iter().find(|b| b.path == path).and_then(|b| b.plist.as_ref()) {
             plist.editor.update(cx, |editor, cx| editor.text_replaced(cx));
         }
-        // Replacing the text collapsed the anchors; breakpoints keep their lines.
+        // Replacing the text collapsed the anchors; breakpoints and bookmarks
+        // keep their lines.
         self.anchor_breakpoints(path, true, cx);
+        self.anchor_bookmarks(path, true, cx);
     }
 
     fn restore_tabs(
@@ -669,6 +686,7 @@ impl Workspace {
             breakpoints: Default::default(),
             breakpoints_v2: self.debugger.read(cx).breakpoints.clone(),
             breakpoints_active: Some(self.debugger.read(cx).breakpoints_active),
+            bookmarks: self.bookmarks.entries.clone(),
         };
         self.session = Session::load();
         self.session.set_project(&self.project.root, state);
@@ -855,6 +873,7 @@ impl Workspace {
                     }
                     this.schedule_test_reparse(&path, cx);
                     this.track_breakpoints(&path, cx);
+                    this.track_bookmarks(&path, cx);
                 }
             }
         });
@@ -888,6 +907,7 @@ impl Workspace {
             language: language.into(),
             mtime,
             breakpoint_anchors: Default::default(),
+            bookmark_anchors: Default::default(),
             exec_mark: None,
             plist,
             _subscriptions: subscriptions,
@@ -895,6 +915,7 @@ impl Workspace {
         let ix = self.buffers.len() - 1;
         self.refresh_diagnostics_for(&path, cx);
         self.anchor_breakpoints(&path, false, cx);
+        self.anchor_bookmarks(&path, false, cx);
         self.activate(ix, window, cx);
         if let Some(target) = target {
             self.reveal_target(ix, target.clone(), window, cx);
@@ -958,9 +979,6 @@ impl Workspace {
         window.set_window_title(&self.title());
         window.set_window_edited(self.buffers.iter().any(|b| b.dirty));
         self.reveal_active_in_tree(cx);
-        if self.navigator == NavigatorTab::Symbols {
-            self.refresh_outline(cx);
-        }
         cx.notify();
     }
 
@@ -1229,12 +1247,7 @@ impl Workspace {
                 self.refresh_diagnostics_for(path, cx);
                 cx.notify();
             }
-            LspStoreEvent::StatusChanged => {
-                if self.navigator == NavigatorTab::Symbols {
-                    self.refresh_outline(cx);
-                }
-                cx.notify();
-            }
+            LspStoreEvent::StatusChanged => cx.notify(),
             LspStoreEvent::ApplyEdit(edit) => {
                 self.apply_workspace_edit(edit.clone(), window, cx);
             }
@@ -1714,6 +1727,7 @@ impl Workspace {
         if let Some(editor) = self.breakpoint_editor.take().and_then(|e| e.upgrade()) {
             self.apply_breakpoint_edit(&editor, cx);
         }
+        self.bookmarks_ui.dialog = None;
         if self.modal.take().is_some() {
             match self.active_editor() {
                 Some(editor) => editor.update(cx, |state, cx| state.focus(window, cx)),
@@ -1923,6 +1937,7 @@ impl Workspace {
         });
         // Added separately: one `json!` this size reaches the macro recursion limit.
         state["breakpoints"] = self.breakpoints_summary(cx);
+        state["bookmarks"] = self.bookmarks_summary(cx);
         state["packages"] = self.packages_summary(cx);
         state["console"] = self.console_summary(cx);
         state["last_log"] = serde_json::json!(build.reports.first().map(|r| r.log_path.clone()));

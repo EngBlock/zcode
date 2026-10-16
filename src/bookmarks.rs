@@ -505,16 +505,18 @@ impl Bookmarks {
     }
 
     /// Jump to Next / Previous Bookmark In Workspace: the bookmark after
-    /// (or before) the one at `line` in the navigator's order. Away from a
-    /// bookmark, the nearest one in the file after (or before) the line,
-    /// or else the first (or last) bookmark.
-    pub fn step_in_workspace(&self, path: &Path, line: u32, forward: bool) -> Option<&Bookmark> {
+    /// (or before) `current` (the one last jumped to, while the cursor is
+    /// still there) or the one at `line`, in the navigator's order. Away
+    /// from a bookmark, the nearest one in the file after (or before) the
+    /// line, or else the first (or last) bookmark.
+    pub fn step_in_workspace(&self, path: &Path, line: u32, current: Option<u64>, forward: bool) -> Option<&Bookmark> {
         let order = self.in_order();
         if order.is_empty() {
             return None;
         }
         let at = |b: &Bookmark| b.location.path() == path && b.location.line() == Some(line);
-        if let Some(ix) = order.iter().position(|b| at(b)) {
+        let current = current.and_then(|id| order.iter().position(|b| b.id == id));
+        if let Some(ix) = current.or_else(|| order.iter().position(|b| at(b))) {
             let len = order.len();
             let next = if forward { (ix + 1) % len } else { (ix + len - 1) % len };
             return Some(order[next]);
@@ -693,13 +695,16 @@ mod tests {
         assert_eq!(b.step_in_file(a, 3, false), Some(10));
         assert_eq!(b.step_in_file(Path::new("/p/none.swift"), 1, true), None);
         // In the navigator's order: a10, a3, b4.
-        let step = |path: &str, line: u32, forward: bool| b.step_in_workspace(Path::new(path), line, forward).map(|b| b.display_title());
+        let step = |path: &str, line: u32, forward: bool| b.step_in_workspace(Path::new(path), line, None, forward).map(|b| b.display_title());
         assert_eq!(step("/p/a.swift", 10, true).as_deref(), Some("a3"));
         assert_eq!(step("/p/a.swift", 3, true).as_deref(), Some("b4"));
         assert_eq!(step("/p/b.swift", 4, true).as_deref(), Some("a10"), "wraps");
         assert_eq!(step("/p/a.swift", 10, false).as_deref(), Some("b4"));
         assert_eq!(step("/p/a.swift", 5, true).as_deref(), Some("a10"), "nearest below the cursor");
         assert_eq!(step("/p/c.swift", 1, false).as_deref(), Some("b4"));
+        // From a file bookmark, which has no line to be at.
+        let file = b.add(Location::File { path: "/p/a.swift".into() }, "a").0;
+        assert_eq!(b.step_in_workspace(a, 3, Some(file), true).map(|b| b.display_title()).as_deref(), Some("b4"));
     }
 
     #[test]

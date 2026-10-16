@@ -1,5 +1,7 @@
-//! The navigator area (left): Project, Source Control, Symbols, Find,
-//! Issues, Tests and Reports — Xcode's ⌘1…⌘9.
+//! The navigator area (left): Project, Source Control, Bookmarks, Find,
+//! Issues, Tests, Debug, Breakpoints and Reports — Xcode 27's ⌘1…⌘9. Xcode
+//! 27 has no Symbol navigator; the active file's symbols are in Document
+//! Items (⌃6) and the workspace's in Open Quickly (⇧⌘O).
 
 use std::path::PathBuf;
 
@@ -15,7 +17,7 @@ use gpui_kit::*;
 use gpui_kit::assets::IconName;
 
 use super::packages::{PACKAGES_ID, package_of_item};
-use super::pickers::{file_icon, symbol_icon};
+use super::pickers::file_icon;
 use super::{Target, Workspace};
 use crate::build::log::{IssueSource, Severity};
 
@@ -23,7 +25,7 @@ use crate::build::log::{IssueSource, Severity};
 pub enum NavigatorTab {
     Project,
     SourceControl,
-    Symbols,
+    Bookmarks,
     Find,
     Issues,
     Tests,
@@ -36,7 +38,7 @@ impl NavigatorTab {
     const ALL: [NavigatorTab; 9] = [
         Self::Project,
         Self::SourceControl,
-        Self::Symbols,
+        Self::Bookmarks,
         Self::Find,
         Self::Issues,
         Self::Tests,
@@ -49,7 +51,7 @@ impl NavigatorTab {
         match self {
             Self::Project => IconName::Folder,
             Self::SourceControl => IconName::GitBranch,
-            Self::Symbols => IconName::Shapes,
+            Self::Bookmarks => IconName::Bookmark,
             Self::Find => IconName::Search,
             Self::Issues => IconName::TriangleAlert,
             Self::Tests => IconName::Diamond,
@@ -63,7 +65,7 @@ impl NavigatorTab {
         match self {
             Self::Project => "Project Navigator (⌘1)",
             Self::SourceControl => "Source Control Navigator (⌘2)",
-            Self::Symbols => "Symbol Navigator (⌘3)",
+            Self::Bookmarks => "Bookmark Navigator (⌘3)",
             Self::Find => "Find Navigator (⌘4)",
             Self::Issues => "Issue Navigator (⌘5)",
             Self::Tests => "Test Navigator (⌘6)",
@@ -105,7 +107,6 @@ impl Workspace {
         self.navigator = tab;
         self.show_navigator = true;
         match tab {
-            NavigatorTab::Symbols => self.refresh_outline(cx),
             NavigatorTab::SourceControl => self.refresh_scm(cx),
             NavigatorTab::Find => {
                 let selected = self
@@ -159,7 +160,7 @@ impl Workspace {
         let body = match self.navigator {
             NavigatorTab::Project => self.render_project_navigator(cx).into_any_element(),
             NavigatorTab::SourceControl => self.render_scm_navigator(cx).into_any_element(),
-            NavigatorTab::Symbols => self.render_symbol_navigator(cx).into_any_element(),
+            NavigatorTab::Bookmarks => self.render_bookmark_navigator(window, cx).into_any_element(),
             NavigatorTab::Find => self.render_find_navigator(window, cx).into_any_element(),
             NavigatorTab::Issues => self.render_issue_navigator(cx).into_any_element(),
             NavigatorTab::Tests => self.render_test_navigator(cx).into_any_element(),
@@ -366,6 +367,12 @@ impl Workspace {
                             .item(PopupMenuItem::new("Show in Finder").on_click(move |_, _, cx| {
                                 cx.reveal_path(&p2);
                             }))
+                            .when(!entry.is_folder(), |menu| {
+                                let (ws, path) = (workspace.clone(), path.clone());
+                                menu.item(PopupMenuItem::new("Bookmark File").on_click(move |_, window, cx| {
+                                    ws.update(cx, |ws, cx| ws.bookmark_path(path.clone(), window, cx)).ok();
+                                }))
+                            })
                             .when(!entry.is_folder() && crate::plist::is_property_list(&path), |menu| {
                                 // Xcode's Open As ▸ Source Code / Property List.
                                 let (ws1, ws2, p1, p2) = (workspace.clone(), workspace.clone(), path.clone(), path.clone());
@@ -454,39 +461,6 @@ impl Workspace {
         list
     }
 
-    fn render_symbol_navigator(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let title = self
-            .active_buffer()
-            .map(|b| b.title())
-            .unwrap_or_else(|| "No file".into());
-        let mut list = v_flex()
-            .id("symbols")
-            .size_full()
-            .overflow_y_scroll()
-            .child(section_header(title, cx));
-        if self.outline.is_empty() {
-            let message = match self.lsp.read(cx).status() {
-                crate::lsp::LspStatus::Ready => "No symbols in this file.",
-                _ => "Symbols appear once the language server is ready.",
-            };
-            return list.child(empty(message, cx));
-        }
-        for (ix, entry) in self.outline.clone().into_iter().enumerate() {
-            list = list.child(
-                row(("symbol", ix))
-                    .pl(px(8. + entry.depth as f32 * 14.))
-                    .hover(|el| el.bg(theme.sidebar_accent))
-                    .child(Icon::new(symbol_icon(entry.kind)).small().text_color(theme.primary))
-                    .child(div().flex_1().truncate().child(entry.name.clone()))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.reveal_outline_entry(&entry, window, cx);
-                    })),
-            );
-        }
-        list
-    }
-
     fn render_find_navigator(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let options = self.find.options.clone();
@@ -517,6 +491,7 @@ impl Workspace {
 
         let mut list = v_flex().id("find-results").flex_1().min_h_0().overflow_y_scroll();
         for (file_ix, file) in results.iter().enumerate() {
+            let bookmark_file = file.path.clone();
             list = list.child(
                 row(("find-file", file_ix))
                     .font_weight(FontWeight::SEMIBOLD)
@@ -529,7 +504,16 @@ impl Workspace {
                             .text_color(theme.muted_foreground)
                             .truncate()
                             .child(self.relative(file.path.parent().unwrap_or(&file.path))),
-                    ),
+                    )
+                    .context_menu({
+                        let workspace = cx.weak_entity();
+                        move |menu, _, _| {
+                            let (workspace, path) = (workspace.clone(), bookmark_file.clone());
+                            menu.item(PopupMenuItem::new("Bookmark File").on_click(move |_, window, cx| {
+                                workspace.update(cx, |ws, cx| ws.bookmark_path(path.clone(), window, cx)).ok();
+                            }))
+                        }
+                    }),
             );
             for (match_ix, m) in file.matches.iter().enumerate().take(100) {
                 let path = file.path.clone();
@@ -541,6 +525,7 @@ impl Workspace {
                     ..Default::default()
                 };
                 let text = StyledText::new(m.preview.clone()).with_highlights(vec![(m.range.clone(), highlight)]);
+                let (bookmark_path, bookmark_text) = (file.path.clone(), m.preview.clone());
                 list = list.child(
                     row(SharedString::from(format!("find-{file_ix}-{match_ix}")))
                         .pl_6()
@@ -550,7 +535,17 @@ impl Workspace {
                         .child(div().flex_1().truncate().font_family(theme.mono_font_family.clone()).child(text))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_file(path.clone(), Some(Target::Line { line, column }), true, window, cx);
-                        })),
+                        }))
+                        .context_menu({
+                            let workspace = cx.weak_entity();
+                            move |menu, _, _| {
+                                let (workspace, path, text) = (workspace.clone(), bookmark_path.clone(), bookmark_text.clone());
+                                menu.item(PopupMenuItem::new("Bookmark Line").on_click(move |_, window, cx| {
+                                    let (path, text) = (path.clone(), text.clone());
+                                    workspace.update(cx, |ws, cx| ws.bookmark_find_result(path, line, text, window, cx)).ok();
+                                }))
+                            }
+                        }),
                 );
             }
         }
@@ -593,7 +588,23 @@ impl Workspace {
                             ),
                     )
                     .when(!summary.is_empty(), |el| {
-                        el.child(div().text_xs().text_color(theme.muted_foreground).child(summary))
+                        let can_bookmark = !self.find.searching && total > 0;
+                        el.child(
+                            h_flex()
+                                .gap_1()
+                                .child(div().flex_1().text_xs().text_color(theme.muted_foreground).child(summary))
+                                .when(can_bookmark, |el| {
+                                    // Xcode bookmarks the query, with its results, as a group.
+                                    el.child(
+                                        Button::new("find-bookmark")
+                                            .icon(IconName::BookmarkPlus)
+                                            .ghost()
+                                            .xsmall()
+                                            .tooltip("Bookmark Search Results (⌃⌘')")
+                                            .on_click(cx.listener(|this, _, window, cx| this.bookmark_find_results(window, cx))),
+                                    )
+                                }),
+                        )
                     }),
             )
             .child(div().h(px(1.)).bg(theme.border))

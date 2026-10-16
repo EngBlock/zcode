@@ -10,7 +10,10 @@ gpui_kit::assets::icon_assets!(
     [
         AppWindow,
         ArrowDownToLine,
+        ArrowUpDown,
         ArrowUpFromLine,
+        Bookmark,
+        BookmarkPlus,
         Box,
         Bug,
         ChevronDown,
