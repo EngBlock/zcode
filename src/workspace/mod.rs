@@ -8,6 +8,7 @@ mod console;
 mod edit_scheme;
 mod editing;
 mod inspector;
+mod line_anchors;
 mod navigator;
 mod packages;
 mod panels;
@@ -73,7 +74,7 @@ pub struct Buffer {
     saved_text: gpui_kit::component::input::Rope,
     pub language: SharedString,
     mtime: Option<SystemTime>,
-    breakpoint_anchors: Vec<breakpoints::Anchor>,
+    breakpoint_anchors: line_anchors::LineAnchors,
     exec_mark: Option<RangeDecorationCollection>,
     /// Property lists: the structured editor over the same text.
     pub plist: Option<PlistBuffer>,
@@ -886,7 +887,7 @@ impl Workspace {
             read_only,
             language: language.into(),
             mtime,
-            breakpoint_anchors: vec![],
+            breakpoint_anchors: Default::default(),
             exec_mark: None,
             plist,
             _subscriptions: subscriptions,

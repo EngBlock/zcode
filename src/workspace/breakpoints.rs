@@ -4,10 +4,9 @@
 //! for its menu), the breakpoint editor popover, and the navigator's list
 //! with its + menu (Swift Error, Exception and Symbolic breakpoints).
 //!
-//! Each line breakpoint is anchored to its line by an invisible editor
-//! decoration, which the editor moves through edits; after each edit the
-//! breakpoints follow their anchors, so inserting lines above one moves it
-//! down. Deleting a breakpoint's line deletes the breakpoint.
+//! Line breakpoints follow edits through their line anchors
+//! (`line_anchors.rs`), so inserting lines above one moves it down.
+//! Deleting a breakpoint's line deletes the breakpoint.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -15,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{EditorState, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, RopeExt as _};
+use gpui_kit::component::input::{EditorState, RopeExt as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -31,14 +30,6 @@ use crate::debugger::breakpoints::{ExceptionLanguage, ExceptionPhase, Kind};
 
 /// How far a marker's point reaches into the fold column.
 const MARKER_TIP: f32 = 7.;
-
-/// A line breakpoint's place in an open buffer.
-pub(super) struct Anchor {
-    id: u64,
-    /// The 1-based line when anchored.
-    line: u32,
-    mark: Option<RangeDecorationCollection>,
-}
 
 /// Where markers were painted last frame (window coordinates): for
 /// opening the editor next to one, and for the test harness.
@@ -125,56 +116,13 @@ impl Workspace {
             .filter_map(|bp| Some((bp.id, bp.line()?)))
             .collect();
         let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) else { return };
-        let current: Vec<(u64, u32)> = buffer.breakpoint_anchors.iter().map(|a| (a.id, a.line)).collect();
-        if current == wanted && !force {
-            return;
-        }
-        for anchor in buffer.breakpoint_anchors.drain(..) {
-            if let Some(mark) = anchor.mark {
-                mark.dispose(cx);
-            }
-        }
-        let text = buffer.editor.read(cx).text().clone();
-        let editor = buffer.editor.clone();
-        let anchors: Vec<Anchor> = wanted
-            .into_iter()
-            .map(|(id, line)| {
-                let mark = Self::line_range(&text, line).map(|range| {
-                    // Invisible: the marker in the gutter shows it.
-                    let decoration = RangeDecoration::new(range)
-                        .with_style(RangeDecorationStyle::Fill)
-                        .with_color(gpui_kit::transparent_black());
-                    editor.update(cx, |state, cx| state.create_range_decorations_collection(vec![decoration], cx))
-                });
-                Anchor { id, line, mark }
-            })
-            .collect();
-        if let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) {
-            buffer.breakpoint_anchors = anchors;
-        }
+        buffer.breakpoint_anchors.set(&buffer.editor, wanted, force, cx);
     }
 
     /// After an edit, moves breakpoints to where their anchors went.
     pub(super) fn track_breakpoints(&mut self, path: &Path, cx: &mut Context<Self>) {
         let Some(buffer) = self.buffers.iter().find(|b| b.path == path) else { return };
-        if buffer.breakpoint_anchors.is_empty() {
-            return;
-        }
-        let text = buffer.editor.read(cx).text().clone();
-        let mut moves = vec![];
-        for anchor in &buffer.breakpoint_anchors {
-            let Some(mark) = &anchor.mark else { continue };
-            match mark.get_ranges(cx).first() {
-                // The line was deleted.
-                None => moves.push((anchor.id, None)),
-                Some(range) => {
-                    let line = text.offset_to_point(range.start).row as u32 + 1;
-                    if line != anchor.line {
-                        moves.push((anchor.id, Some(line)));
-                    }
-                }
-            }
-        }
+        let moves = buffer.breakpoint_anchors.moves(&buffer.editor, cx);
         if !moves.is_empty() {
             let path = path.to_path_buf();
             self.debugger.update(cx, |d, cx| d.move_line_breakpoints(&path, moves, cx));
