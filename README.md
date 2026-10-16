@@ -47,21 +47,23 @@ Measured on an M4 Max with macOS 27.2 and a release build.
 | | Time to first frame |
 |---|---|
 | `zcode <project>` while zcode is running (the usual case) | **~70 ms**; the CLI itself returns in ~50 ms |
-| Cold launch, welcome window | ~360 ms (8 ms of it before `main()`) |
-| Cold launch, project with 2 Swift tabs restored | ~370–410 ms |
+| Cold launch, welcome window | ~210–245 ms (8 ms of it before `main()`) |
+| Cold launch, project with 2 Swift tabs restored | ~235–255 ms |
 
 * **Single instance.** zcode keeps running when its last window closes, as Xcode and other Mac document apps do. `zcode <path>` hands the path to the running instance over a Unix socket and exits, and the warm instance opens the project window in ~50–75 ms. `ZCODE_NEW_INSTANCE=1` forces a separate process.
 * **Always warm.** `zcode --background` starts the resident instance with no window. Run it as a login item (System Settings ▸ General ▸ Login Items, or a LaunchAgent), and even the first open of the day takes the warm path.
 * Resident memory at first frame is ~106 MB for the welcome window and ~124 MB with a project open.
 * The first launch after each rebuild also includes macOS scanning the new binary.
 
-* zcode adds close to nothing to cold start. A bare GPUI Kit window
-  (`cargo run --release --example gpui_baseline -- --quit --activate`) also
-  takes ~340–360 ms to its first frame. Most of that is framework
-  initialization (~55 ms platform setup, ~40 ms component init, ~150 ms
-  creating the Metal window). Profiling with `ZCODE_PAUSE_AT_START=<ms>` plus
-  `sample` shows that time is in AppKit and GPUI: keyboard layout, font
-  enumeration, window and display-link setup.
+* Cold start is faster than a bare GPUI Kit window
+  (`cargo run --release --example gpui_baseline -- --quit --activate`, ~340–360
+  ms). zcode opens its windows hidden, turns off AppKit's window-open animation
+  and then shows them, which removes ~110 ms that `makeKeyAndOrderFront`
+  otherwise spends setting up the animation. What remains is framework
+  initialization: ~50 ms platform setup, ~30 ms component and theme init
+  (font enumeration), ~40 ms creating the Metal window and ~60 ms for the first
+  two frames. Profiling with `ZCODE_PAUSE_AT_START=<ms>` plus `sample`, or
+  `ZCODE_TRACE_STARTUP=1`, shows the breakdown.
 * sourcekit-lsp, scheme listing, simulator discovery, file scanning and git
   status all start after the window appears, on background threads.
 * Swift highlighting uses a compact tree-sitter query
@@ -112,7 +114,7 @@ saved breakpoints can't leak in. It covers:
 * Open Quickly, definition, completion with placeholders, comment and undo, Document Items, find and references
 * the build-error → issue flow
 * run, test and debug for a Swift package
-* opening a project through an already-running instance (< 150 ms to first frame)
+* cold launch (< 300 ms to first frame, median of 3) and opening a project through an already-running instance (< 150 ms)
 * every Xcode 27 default shortcut for the MVP commands (from
   `docs/xcode-inventory.md`) is bound to the matching zcode command in the live
   keymap

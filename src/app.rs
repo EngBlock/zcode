@@ -64,7 +64,31 @@ fn window_options(title: &str, window_size: Size<Pixels>, cx: &App) -> WindowOpt
         }),
         app_owns_titlebar_drag: true,
         window_min_size: Some(size(px(720.), px(420.))),
+        // Created hidden and shown by `present` without AppKit's open
+        // animation.
+        show: false,
+        focus: false,
         ..Default::default()
+    }
+}
+
+/// Shows a window opened with `window_options`. Setting up AppKit's
+/// window-open animation blocks the main thread for ~100 ms inside
+/// `makeKeyAndOrderFront` before the first frame, so zcode's windows appear
+/// without it.
+fn present(window: AnyWindowHandle, cx: &mut App) {
+    disable_window_animations();
+    window
+        .update(cx, |_, window, _| window.activate_window())
+        .ok();
+}
+
+fn disable_window_animations() {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSWindowAnimationBehavior};
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    for window in NSApplication::sharedApplication(mtm).windows() {
+        window.setAnimationBehavior(NSWindowAnimationBehavior::None);
     }
 }
 
@@ -122,6 +146,7 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
     mark("open_window returned");
     match result {
         Ok((window, workspace)) => {
+            present(window, cx);
             cx.default_global::<Workspaces>().0.push(workspace.downgrade());
             let weak = workspace.downgrade();
             window
@@ -150,12 +175,12 @@ fn prewarm_hidden_window(cx: &mut App) {
         point(px(-30000.), px(-30000.)),
         size(px(400.), px(300.)),
     )));
-    options.focus = false;
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
         sync_theme(window, cx);
         cx.new(Welcome::new)
     });
     if let Ok((window, _)) = opened {
+        present(window, cx);
         cx.spawn(async move |cx| {
             cx.background_executor().timer(Duration::from_millis(300)).await;
             cx.update(|cx| {
@@ -178,8 +203,9 @@ pub fn open_welcome(cx: &mut App) {
             cx.new(Welcome::new)
         },
     );
-    if let Err(err) = result {
-        log::error!("failed to open welcome window: {err:#}");
+    match result {
+        Ok((window, _)) => present(window, cx),
+        Err(err) => log::error!("failed to open welcome window: {err:#}"),
     }
 }
 

@@ -401,10 +401,21 @@ def main():
     if not os.path.exists(BINARY):
         sys.exit("build first: cargo build --release")
     sim = "--simulator" in sys.argv
-    print("Startup benchmark (warm; the first launch after a rebuild includes macOS's binary scan):")
-    for _ in range(2):
-        out = subprocess.run([BINARY, "--startup-bench"], capture_output=True, text=True).stdout.strip()
-    print("  " + out.splitlines()[-1] if out else "  (no output)")
+    print("Cold launch (welcome window; the first launch after a rebuild includes macOS's binary scan):")
+    env = dict(os.environ, ZCODE_NEW_INSTANCE="1")
+    subprocess.run([BINARY, "--startup-bench"], capture_output=True, env=env)
+    runs = []
+    for _ in range(3):
+        out = subprocess.run([BINARY, "--startup-bench"], capture_output=True, text=True, env=env).stdout
+        runs.append(json.loads(out.strip().splitlines()[-1]))
+    print("  " + json.dumps(runs[-1]))
+
+    def cold_start():
+        median = sorted(r["total_to_first_frame_ms"] for r in runs)[1]
+        print(f"    median of 3: {median:.0f} ms to first frame")
+        assert median < 300, f"{median:.0f} ms"
+
+    check("Cold launch to first frame (< 300 ms)", cold_start)
 
     samples = os.path.join(WORK, "samples")
     warm_open_check_pending = True
