@@ -13,6 +13,7 @@ offline; `--network` also lists a public package's versions from GitHub.
 
 import json
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -666,9 +667,15 @@ def device_checks(samples):
             assert "success: false" in s["phase"], s["phase"]
             issues = s["issues"]
             assert ('Error HelloZ.xcodeproj:0 Signing for "HelloZ" requires a development team. '
-                    "Set the target's Development Team (your team ID) in the project settings.") in issues, issues
+                    "Choose the team in the target’s Signing & Capabilities tab in the project settings.") in issues, issues
             assert s["navigator"] == "Issues"
             assert "generic/platform=iOS" in open(s["last_log"]).read()
+            # Jumping to the issue opens the target's Signing & Capabilities tab.
+            z.run("keys cmd-'", "wait 300")
+            settings = z.dump()["project_settings"]
+            assert settings["shown"] and settings["target"] == "HelloZ" and settings["pane"] == "Signing", settings
+            assert "requires a development team" in (settings["signing"]["status"] or ""), settings["signing"]
+            z.run("keys cmd-w", "wait 200")
 
         check("Devices: the destination menu lists devices by OS with their state, Any iOS Device, then simulators", menu)
         check("Devices: plugging and unplugging a device updates the menu", hot_plug)
@@ -676,6 +683,235 @@ def device_checks(samples):
         check("Devices: Run signs, installs, waits for unlock, launches with the scheme's arguments and environment; Stop terminates", run_and_stop)
         check("Devices: Run with breakpoints launches suspended and attaches lldb through CoreDevice", debug_attach)
         check("Devices: a signing error for Any iOS Device shows in the Issue navigator with where to fix it", signing_error)
+    finally:
+        z.quit()
+
+
+INFO_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+\t<key>CFBundleDisplayName</key>
+\t<string>Hello</string>
+\t<key>LSRequiresIPhoneOS</key>
+\t<true/>
+\t<key>UISupportedInterfaceOrientations</key>
+\t<array>
+\t\t<string>UIInterfaceOrientationPortrait</string>
+\t</array>
+</dict>
+</plist>
+"""
+
+
+def plist_rows(z):
+    return z.dump()["active"]["plist"]
+
+
+def project_settings_part(z, part):
+    return z.dump()["project_settings"][part]
+
+
+def wait_signing_loaded(z):
+    deadline = time.time() + 60
+    while not project_settings_part(z, "signing")["loaded"]:
+        if time.time() > deadline:
+            raise TimeoutError("teams and profiles never loaded")
+        time.sleep(0.3)
+    return project_settings_part(z, "signing")
+
+
+def plist_checks(samples):
+    """The property list editor, the Info tab and Signing & Capabilities on
+    copies of HelloZ (iOS, synchronized folders) and HelloClassic (macOS,
+    groups), each built with ⌘B after its capability changes."""
+    project = os.path.join(WORK, "PlistZ")
+    shutil.copytree(os.path.join(samples, "HelloZ"), project)
+    pbxproj = os.path.join(project, "HelloZ.xcodeproj", "project.pbxproj")
+    pbxproj_original = open(pbxproj).read()
+    # Outside the synchronized folder, so the app doesn't copy them.
+    files = os.path.join(project, "Plists")
+    os.makedirs(files)
+    info = os.path.join(files, "Info.plist")
+    with open(info, "w") as f:
+        f.write(INFO_PLIST)
+    z = Zcode(project)
+    try:
+        def editor():
+            z.run(f"open {info}", "wait 300", "keys cmd-s", "wait 200")
+            assert open(info).read() == INFO_PLIST, "saving an unmodified property list is byte for byte"
+            p = plist_rows(z)
+            assert p["format"] == "Xml" and not p["as_source"], p
+            assert p["rows"] == [
+                "0|Information Property List|Dictionary|(3 items)",
+                "1|Bundle display name (CFBundleDisplayName)|String|Hello",
+                "1|Application requires iPhone environment (LSRequiresIPhoneOS)|Boolean|YES",
+                "1|Supported interface orientations (UISupportedInterfaceOrientations)|Array|(1 item)",
+            ], p["rows"]
+            z.run("plist expand UISupportedInterfaceOrientations", "action zcode::ToggleRawKeysAndValues")
+            raw = plist_rows(z)["rows"]
+            assert raw[0] == "0|Root|Dictionary|(3 items)" and "1|CFBundleDisplayName|String|Hello" in raw, raw
+            assert "2|Item 0|String|UIInterfaceOrientationPortrait" in raw, raw
+            z.run("action zcode::ToggleRawKeysAndValues")
+            assert "2|Item 0|String|Portrait (bottom home button)" in plist_rows(z)["rows"]
+            # + on a row adds "New item" after it, its key ready to type;
+            # Xcode's names are suggested and pick the key's type.
+            z.run("plist add CFBundleDisplayName", "plist type-key New%20item camera usage")
+            p = plist_rows(z)
+            assert p["editing"] == "camera usage" and p["suggestions"] == ["NSCameraUsageDescription"], p
+            z.run("plist pick 0", "plist value NSCameraUsageDescription Scans <codes> & more")
+            z.run("plist add NSCameraUsageDescription", "plist type-key New%20item background modes", "plist pick 0")
+            z.run("plist expand UIBackgroundModes", "plist add UIBackgroundModes", "plist value UIBackgroundModes/0 fetch")
+            z.run("plist type LSRequiresIPhoneOS String", "plist type LSRequiresIPhoneOS Boolean", "plist move LSRequiresIPhoneOS up")
+            p = plist_rows(z)
+            assert p["rows"][1:6] == [
+                "1|Bundle display name (CFBundleDisplayName)|String|Hello",
+                "1|Privacy - Camera Usage Description (NSCameraUsageDescription)|String|Scans <codes> & more",
+                "1|Application requires iPhone environment (LSRequiresIPhoneOS)|Boolean|YES",
+                "1|Required background modes (UIBackgroundModes)|Array|(1 item)",
+                "2|Item 0|String|App downloads content from the network",
+            ], p["rows"]
+            assert z.dump()["active"]["dirty"]
+            z.run("keys cmd-s", "wait 200")
+            text = open(info).read()
+            assert subprocess.run(["plutil", "-lint", info], capture_output=True).returncode == 0, text
+            assert ("\t<key>NSCameraUsageDescription</key>\n\t<string>Scans &lt;codes&gt; &amp; more</string>\n"
+                    "\t<key>LSRequiresIPhoneOS</key>\n\t<true/>\n\t<key>UIBackgroundModes</key>\n\t<array>\n"
+                    "\t\t<string>fetch</string>\n\t</array>\n") in text, text
+            # Undo and redo go through the text, so the dirty dot follows.
+            z.run("plist remove CFBundleDisplayName")
+            assert z.dump()["active"]["dirty"] and "CFBundleDisplayName" not in z.dump()["active"]["text"]
+            z.run("keys cmd-z", "wait 100")
+            assert not z.dump()["active"]["dirty"], "undo back to the saved text is clean"
+            z.run("keys cmd-shift-z", "wait 100")
+            assert z.dump()["active"]["dirty"]
+            z.run("keys cmd-z", "wait 100", "action zcode::OpenAsSourceCode", "wait 100")
+            a = z.dump()["active"]
+            assert a["plist"]["as_source"] and a["text"] == text and not a["dirty"], a["plist"]
+            z.run("action zcode::OpenAsPropertyList", "wait 100")
+            assert not plist_rows(z)["as_source"]
+
+        def binary():
+            path = os.path.join(files, "Settings.plist")
+            with open(path, "wb") as f:
+                plistlib.dump({"zeta": 1, "alpha": [True, "x"]}, f, fmt=plistlib.FMT_BINARY, sort_keys=False)
+            z.run(f"open {path}", "wait 300")
+            p = plist_rows(z)
+            assert p["format"] == "Binary" and p["rows"][:3] == ["0|Root|Dictionary|(2 items)", "1|zeta|Number|1", "1|alpha|Array|(2 items)"], p
+            z.run("plist value zeta 2.5", "keys cmd-s", "wait 200")
+            data = open(path, "rb").read()
+            assert data.startswith(b"bplist00"), data[:8]
+            assert list(plistlib.loads(data, dict_type=dict).items()) == [("zeta", 2.5), ("alpha", [True, "x"])]
+
+        def schemas():
+            privacy = os.path.join(files, "PrivacyInfo.xcprivacy")
+            entitlements = os.path.join(files, "Some.entitlements")
+            for path, key in ((privacy, "NSPrivacyTracking"), (entitlements, "com.apple.security.app-sandbox")):
+                with open(path, "w") as f:
+                    f.write(INFO_PLIST.replace("<key>CFBundleDisplayName</key>\n\t<string>Hello</string>\n\t<key>LSRequiresIPhoneOS</key>",
+                                               f"<key>{key}</key>"))
+            z.run(f"open {privacy}", "wait 300")
+            rows = plist_rows(z)["rows"]
+            assert rows[:2] == ["0|App Privacy Configuration|Dictionary|(2 items)", "1|Privacy Tracking Enabled (NSPrivacyTracking)|Boolean|YES"], rows
+            z.run(f"open {entitlements}", "wait 300")
+            rows = plist_rows(z)["rows"]
+            assert rows[:2] == ["0|Entitlements File|Dictionary|(2 items)", "1|App Sandbox (com.apple.security.app-sandbox)|Boolean|YES"], rows
+
+        def info_tab():
+            z.run("action zcode::ShowProjectSettings", "wait 300", "project-pane HelloZ Info", "wait 300")
+            i = project_settings_part(z, "info")
+            assert not i["exists"] and i["path"].endswith("/HelloZ/Info.plist"), i
+            assert ("0|Application supports indirect input events (UIApplicationSupportsIndirectInputEvents)|Boolean|YES [build setting]"
+                    in i["rows"]), i["rows"]
+            z.run("plist setting UIApplicationSupportsIndirectInputEvents NO", "wait 200")
+            text = open(pbxproj).read()
+            assert text.count("INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = NO;") == 2, "both configurations"
+            z.run("plist setting UIApplicationSupportsIndirectInputEvents YES", "wait 200")
+            assert open(pbxproj).read() == pbxproj_original, "restored byte for byte"
+            # The first key creates the target's Info.plist, as Xcode does.
+            z.run("plist add /", "plist key New%20item UIRequiresFullScreen", "plist value UIRequiresFullScreen YES", "wait 300")
+            i = project_settings_part(z, "info")
+            assert i["exists"] and "0|Requires Full Screen (UIRequiresFullScreen)|Boolean|YES" in i["rows"], i
+            created = open(os.path.join(project, "HelloZ", "Info.plist")).read()
+            assert "\t<key>UIRequiresFullScreen</key>\n\t<true/>\n" in created, created
+            text = open(pbxproj).read()
+            assert text.count("INFOPLIST_FILE = HelloZ/Info.plist;") == 2, text
+            # In a synchronized folder: kept out of the target's resources.
+            assert "isa = PBXFileSystemSynchronizedBuildFileExceptionSet;\n\t\t\tmembershipExceptions = (\n\t\t\t\tInfo.plist,\n\t\t\t);" in text, text
+
+        def signing_ios():
+            z.run("project-pane HelloZ Signing", "wait 200")
+            s = wait_signing_loaded(z)
+            assert s["automatic"] and s["bundle"] == "dev.zcode.HelloZ" and s["capabilities"] == [], s
+            assert "App Sandbox" not in s["available"] and "Background Modes" in s["available"], s
+            assert isinstance(s["teams"], list) and isinstance(s["profiles"], list), s
+            z.run("signing add App Groups", "signing list-add App Groups group.dev.zcode.HelloZ", "signing add Push Notifications",
+                  "signing add iCloud", "signing toggle iCloud/CloudKit", "signing list-add iCloud iCloud.dev.zcode.HelloZ",
+                  "signing add Background Modes", "signing toggle Background Modes/Audio, AirPlay, and Picture in Picture", "wait 300")
+            s = project_settings_part(z, "signing")
+            assert s["capabilities"] == ["App Groups", "Background Modes", "iCloud", "Push Notifications"], s
+            entitlements = plistlib.load(open(os.path.join(project, "HelloZ", "HelloZ.entitlements"), "rb"))
+            assert entitlements == {
+                "com.apple.security.application-groups": ["group.dev.zcode.HelloZ"],
+                "aps-environment": "development",
+                "com.apple.developer.icloud-container-identifiers": ["iCloud.dev.zcode.HelloZ"],
+                "com.apple.developer.icloud-services": ["CloudKit"],
+            }, entitlements
+            info_plist = plistlib.load(open(os.path.join(project, "HelloZ", "Info.plist"), "rb"))
+            assert info_plist["UIBackgroundModes"] == ["audio"], info_plist
+            assert open(pbxproj).read().count("CODE_SIGN_ENTITLEMENTS = HelloZ/HelloZ.entitlements;") == 2
+            z.run("keys cmd-w", "wait 200", f"destination {available_simulator_udid()}", "keys cmd-b")
+            s = z.wait_for(finished, timeout=600)
+            assert "success: true" in s["phase"], (s["phase"], s["issues"])
+            assert "HelloZ.app.xcent" in open(s["last_log"]).read(), "signed with the entitlements"
+            z.run("action zcode::ShowProjectSettings", "wait 300", "project-pane HelloZ Signing", "wait 200")
+            z.run("signing remove App Groups", "signing remove iCloud", "signing remove Push Notifications", "signing remove Background Modes", "wait 300")
+            assert project_settings_part(z, "signing")["capabilities"] == []
+            assert plistlib.load(open(os.path.join(project, "HelloZ", "HelloZ.entitlements"), "rb")) == {}
+            assert "UIBackgroundModes" not in plistlib.load(open(os.path.join(project, "HelloZ", "Info.plist"), "rb"))
+
+        check("Property lists: Xcode's key names, raw keys, suggestions, add/type/move, undo/redo, save, Open As", editor)
+        check("Property lists: binary plists open as an outline and save as binary, key order kept", binary)
+        check("Property lists: privacy manifests and entitlements get Xcode's names", schemas)
+        check("Info tab: INFOPLIST_KEY_ build settings; the first key creates the Info.plist (synchronized exception)", info_tab)
+        check("Signing & Capabilities (iOS): App Groups, Push, iCloud, Background Modes written; the app still builds", signing_ios)
+    finally:
+        z.quit()
+
+    classic = os.path.join(WORK, "PlistClassic")
+    shutil.copytree(os.path.join(samples, "HelloClassic"), classic)
+    classic_pbxproj = os.path.join(classic, "HelloClassic.xcodeproj", "project.pbxproj")
+    z = Zcode(classic)
+    try:
+        def signing_mac():
+            z.run("action zcode::ShowProjectSettings", "wait 300", "project-pane HelloClassic Signing", "wait 200")
+            s = wait_signing_loaded(z)
+            assert s["certificate"] == "-" and s["status"] is None, s
+            assert "App Sandbox" in s["available"] and "Background Modes" not in s["available"], s
+            z.run("signing add App Sandbox", "signing toggle App Sandbox/Outgoing Connections (Client)",
+                  "signing access App Sandbox/Downloads Folder readwrite", "signing add Hardened Runtime",
+                  "signing toggle Hardened Runtime/Allow Execution of JIT-compiled Code", "signing add App Groups",
+                  "signing list-add App Groups $(TeamIdentifierPrefix)dev.zcode.HelloClassic", "wait 300")
+            text = open(classic_pbxproj).read()
+            for line in ("ENABLE_APP_SANDBOX = YES;", "ENABLE_HARDENED_RUNTIME = YES;", "ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;",
+                         "ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER = readwrite;", "ENABLE_USER_SELECTED_FILES = readonly;",
+                         "CODE_SIGN_ENTITLEMENTS = HelloClassic/HelloClassic.entitlements;"):
+                assert text.count(line) == 2, line
+            # A group-based project gets a file reference in the target's group, in no build phase.
+            assert "/* HelloClassic.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HelloClassic.entitlements;" in text
+            assert "HelloClassic.entitlements in" not in text
+            z.run("keys cmd-w", "wait 200", "keys cmd-b")
+            s = z.wait_for(finished, timeout=600)
+            assert "success: true" in s["phase"], (s["phase"], s["issues"])
+            assert "HelloClassic.app.xcent" in open(s["last_log"]).read(), "signed with the entitlements"
+            z.run("action zcode::ShowProjectSettings", "wait 300", "project-pane HelloClassic Signing", "wait 200",
+                  "signing remove App Sandbox", "wait 300")
+            text = open(classic_pbxproj).read()
+            assert "ENABLE_APP_SANDBOX" not in text and "ENABLE_OUTGOING_NETWORK_CONNECTIONS" not in text, "the sandbox's settings go"
+            assert text.count("ENABLE_HARDENED_RUNTIME = YES;") == 2, "the hardened runtime stays"
+            z.run("keys cmd-w")
+
+        check("Signing & Capabilities (macOS): App Sandbox, Hardened Runtime and App Groups; ⌘B signs to run locally", signing_mac)
     finally:
         z.quit()
 
@@ -1498,6 +1734,9 @@ def main():
         classic_project_checks(z, samples)
     finally:
         z.quit()
+
+    print("Property lists, Info and Signing & Capabilities (copies of HelloZ and HelloClassic):")
+    plist_checks(samples)
 
     if warm_open_check_pending:
         print("Single instance:")
