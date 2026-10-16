@@ -84,6 +84,9 @@ mod touch;
 #[path = "base/undo_manager.rs"]
 mod undo_manager;
 
+mod history;
+#[cfg(test)]
+mod test_support;
 mod ui;
 
 /// Installs the editor's defaults. Call after `gpui_component::init`, whose

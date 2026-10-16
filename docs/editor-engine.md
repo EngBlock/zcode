@@ -120,3 +120,27 @@ Kept shared on purpose:
 Dropped from the copy: the macOS text-content-type hook (password fields),
 the touch selection handles' painting, and the single-line element's
 frame (prefix and suffix slots, clear button, mask toggle).
+
+## Extension points
+
+Each one is in its own module of `crates/zcode-editor/src`, has tests there,
+and replaced a workaround in zcode.
+
+### Undo, redo, transactions, read-only (`history.rs`)
+
+```rust
+editor.undo(window, cx);            // ⌘Z without dispatching an action
+editor.redo(window, cx);
+editor.can_undo(); editor.can_redo();
+editor.transact(window, cx, |editor, window, cx| {   // one undo step;
+    editor.edit([(range, "text"), (other, "")], window, cx);  // None when read-only
+});
+editor.set_read_only(true, cx);     // typing, paste, undo, transact refused
+```
+
+`edit` applies several ranges as one change; `set_value` and `edit` stay
+available in a read-only editor, so a file can be reloaded. Ported: the
+property list editor's ⌘Z/⇧⌘Z call `undo`/`redo` on its text (the hidden
+zero-size editor is gone), and zcode's line commands (comment, duplicate,
+move line) run through `transact`, so a read-only package source refuses
+them in the engine rather than in a workspace check.

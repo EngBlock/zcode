@@ -125,17 +125,18 @@ impl Workspace {
             .update(cx, |state, cx| f(state, language, window, cx));
     }
 
-    /// Like `with_active_editor`, for commands that change the text; they
-    /// leave read-only buffers (package sources) alone.
-    fn with_editable_editor(
+    /// Like `with_active_editor`, for commands that change the text: the
+    /// command is one undo step, and a read-only editor (package sources)
+    /// refuses it.
+    fn transact_in_active_editor(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut EditorState, SharedString, &mut Window, &mut Context<EditorState>),
     ) {
-        if self.active_buffer().is_some_and(|b| !b.read_only) {
-            self.with_active_editor(window, cx, f);
-        }
+        self.with_active_editor(window, cx, |state, language, window, cx| {
+            state.transact(window, cx, |state, window, cx| f(state, language, window, cx));
+        });
     }
 
     /// The active editor when it has focus and nothing selected — the case
@@ -217,7 +218,7 @@ impl Workspace {
     }
 
     pub(super) fn toggle_comment(&mut self, _: &ToggleComment, window: &mut Window, cx: &mut Context<Self>) {
-        self.with_editable_editor(window, cx, |state, language, window, cx| {
+        self.transact_in_active_editor(window, cx, |state, language, window, cx| {
             let Some(prefix) = comment_prefix(&language) else { return };
             let text = state.text().clone();
             let block = line_block(&text, &state.selected_range());
@@ -230,7 +231,7 @@ impl Workspace {
     }
 
     pub(super) fn duplicate_line(&mut self, _: &DuplicateLine, window: &mut Window, cx: &mut Context<Self>) {
-        self.with_editable_editor(window, cx, |state, _, window, cx| {
+        self.transact_in_active_editor(window, cx, |state, _, window, cx| {
             let text = state.text().clone();
             let selection = state.selected_range();
             if selection.is_empty() {
@@ -251,7 +252,7 @@ impl Workspace {
     }
 
     fn move_lines(&mut self, up: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.with_editable_editor(window, cx, |state, _, window, cx| {
+        self.transact_in_active_editor(window, cx, |state, _, window, cx| {
             let text = state.text().clone();
             let selection = state.selected_range();
             let block = line_block(&text, &selection);

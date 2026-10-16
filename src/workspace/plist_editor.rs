@@ -5,7 +5,6 @@
 //! code. Key names, types and allowed values come from Xcode's definitions
 //! (`plist::schema`); Editor ▸ Raw Keys and Values shows the raw ones.
 
-use std::cell::Cell;
 use std::collections::HashSet;
 use std::ops::Range;
 use std::rc::Rc;
@@ -14,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use zcode_editor::{Editor, EditorState, Redo, Undo};
+use zcode_editor::{EditorState, Redo, Undo};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -1282,21 +1281,6 @@ impl Render for PlistEditor {
             .child(div().flex_1().pl(px(22.)).child("Key"))
             .child(div().w(px(TYPE_WIDTH)).flex_none().pl_2().child("Type"))
             .child(div().flex_1().pl_2().child("Value"));
-        // Undo and Redo go to the text editor, which is rendered (empty) so
-        // it can take them. The guard stops a handler it doesn't stop from
-        // coming back here.
-        let text_focus = self.text.read(cx).focus_handle(cx);
-        let forwarding = Rc::new(Cell::new(false));
-        let forward = |action: Box<dyn Action>, handle: FocusHandle, guard: Rc<Cell<bool>>| {
-            move |window: &mut Window, cx: &mut App| {
-                if !guard.replace(true) {
-                    handle.dispatch_action(action.as_ref(), window, cx);
-                    guard.set(false);
-                }
-            }
-        };
-        let undo = forward(Box::new(Undo), text_focus.clone(), forwarding.clone());
-        let redo = forward(Box::new(Redo), text_focus, forwarding);
         let body = match parse_error {
             Some(err) => v_flex()
                 .p_4()
@@ -1323,8 +1307,10 @@ impl Render for PlistEditor {
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(theme.background)
-            .on_action(move |_: &Undo, window, cx| undo(window, cx))
-            .on_action(move |_: &Redo, window, cx| redo(window, cx))
+            // Every change edits the file's text, so the text's history is
+            // the outline's.
+            .on_action(cx.listener(|this, _: &Undo, window, cx| this.text.update(cx, |text, cx| text.undo(window, cx))))
+            .on_action(cx.listener(|this, _: &Redo, window, cx| this.text.update(cx, |text, cx| text.redo(window, cx))))
             .on_action(cx.listener(|this, _: &AddPlistItem, window, cx| {
                 let at = this.selected.clone();
                 this.add_item(at, window, cx)
@@ -1360,7 +1346,6 @@ impl Render for PlistEditor {
                 el.child(div().px_3().py_1().text_sm().bg(theme.danger.opacity(0.12)).text_color(theme.danger).child(err))
             })
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
-            .child(div().size_0().overflow_hidden().child(Editor::new(&self.text)))
     }
 }
 

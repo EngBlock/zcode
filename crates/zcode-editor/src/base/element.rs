@@ -4110,16 +4110,16 @@ mod tests {
                 state.replace_text_in_range(None, "\n", window, cx);
             });
             assert_eq!(first.get_ranges(cx), vec![5..8]);
-            editor.update(cx, |state, cx| state.undo(&Undo, window, cx));
+            editor.update(cx, |state, cx| state.on_action_undo(&Undo, window, cx));
             assert_eq!(first.get_ranges(cx), vec![4..7]);
-            editor.update(cx, |state, cx| state.redo(&Redo, window, cx));
+            editor.update(cx, |state, cx| state.on_action_redo(&Redo, window, cx));
             assert_eq!(first.get_ranges(cx), vec![5..8]);
             first.clear(cx);
             assert_eq!(second.get_ranges(cx), vec![1..4]);
             first.append(vec![RangeDecoration::new(5..8)], cx);
             editor.update(cx, |state, cx| state.replace_all("formatted", window, cx));
             assert_eq!(first.get_ranges(cx), vec![0..9]);
-            editor.update(cx, |state, cx| state.undo(&Undo, window, cx));
+            editor.update(cx, |state, cx| state.on_action_undo(&Undo, window, cx));
             // Annotations are transformed, not snapshotted in undo history.
             assert_eq!(first.get_ranges(cx), vec![0..8]);
             editor.update(cx, |state, cx| state.set_value("new", window, cx));

@@ -1679,10 +1679,13 @@ def package_dependency_checks(samples):
                 if s["active"]["path"].endswith("Tally.swift"):
                     break
             assert "/checkouts/Tally/Sources/Tally/Tally.swift" in s["active"]["path"], s["active"]["path"]
-            assert s["active"]["read_only"], s["active"]
-            z.run("type zzz", "keys cmd-s", "wait 300")
+            assert s["active"]["read_only"] and s["active"]["editor_read_only"], s["active"]
+            text = s["active"]["text"]
+            z.run("type zzz", "keys cmd-/", "keys cmd-d", "keys cmd-alt-]", "keys cmd-z", "keys cmd-s", "wait 300")
             s = z.dump()
             assert not s["active"]["dirty"] and "zzz" not in open(s["active"]["path"]).read(), "package sources aren't edited"
+            # The editor itself refuses the editing commands (comment, duplicate, move line) and undo.
+            assert s["active"]["text"] == text and not s["active"]["can_undo"], s["active"]
 
         def update_package():
             tag_release(repo, "2.1.0")

@@ -815,7 +815,7 @@ impl Workspace {
                 .soft_wrap(soft_wrap)
                 .default_value(text)
         });
-        editor.update(cx, |state, cx| state.set_readonly(read_only, cx));
+        editor.update(cx, |state, cx| state.set_read_only(read_only, cx));
 
         let lsp_language = lsp::language_id_for(&path);
         if let Some(language_id) = lsp_language {
@@ -1864,6 +1864,8 @@ impl Workspace {
                 "path": b.path,
                 "dirty": b.dirty,
                 "read_only": b.read_only,
+                "editor_read_only": state.is_read_only(),
+                "can_undo": state.can_undo(),
                 "line": pos.line + 1,
                 "column": pos.character + 1,
                 "selection": state.selected_text().to_string(),

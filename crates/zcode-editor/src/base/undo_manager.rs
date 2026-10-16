@@ -364,6 +364,15 @@ impl UndoManager {
         Some(replay)
     }
 
+    pub(crate) fn can_undo(&self) -> bool {
+        !self.undo_transactions.is_empty()
+            || self.pending.as_ref().is_some_and(|pending| !pending.changes.is_empty())
+    }
+
+    pub(crate) fn can_redo(&self) -> bool {
+        !self.redo_transactions.is_empty()
+    }
+
     #[cfg(test)]
     pub(super) fn has_undos(&self) -> bool {
         !self.undo_transactions.is_empty()

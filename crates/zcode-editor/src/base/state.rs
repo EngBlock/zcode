@@ -2746,15 +2746,15 @@ impl<M: InputModeKind> InputBaseState<M> {
         recorded
     }
 
-    pub(super) fn undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_action_undo(&mut self, _: &Undo, window: &mut Window, cx: &mut Context<Self>) {
         self.replay_history(true, window, cx);
     }
 
-    pub(super) fn redo(&mut self, _: &Redo, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn on_action_redo(&mut self, _: &Redo, window: &mut Window, cx: &mut Context<Self>) {
         self.replay_history(false, window, cx);
     }
 
-    fn replay_history(&mut self, undo: bool, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn replay_history(&mut self, undo: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_editable() {
             return;
         }
@@ -4400,8 +4400,8 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
                     .on_action(window.listener_for(&entity, InputBaseState::escape))
                     .on_action(window.listener_for(&entity, InputBaseState::paste))
                     .on_action(window.listener_for(&entity, InputBaseState::cut))
-                    .on_action(window.listener_for(&entity, InputBaseState::undo))
-                    .on_action(window.listener_for(&entity, InputBaseState::redo))
+                    .on_action(window.listener_for(&entity, InputBaseState::on_action_undo))
+                    .on_action(window.listener_for(&entity, InputBaseState::on_action_redo))
                     .when(self.is_multi_line(), |this| {
                         this.on_action(window.listener_for(&entity, InputBaseState::indent_inline))
                             .on_action(window.listener_for(&entity, InputBaseState::outdent_inline))
@@ -5186,25 +5186,25 @@ mod tests {
                     assert_eq!(state.tokens()[0].range(), 4..10);
                     assert_eq!(state.next_end_of_word_at(4), 10);
                     assert_eq!(state.previous_start_of_word_at(10), 4);
-                    state.undo(&Undo, window, cx);
+                    state.on_action_undo(&Undo, window, cx);
                     assert!(
                         state.tokens().is_empty(),
                         "identity-only association is undoable"
                     );
                     assert_eq!(state.value().as_ref(), "问 @alice!");
-                    state.redo(&Redo, window, cx);
+                    state.on_action_redo(&Redo, window, cx);
                     assert_eq!(state.tokens()[0].token(), &token);
                     state.set_selected_range(6..7, cx);
                     assert_eq!(state.selected_range(), 4..10);
                     state.replace("", window, cx);
                     assert_eq!(state.value().as_ref(), "问 !");
                     assert!(state.tokens().is_empty());
-                    state.undo(&Undo, window, cx);
+                    state.on_action_undo(&Undo, window, cx);
                     assert_eq!(state.tokens()[0].token(), &token);
                     state.set_selected_range(0..0, cx);
                     state.replace("🙂", window, cx);
                     assert_eq!(state.tokens()[0].range(), 8..14);
-                    state.undo(&Undo, window, cx);
+                    state.on_action_undo(&Undo, window, cx);
                     assert_eq!(state.tokens()[0].range(), 4..10);
                     let before = state.content();
                     state
@@ -5213,7 +5213,7 @@ mod tests {
                     assert_eq!(state.value().as_ref(), "@alice问 @alice!");
                     assert_eq!(state.tokens().len(), 2);
                     assert_eq!(state.tokens()[1].token(), &token);
-                    state.undo(&Undo, window, cx);
+                    state.on_action_undo(&Undo, window, cx);
                     assert_eq!(state.content(), before);
                     state.set_value(before.text().clone(), window, cx);
                     assert!(state.tokens().is_empty());
@@ -5247,14 +5247,14 @@ mod tests {
                         Err(InlineTokenError::CompositionActive)
                     );
                     state.replace_text_in_range(None, "中文", window, cx);
-                    state.undo(&Undo, window, cx);
+                    state.on_action_undo(&Undo, window, cx);
                     assert_eq!(state.content(), content);
-                    state.redo(&Redo, window, cx);
+                    state.on_action_redo(&Redo, window, cx);
                     assert_eq!(state.value().as_ref(), "中文@b\n后面");
-                    state.undo(&Undo, window, cx);
+                    state.on_action_undo(&Undo, window, cx);
                     state.replace_all("plain", window, cx);
                     assert!(state.tokens().is_empty());
-                    state.undo(&Undo, window, cx);
+                    state.on_action_undo(&Undo, window, cx);
                     assert_eq!(state.content(), content);
                 });
             })
@@ -5288,9 +5288,9 @@ mod tests {
                         Err(InlineTokenError::UnsupportedMode)
                     );
                     assert_eq!(state.content(), before);
-                    state.undo(&Undo, window, cx);
+                    state.on_action_undo(&Undo, window, cx);
                     assert!(state.tokens().is_empty());
-                    state.redo(&Redo, window, cx);
+                    state.on_action_redo(&Redo, window, cx);
                     assert_eq!(state.content(), before);
                     assert!(!state.tokens_visible());
                 });
@@ -6492,13 +6492,13 @@ mod tests {
                 // Each whole-document mask rewrite is an atomic undo step.
                 // Before the whole-document history fix, undo produced a
                 // corrupted value like "1,2344".
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "1,234");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "1,234");
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "12,345");
             });
         });
@@ -6516,7 +6516,7 @@ mod tests {
                 state.replace_text_in_range(None, "b", window, cx);
                 assert_eq!(state.value(), "ab");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -6536,9 +6536,9 @@ mod tests {
                 state.replace_text_in_range(None, "x", window, cx);
                 assert_eq!(state.value(), "axb");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "ab");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -6558,9 +6558,9 @@ mod tests {
                 state.delete(&Delete, window, cx);
                 assert_eq!(state.value(), "ad");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "acd");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "abcd");
             });
         });
@@ -6578,7 +6578,7 @@ mod tests {
                 state.backspace(&Backspace, window, cx);
                 state.backspace(&Backspace, window, cx);
                 assert_eq!(state.value(), "ab");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "abcd");
                 assert_eq!(state.selected_range(), 4..4);
 
@@ -6587,7 +6587,7 @@ mod tests {
                 state.delete(&Delete, window, cx);
                 state.delete(&Delete, window, cx);
                 assert_eq!(state.value(), "ad");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "abcd");
                 assert_eq!(state.selected_range(), 1..1);
             });
@@ -6608,11 +6608,11 @@ mod tests {
                 state.replace_text_in_range(None, "b", window, cx);
                 assert_eq!(state.value(), "aPb");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "aP");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "a");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -6631,9 +6631,9 @@ mod tests {
                 state.replace_text_in_range(None, "b", window, cx);
                 assert_eq!(state.value(), "aPb");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "aP");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "a");
             });
         });
@@ -6653,9 +6653,9 @@ mod tests {
                 state.unselect(window, cx);
                 state.replace_text_in_range(None, "c", window, cx);
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "ab");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -6680,11 +6680,11 @@ mod tests {
                 );
                 state.replace_text_in_range(None, "b", window, cx);
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "a\n");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "a");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -6714,9 +6714,9 @@ mod tests {
                 }
                 assert_eq!(state.value(), "abcdef");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "abc");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -6742,9 +6742,9 @@ mod tests {
                 state.replace_text_in_range(None, " after submit", window, cx);
                 assert_eq!(state.value(), "before submit after submit");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "before submit");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -6764,9 +6764,9 @@ mod tests {
                 state.replace_text_in_range(None, " after focus", window, cx);
                 assert_eq!(state.value(), "before blur after focus");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "before blur");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -6792,7 +6792,7 @@ mod tests {
                 assert_eq!(state.value(), "a\nb\nc");
 
                 for expected in ["a\nb\n", "a\nb", "a\n", "a", ""] {
-                    state.undo(&Undo, window, cx);
+                    state.on_action_undo(&Undo, window, cx);
                     assert_eq!(state.value(), expected);
                 }
             });
@@ -6820,9 +6820,9 @@ mod tests {
                 }
                 assert_eq!(state.value(), expected);
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), expected);
             });
         });
@@ -6862,17 +6862,17 @@ mod tests {
                     state.value(),
                     "first line with punctuation!\n第二行包含 Unicode 🦀\nthird line has several words"
                 );
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(
                     state.value(),
                     "first line with punctuation!\n第二行包含 Unicode 🦀\n"
                 );
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(
                     state.value(),
                     "first line with punctuation!\n第二行包含 Unicode 🦀"
                 );
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "first line with punctuation!\n");
             });
         });
@@ -6996,11 +6996,11 @@ mod tests {
                 state.paste(&Paste, window, cx);
                 assert_eq!(state.value(), "alpha betabeta gamma");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "alpha beta gamma");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "alpha  gamma");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "alpha beta gamma");
             });
         });
@@ -7021,9 +7021,9 @@ mod tests {
                 state.delete_to_end_of_line(&DeleteToEndOfLine, window, cx);
                 assert_eq!(state.value(), "one two four five");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "one two \nfour five");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "one two three\nfour five");
             });
         });
@@ -7042,10 +7042,10 @@ mod tests {
                 state.replace_text_in_range(None, "line one\nline two\n第三行", window, cx);
                 assert_eq!(state.value(), "line one\nline two\n第三行");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "before");
                 assert_eq!(state.selected_range(), 0..6);
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "line one\nline two\n第三行");
             });
         });
@@ -7067,11 +7067,11 @@ mod tests {
                 state.replace_text_in_range(None, " suffix", window, cx);
                 assert_eq!(state.value(), "prefix 你 suffix");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "prefix 你");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "prefix ");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -7091,11 +7091,11 @@ mod tests {
                 state.replace_text_in_range(None, "z", window, cx);
                 assert_eq!(state.value(), "aXzc");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "aXc");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "abc");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -7360,11 +7360,11 @@ mod tests {
                 );
 
                 // Undo restores the previous text.
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "first");
 
                 // Redo reapplies the replacement.
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "second");
             });
         });
@@ -7428,10 +7428,10 @@ mod tests {
                 s.replace_text_in_ranges(&[(0..5, "HELLO".to_string())], window, cx);
                 assert_eq!(s.value(), "HELLO world");
 
-                s.undo(&Undo, window, cx);
+                s.on_action_undo(&Undo, window, cx);
                 assert_eq!(s.value(), "hello world");
 
-                s.redo(&Redo, window, cx);
+                s.on_action_redo(&Redo, window, cx);
                 assert_eq!(s.value(), "HELLO world");
             });
         });
@@ -7465,11 +7465,11 @@ mod tests {
                 assert_eq!(s.undo_manager.undo_count(), 1);
 
                 // One undo restores the exact original text.
-                s.undo(&Undo, window, cx);
+                s.on_action_undo(&Undo, window, cx);
                 assert_eq!(s.value(), "aaa bbb ccc");
 
                 // One redo re-applies all edits.
-                s.redo(&Redo, window, cx);
+                s.on_action_redo(&Redo, window, cx);
                 assert_eq!(s.value(), "X bbb Y");
             });
         });
@@ -7575,10 +7575,10 @@ mod tests {
                 // The entire composition is one undo transaction.
                 assert_eq!(s.undo_manager.undo_count(), 1);
 
-                s.undo(&Undo, window, cx);
+                s.on_action_undo(&Undo, window, cx);
                 assert_eq!(s.value(), "");
 
-                s.redo(&Redo, window, cx);
+                s.on_action_redo(&Redo, window, cx);
                 assert_eq!(s.value(), "你");
             });
         });
@@ -7604,9 +7604,9 @@ mod tests {
                 assert_eq!(s.value(), "你x");
                 assert_eq!(s.undo_manager.undo_count(), 2);
 
-                s.undo(&Undo, window, cx);
+                s.on_action_undo(&Undo, window, cx);
                 assert_eq!(s.value(), "你");
-                s.undo(&Undo, window, cx);
+                s.on_action_undo(&Undo, window, cx);
                 assert_eq!(s.value(), "");
             });
         });
@@ -7685,9 +7685,9 @@ mod tests {
                 state.replace_text_in_range(None, "是", window, cx);
                 assert_eq!(state.value(), "a是");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "a");
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "a是");
             });
         });
@@ -7712,19 +7712,19 @@ mod tests {
                 assert_eq!(state.value(), "今天我们");
                 assert_eq!(state.selected_range(), 12..12);
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "今天");
                 assert_eq!(state.selected_range(), 6..6);
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
                 assert_eq!(state.selected_range(), 0..0);
 
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "今天");
                 assert_eq!(state.selected_range(), 6..6);
 
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "今天我们");
                 assert_eq!(state.selected_range(), 12..12);
             });
@@ -7747,10 +7747,10 @@ mod tests {
                 state.replace_text_in_range(None, "b", window, cx);
                 assert_eq!(state.value(), "你ab");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "你");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -7795,11 +7795,11 @@ mod tests {
                 assert_eq!(state.value(), "é 한글");
                 assert_eq!(state.undo_manager.undo_count(), 1);
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "é ");
                 assert_eq!(state.selected_range(), 3..3);
 
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "é 한글");
                 assert_eq!(state.selected_range(), 9..9);
             });
@@ -7821,9 +7821,9 @@ mod tests {
                 state.replace_text_in_range(Some(1..2), "é", window, cx);
                 assert_eq!(state.value(), "cé");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "ce");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -7841,11 +7841,11 @@ mod tests {
                 state.set_selected_range(1..2, cx);
                 state.replace_text_in_range(None, "X", window, cx);
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "abc");
                 assert_eq!(state.selected_range(), 1..2);
 
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "aXc");
                 assert_eq!(state.selected_range(), 2..2);
             });
@@ -7864,7 +7864,7 @@ mod tests {
                 state.set_selected_range(1..1, cx);
                 state.delete(&Delete, window, cx);
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "abc");
                 assert_eq!(state.selected_range(), 1..1);
             });
@@ -7880,14 +7880,14 @@ mod tests {
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
                 state.replace_text_in_range(None, "ab", window, cx);
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 state.set_selected_range(0..0, cx);
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "ab");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 state.replace_text_in_range(None, "x", window, cx);
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "x");
             });
         });
@@ -7904,9 +7904,9 @@ mod tests {
                 state.replace_text_in_range(None, "a", window, cx);
                 state.move_to(0, None, cx);
                 state.replace_text_in_range(None, "", window, cx);
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "a");
                 assert_eq!(state.cursor(), 1);
             });
@@ -7926,9 +7926,9 @@ mod tests {
                 state.right(&MoveRight, window, cx);
                 state.replace_text_in_range(None, "b", window, cx);
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "a");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -7949,9 +7949,9 @@ mod tests {
                 state.replace_text_in_range(None, "beta", window, cx);
                 assert_eq!(state.value(), "alphabeta");
 
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "alpha");
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
             });
         });
@@ -7976,8 +7976,8 @@ mod tests {
                 let selection_after_edit = state.selected_range();
                 assert_ne!(selection_after_edit.end, state.value().len());
 
-                state.undo(&Undo, window, cx);
-                state.redo(&Redo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.selected_range(), selection_after_edit);
             });
         });
@@ -8677,7 +8677,7 @@ mod tests {
                     state.cut(&Cut, window, cx);
                     assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), "abcde");
                     assert_eq!(state.value(), "f");
-                    state.undo(&Undo, window, cx);
+                    state.on_action_undo(&Undo, window, cx);
                     assert_eq!(state.value(), "abcdef");
                     assert_eq!(state.selected_range(), 0..5);
                 }
@@ -8778,7 +8778,7 @@ mod tests {
         cx.update(|window, cx| {
             view.input.update(cx, |state, cx| {
                 state.delete_previous_word(&DeleteToPreviousWordStart, window, cx);
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.selected_range(), 5..5);
             });
         });
@@ -8792,7 +8792,7 @@ mod tests {
         cx.update(|window, cx| {
             view.input.update(cx, |state, cx| {
                 state.backspace(&Backspace, window, cx);
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
             });
         });
         assert_cursors(&mut cx, &view.input, "a|b|c");
@@ -8921,10 +8921,10 @@ mod tests {
                     state.replace_text_in_range(None, "a", window, cx);
                 }
                 state.replace_text_in_range(None, "(", window, cx);
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert!(!state.text.to_string().contains('('));
                 assert!(!state.text.to_string().contains(')'));
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
             });
         });
         assert_cursors(&mut cx, &view.input, &format!("{}(|)", "a".repeat(999)));
@@ -8958,7 +8958,7 @@ mod tests {
         assert_cursors(&mut cx, &view.input, "(a)|");
         cx.update(|window, cx| {
             view.input
-                .update(cx, |state, cx| state.undo(&Undo, window, cx));
+                .update(cx, |state, cx| state.on_action_undo(&Undo, window, cx));
         });
         view.input.read_with(&cx, |state, _| {
             assert_eq!(
@@ -8982,8 +8982,8 @@ mod tests {
         assert_cursors(&mut cx, &view.input, "(|)");
         cx.update(|window, cx| {
             view.input.update(cx, |state, cx| {
-                state.undo(&Undo, window, cx);
-                state.redo(&Redo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
             });
         });
         assert_cursors(&mut cx, &view.input, "(|)");
@@ -9009,13 +9009,13 @@ mod tests {
         assert_cursors(&mut cx, &view.input, "{\n  |\n}");
         cx.update(|window, cx| {
             view.input.update(cx, |state, cx| {
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
             });
         });
         assert_cursors(&mut cx, &view.input, "{|}");
         cx.update(|window, cx| {
             view.input
-                .update(cx, |state, cx| state.redo(&Redo, window, cx));
+                .update(cx, |state, cx| state.on_action_redo(&Redo, window, cx));
         });
         assert_cursors(&mut cx, &view.input, "{\n  |\n}");
     }
@@ -9351,7 +9351,7 @@ mod tests {
         assert_cursors(&mut cx, &view.input, "|");
         cx.update(|window, cx| {
             view.input.update(cx, |state, cx| {
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 state.replace_text_in_range(None, "*", window, cx);
                 state.replace_text_in_range(None, "/", window, cx);
             });
@@ -9402,7 +9402,7 @@ mod tests {
                 state.replace_text_in_range(None, "*", window, cx);
                 set_test_syntax_provider(std::rc::Rc::new(CommentAllProvider), cx);
                 state.replace_and_mark_text_in_range(None, "x", Some(1..1), window, cx);
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 state.replace_text_in_range(None, "*", window, cx);
                 state.replace_text_in_range(None, "/", window, cx);
             });
@@ -9428,7 +9428,7 @@ mod tests {
                     cx,
                 );
                 state.delete_to_end_of_line(&DeleteToEndOfLine, window, cx);
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 state.backspace(&Backspace, window, cx);
             });
         });
@@ -9480,8 +9480,8 @@ mod tests {
             view.input.update(cx, |state, cx| {
                 state.set_selected_range(2..2, cx);
                 state.backspace(&Backspace, window, cx);
-                state.undo(&Undo, window, cx);
-                state.redo(&Redo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
             });
         });
         assert_cursors(&mut cx, &view.input, "|()");
@@ -9629,7 +9629,7 @@ mod tests {
         // Undo removes `b`, never exposing a transient `())`.
         cx.update(|window, cx| {
             view.input
-                .update(cx, |state, cx| state.undo(&Undo, window, cx));
+                .update(cx, |state, cx| state.on_action_undo(&Undo, window, cx));
         });
         assert_cursors(&mut cx, &view.input, "(a|)");
     }
@@ -9648,7 +9648,7 @@ mod tests {
         // One undo removes the whole pair (typing coalescing).
         cx.update(|window, cx| {
             view.input
-                .update(cx, |state, cx| state.undo(&Undo, window, cx));
+                .update(cx, |state, cx| state.on_action_undo(&Undo, window, cx));
         });
         assert_cursors(&mut cx, &view.input, "|");
     }
@@ -9906,10 +9906,10 @@ mod tests {
                 state.set_selected_range(1..2, cx);
                 state.replace_and_mark_text_in_range(None, "ni", None, window, cx);
                 state.replace_text_in_range(None, "你", window, cx);
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "abc");
                 assert_eq!(state.selected_range(), 1..2);
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.selected_range(), 4..4);
             });
         });
@@ -9926,8 +9926,8 @@ mod tests {
                 state.replace_text_in_range(None, "X", window, cx);
                 state.set_selected_range(0..0, cx);
                 state.replace_text_in_range(None, "", window, cx);
-                state.undo(&Undo, window, cx);
-                state.redo(&Redo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
                 assert_eq!(state.value(), "aXbc");
                 assert_eq!(state.selected_range(), 2..2);
             });
@@ -10058,14 +10058,14 @@ mod tests {
 
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
             });
         });
         assert_cursors(&mut cx, &input, "|1\n|2\n|3");
 
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
             });
         });
         assert_cursors(&mut cx, &input, "a|1\na|2\na|3");
@@ -10087,14 +10087,14 @@ mod tests {
 
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
             });
         });
         assert_cursors(&mut cx, &input, "abc123|\nabc12345|\nabc1234567|");
 
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
             });
         });
         assert_cursors(&mut cx, &input, "abc123a|\nabc12345a|\nabc1234567a|");
@@ -10120,14 +10120,14 @@ mod tests {
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
                 assert_eq!(state.undo_manager.undo_count(), 1);
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
             });
         });
         assert_cursors(&mut cx, &input, "|1\n|2\n|3");
 
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
-                state.redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
             });
         });
         assert_cursors(&mut cx, &input, "abc|1\nabc|2\nabc|3");
@@ -10152,7 +10152,7 @@ mod tests {
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
                 assert_eq!(state.undo_manager.undo_count(), 1);
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
             });
         });
         assert_cursors(&mut cx, &input, "abc|1\nabc|2\nabc|3");
@@ -10177,7 +10177,7 @@ mod tests {
         // The keystroke after the cursor was added is its own undo entry.
         cx.update(|window, cx| {
             input.update(cx, |state, cx| {
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
             });
         });
         assert_cursors(&mut cx, &input, "a|1\n2|\n3");
@@ -10194,7 +10194,7 @@ mod tests {
             input.update(cx, |state, cx| {
                 state.indent_inline(&IndentInline, window, cx);
                 assert_eq!(state.undo_manager.undo_count(), 1);
-                state.undo(&Undo, window, cx);
+                state.on_action_undo(&Undo, window, cx);
             });
         });
         assert_cursors(&mut cx, &input, "|1\n|2\n|3");
