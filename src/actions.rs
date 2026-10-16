@@ -21,6 +21,7 @@ gpui_kit::actions!(
         CloseProject,
         RevealInFinder,
         ShowPerformance,
+        ShowProjectSettings,
         // Edit
         CutOrCutLine,
         CopyOrCopyLine,
@@ -301,6 +302,7 @@ pub fn commands() -> Vec<Command> {
         cmd!("View", "Activate Console", ActivateConsole),
         cmd!("View", "-", Quit),
         cmd!("View", "Document Items…", ShowDocumentItems),
+        cmd!("View", "Project Settings", ShowProjectSettings),
         cmd!("View", "Quick Actions…", QuickActions),
         cmd!("View", "Performance…", ShowPerformance),
         cmd!("Product", "Build", Build),

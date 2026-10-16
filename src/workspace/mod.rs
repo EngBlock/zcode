@@ -4,6 +4,7 @@ mod editing;
 mod navigator;
 mod panels;
 mod pickers;
+mod project_settings;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -29,6 +30,7 @@ use crate::session::{ProjectSession, Session};
 
 pub use navigator::NavigatorTab;
 pub use panels::DebugTab;
+pub use project_settings::{ProjectSettings, ProjectSettingsEvent};
 
 const DEFAULT_FONT_SIZE: f32 = 13.;
 const MAX_OPEN_FILE_SIZE: u64 = 16 * 1024 * 1024;
@@ -96,6 +98,11 @@ pub struct Workspace {
     pub debugger: Entity<Debugger>,
     pub buffers: Vec<Buffer>,
     pub active: Option<usize>,
+    /// The project editor tab, shown in place of the active buffer while
+    /// `show_project_settings` is set.
+    pub project_settings: Option<Entity<ProjectSettings>>,
+    pub show_project_settings: bool,
+    xcode_projects: Vec<PathBuf>,
     pub navigator: NavigatorTab,
     pub show_navigator: bool,
     pub show_debug_area: bool,
@@ -181,6 +188,9 @@ impl Workspace {
             debugger,
             buffers: vec![],
             active: None,
+            project_settings: None,
+            show_project_settings: false,
+            xcode_projects: vec![],
             navigator: NavigatorTab::Project,
             show_navigator: saved.show_navigator.unwrap_or(true),
             show_debug_area: saved.show_debug_area.unwrap_or(false),
@@ -265,6 +275,9 @@ impl Workspace {
     }
 
     pub fn title(&self) -> String {
+        if self.show_project_settings {
+            return format!("{} — Project Settings", self.project.name);
+        }
         match self.active_buffer() {
             Some(buffer) => format!("{} — {}", self.project.name, buffer.title()),
             None => self.project.name.clone(),
@@ -276,15 +289,17 @@ impl Workspace {
 
     pub fn rescan(&mut self, cx: &mut Context<Self>) {
         let root = self.project.root.clone();
+        let kind = self.project.kind.clone();
         let task = cx.spawn(async move |this, cx| {
             let scan_root = root.clone();
-            let files = cx
-                .background_spawn(async move { project::scan_files(&scan_root) })
+            let (files, xcode_projects) = cx
+                .background_spawn(async move { (project::scan_files(&scan_root), project::xcode_projects(&kind)) })
                 .await;
             this.update(cx, |this, cx| {
                 // Tree items are !Send, so they are built here (fast).
                 let items = project::build_tree(&root, &files);
                 this.files = Arc::new(files);
+                this.xcode_projects = xcode_projects;
                 this.tree.update(cx, |tree, cx| tree.set_items(items, cx));
                 this.reveal_active_in_tree(cx);
                 cx.notify();
@@ -763,6 +778,7 @@ impl Workspace {
             return;
         }
         self.active = Some(ix);
+        self.show_project_settings = false;
         let editor = self.buffers[ix].editor.clone();
         editor.update(cx, |state, cx| state.focus(window, cx));
         window.set_window_title(&self.title());
@@ -836,6 +852,10 @@ impl Workspace {
         };
         if let Some(active) = self.active {
             self.activate(active, window, cx);
+        } else if let Some(settings) = self.project_settings.clone() {
+            self.show_project_settings = true;
+            settings.read(cx).focus_handle(cx).focus(window, cx);
+            window.set_window_title(&self.title());
         } else {
             window.set_window_title(&self.title());
             self.focus_handle.focus(window, cx);
@@ -886,6 +906,68 @@ impl Workspace {
             if self.buffers[ix].dirty {
                 self.save_buffer(ix, window, cx);
             }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Project settings
+
+    /// The `.xcodeproj` bundles the project editor shows, found during the
+    /// background scan.
+    pub(super) fn xcode_projects(&self) -> &[PathBuf] {
+        &self.xcode_projects
+    }
+
+    /// Shows the project editor (opening it if needed), like clicking the
+    /// project in Xcode's navigator.
+    pub fn open_project_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let settings = match self.project_settings.clone() {
+            Some(settings) => {
+                settings.update(cx, |s, cx| s.reload_if_changed(window, cx));
+                settings
+            }
+            None => {
+                let projects = self.xcode_projects.clone();
+                if projects.is_empty() {
+                    return;
+                }
+                let settings = cx.new(|cx| ProjectSettings::new(projects, window, cx));
+                self._subscriptions
+                    .push(cx.subscribe_in(&settings, window, Self::on_project_settings_event));
+                self.project_settings = Some(settings.clone());
+                settings
+            }
+        };
+        self.show_project_settings = true;
+        settings.read(cx).focus_handle(cx).focus(window, cx);
+        window.set_window_title(&self.title());
+        cx.notify();
+    }
+
+    pub fn close_project_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.project_settings = None;
+        self.show_project_settings = false;
+        match self.active {
+            Some(ix) => self.activate(ix, window, cx),
+            None => {
+                window.set_window_title(&self.title());
+                self.focus_handle.focus(window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn on_project_settings_event(
+        &mut self,
+        _: &Entity<ProjectSettings>,
+        event: &ProjectSettingsEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ProjectSettingsEvent::OpenFile(path) => self.open_file(path.clone(), None, true, window, cx),
+            // Schemes, configurations and supported platforms may have changed.
+            ProjectSettingsEvent::Changed => self.build.update(cx, |build, cx| build.reload(cx)),
         }
     }
 
@@ -1549,6 +1631,11 @@ impl Workspace {
             "buffers": self.buffers.iter().map(|b| b.title()).collect::<Vec<_>>(),
             "active": active,
             "modal_open": self.modal.is_some(),
+            "project_settings": self.project_settings.as_ref().map(|s| {
+                let mut summary = s.read(cx).summary();
+                summary["shown"] = self.show_project_settings.into();
+                summary
+            }),
             "navigator": format!("{:?}", self.navigator),
             "show_navigator": self.show_navigator,
             "show_debug_area": self.show_debug_area,

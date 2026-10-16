@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """End-to-end UI checks for zcode, driven through its debug control channel.
 
-    cargo build --release && python3 scripts/e2e.py [--simulator]
+    cargo build --release && python3 scripts/e2e.py [--simulator] [--only <text>]
 
 Launches zcode on the sample projects with ZCODE_DEBUG_DIR set, sends
 keystrokes/actions, and asserts on the JSON state from `dump`. `--simulator`
 also builds, runs and debugs the iOS sample in a simulator (slower).
+`--only <text>` runs just the checks whose names contain <text>.
 """
 
 import json
@@ -26,6 +27,7 @@ BINARY = os.path.join(ROOT, "target", "release", "zcode")
 DEBUG_DIR = tempfile.mkdtemp(prefix="zcode-e2e-")
 
 passed, failed = 0, 0
+ONLY = sys.argv[sys.argv.index("--only") + 1].lower() if "--only" in sys.argv else None
 
 
 # Xcode 27 default shortcuts (docs/xcode-inventory.md) → the zcode command
@@ -167,6 +169,8 @@ class Zcode:
 
 def check(name, fn):
     global passed, failed
+    if ONLY and ONLY not in name.lower():
+        return
     try:
         fn()
         passed += 1
@@ -282,6 +286,22 @@ def xcode_project_checks(z, samples, sim):
         assert z.dump()["active"]["path"].endswith("Counter.swift")
         z.run("keys cmd-z", "keys cmd-s")
 
+    def project_settings():
+        pbxproj = os.path.join(samples, "HelloZ", "HelloZ.xcodeproj", "project.pbxproj")
+        original = open(pbxproj).read()
+        z.run("action zcode::ShowProjectSettings", "wait 300")
+        s = z.dump()["project_settings"]
+        assert s and s["shown"] and s["target"] == "HelloZ", s
+        assert "MARKETING_VERSION = 1.0" in s["fields"], s["fields"]
+        z.run("project-setting MARKETING_VERSION 2.5", "wait 200")
+        edited = open(pbxproj).read()
+        # General fields write every configuration and nothing else.
+        assert edited.count("MARKETING_VERSION = 2.5;") == 2, edited
+        assert edited.replace("MARKETING_VERSION = 2.5;", "MARKETING_VERSION = 1.0;", 2) == original
+        z.run("project-setting MARKETING_VERSION 1.0", "wait 200", "keys cmd-w")
+        assert open(pbxproj).read() == original, "restoring the value should restore the file byte for byte"
+        assert not z.dump()["project_settings"]
+
     def unit_tests_on_simulator():
         z.run("keys cmd-u")
         s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=300)
@@ -338,6 +358,7 @@ def xcode_project_checks(z, samples, sim):
     check("Cut / copy / paste whole line with no selection (⌘X ⌘C ⌘V)", line_clipboard)
     check("Document Items (⌃6)", document_items)
     check("Find in Workspace (⇧⌘F) and references (⌃⇧⌘F)", find_and_references)
+    check("Project settings: edit a General field, written to project.pbxproj in place", project_settings)
     check("Build error → Issue navigator → next issue (⌘')", build_error_and_issue_navigation)
     if sim:
         check("Unit tests in iOS Simulator (⌘U)", unit_tests_on_simulator)

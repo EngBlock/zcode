@@ -32,6 +32,7 @@ which was extracted from Xcode 27's own command definitions.
 | Git: change gutter, blame, commit | 🟡 | Read-only Source Control navigator (status and branch) |
 | Swift packages: build, run, test | ✅ | Resolve/Update are handled implicitly by `swift build` |
 | Build configuration picker | ✅ | Run options dialog (arguments, environment) not yet |
+| Project editor (click the project in the navigator) | 🟡 | General fields and every build setting, per configuration, for the project and each target, written in place to `project.pbxproj`. No Signing & Capabilities, Info, Build Phases or Build Rules tabs, and no adding targets or configurations |
 | Physical devices (devicectl) | ⬜ | |
 
 ## P2

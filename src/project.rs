@@ -37,6 +37,25 @@ impl ProjectKind {
     }
 }
 
+/// The `.xcodeproj` bundles a project opens: itself, or a workspace's
+/// projects in order.
+pub fn xcode_projects(kind: &ProjectKind) -> Vec<PathBuf> {
+    match kind {
+        ProjectKind::XcodeProject(path) => vec![path.clone()],
+        ProjectKind::XcodeWorkspace(path) => {
+            let mut projects = crate::xcodeproj::workspace_projects(path);
+            // A project's own embedded workspace refers to "self:".
+            if projects.is_empty()
+                && let Some(parent) = path.parent().filter(|p| p.extension().is_some_and(|e| e == "xcodeproj"))
+            {
+                projects.push(parent.to_path_buf());
+            }
+            projects
+        }
+        _ => vec![],
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ProjectInfo {
     pub root: PathBuf,

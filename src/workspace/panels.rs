@@ -324,6 +324,46 @@ impl Workspace {
 
     fn render_tabs(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        let settings_tab = self.project_settings.is_some().then(|| {
+            let active = self.show_project_settings;
+            h_flex()
+                .id("tab-project-settings")
+                .group("tab")
+                .h_full()
+                .px_3()
+                .gap_1p5()
+                .min_w(px(110.))
+                .max_w(px(220.))
+                .text_sm()
+                .border_r_1()
+                .border_color(theme.border)
+                .when(active, |el| el.bg(theme.tab_active).text_color(theme.tab_active_foreground))
+                .when(!active, |el| el.text_color(theme.tab_foreground).hover(|el| el.bg(theme.secondary_hover)))
+                .child(Icon::new(IconName::FolderCode).small().text_color(theme.primary))
+                .child(div().flex_1().truncate().child(self.project.name.clone()))
+                .child(
+                    div()
+                        .id("close-tab-project-settings")
+                        .size(px(16.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(theme.radius)
+                        .hover(|el| el.bg(theme.muted))
+                        .invisible()
+                        .group_hover("tab", |s| s.visible())
+                        .child(Icon::new(IconName::X).xsmall())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.close_project_settings(window, cx);
+                        })),
+                )
+                .on_mouse_down(
+                    MouseButton::Middle,
+                    cx.listener(|this, _, window, cx| this.close_project_settings(window, cx)),
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.open_project_settings(window, cx)))
+        });
         h_flex()
             .id("tabs")
             .h(px(32.))
@@ -332,8 +372,9 @@ impl Workspace {
             .bg(theme.tab_bar)
             .border_b_1()
             .border_color(theme.border)
+            .children(settings_tab)
             .children(self.buffers.iter().enumerate().map(|(ix, buffer)| {
-                let active = self.active == Some(ix);
+                let active = self.active == Some(ix) && !self.show_project_settings;
                 let dirty = buffer.dirty;
                 h_flex()
                     .id(SharedString::from(format!("tab-{}", buffer.path.display())))
@@ -437,6 +478,13 @@ impl Workspace {
 
     fn render_editor_area(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        if let Some(settings) = self.project_settings.clone().filter(|_| self.show_project_settings) {
+            return v_flex()
+                .size_full()
+                .child(self.render_tabs(cx))
+                .child(div().flex_1().min_h_0().child(settings))
+                .into_any_element();
+        }
         let Some(buffer) = self.active_buffer() else {
             return v_flex()
                 .size_full()
@@ -949,6 +997,10 @@ impl Render for Workspace {
             .bg(theme.background)
             .text_color(theme.foreground)
             .on_action(cx.listener(|this, _: &Save, window, cx| {
+                // Project settings are written as they are edited.
+                if this.show_project_settings {
+                    return;
+                }
                 if let Some(ix) = this.active {
                     this.save_buffer(ix, window, cx);
                 }
@@ -957,6 +1009,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 if this.modal.is_some() {
                     this.dismiss_modal(window, cx);
+                } else if this.show_project_settings {
+                    this.close_project_settings(window, cx);
                 } else if let Some(ix) = this.active {
                     this.close_buffer(ix, window, cx);
                 } else {
@@ -975,6 +1029,7 @@ impl Render for Workspace {
                 cx.reveal_path(&path);
             }))
             .on_action(cx.listener(Self::new_file))
+            .on_action(cx.listener(|this, _: &ShowProjectSettings, window, cx| this.open_project_settings(window, cx)))
             .on_action(cx.listener(Self::open_quickly))
             .on_action(cx.listener(Self::quick_actions))
             .on_action(cx.listener(Self::show_document_items))

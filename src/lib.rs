@@ -20,3 +20,4 @@ pub mod session;
 pub mod toolchain;
 pub mod welcome;
 pub mod workspace;
+pub mod xcodeproj;

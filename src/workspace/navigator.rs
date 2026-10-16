@@ -7,7 +7,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Disableable as _, Selectable as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::list::ListItem;
-use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::tree::tree;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -190,25 +190,72 @@ impl Workspace {
             .filter(|i| i.severity == Severity::Error)
             .filter_map(|i| i.path)
             .collect();
+        let is_xcode = self.project.kind.is_xcode();
+        let header = h_flex()
+            .id("project-header")
+            .mx_1()
+            .mt_1()
+            .px_1()
+            .py_1()
+            .gap_1()
+            .text_sm()
+            .font_weight(FontWeight::SEMIBOLD)
+            .rounded(theme.radius)
+            .when(self.show_project_settings, |el| el.bg(theme.sidebar_accent))
+            .child(Icon::new(IconName::FolderCode).small().text_color(theme.primary))
+            .child(self.project.name.clone())
+            .child(
+                div()
+                    .text_xs()
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(theme.muted_foreground)
+                    .child(self.project.kind.label()),
+            );
+        // Clicking the project opens the project editor, as in Xcode.
+        let header = if is_xcode {
+            let pbxproj = self
+                .xcode_projects()
+                .first()
+                .map(|p| crate::xcodeproj::XcodeProject::pbxproj_path(p));
+            let opened = self.project.kind.clone();
+            let root = self.project.root.clone();
+            let workspace = cx.weak_entity();
+            header
+                .cursor_pointer()
+                .hover(|el| el.bg(theme.sidebar_accent))
+                .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Show Project Settings").build(window, cx))
+                .on_click(cx.listener(|this, _, window, cx| this.open_project_settings(window, cx)))
+                .context_menu(move |menu, _, _| {
+                    let (ws1, ws2) = (workspace.clone(), workspace.clone());
+                    let pbxproj = pbxproj.clone();
+                    let bundle = match &opened {
+                        crate::project::ProjectKind::XcodeProject(p) | crate::project::ProjectKind::XcodeWorkspace(p) => p.clone(),
+                        _ => root.clone(),
+                    };
+                    let reveal = bundle.clone();
+                    menu.item(PopupMenuItem::new("Project Settings").on_click(move |_, window, cx| {
+                        ws1.update(cx, |ws, cx| ws.open_project_settings(window, cx)).ok();
+                    }))
+                    .when_some(pbxproj, |menu, pbxproj| {
+                        menu.item(PopupMenuItem::new("Open project.pbxproj").on_click(move |_, window, cx| {
+                            let path = pbxproj.clone();
+                            ws2.update(cx, |ws, cx| ws.open_file(path, None, true, window, cx)).ok();
+                        }))
+                    })
+                    .separator()
+                    .item(PopupMenuItem::new("Open in Xcode").on_click(move |_, _, cx| {
+                        let bundle = bundle.clone();
+                        cx.background_spawn(async move { super::project_settings::open_in_xcode(&bundle) }).detach();
+                    }))
+                    .item(PopupMenuItem::new("Show in Finder").on_click(move |_, _, cx| cx.reveal_path(&reveal)))
+                })
+                .into_any_element()
+        } else {
+            header.into_any_element()
+        };
         v_flex()
             .size_full()
-            .child(
-                h_flex()
-                    .px_2()
-                    .py_1()
-                    .gap_1()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(Icon::new(IconName::FolderCode).small().text_color(theme.primary))
-                    .child(self.project.name.clone())
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(theme.muted_foreground)
-                            .child(self.project.kind.label()),
-                    ),
-            )
+            .child(header)
             .child(
                 div().flex_1().min_h_0().child(
                     tree(&self.tree, move |ix, entry, selected, _window, cx| {

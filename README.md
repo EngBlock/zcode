@@ -19,6 +19,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | Area | Feature | Keys (Xcode-compatible) |
 |---|---|---|
 | **Projects** | Opens `.xcodeproj`, `.xcworkspace`, Swift packages and plain folders. Includes a welcome window with recent projects and per-project session restore (tabs, scheme, destination, breakpoints, layout). | ⌘O |
+| | Project settings: click the project in the navigator to edit the project and its targets (General fields such as bundle ID, version, deployment targets and team, plus every build setting per configuration). Edits are written straight to `project.pbxproj` and keep its formatting. The panel can also open `project.pbxproj` as text or open the project in Xcode. | — |
 | **Editing** | Rope-based editor with tree-sitter highlighting (Swift, C/ObjC, C++, JSON, YAML, Markdown…), multiple cursors, folding, indent guides and find/replace. | ⌘F, ⌥⌘F |
 | | Comment selection, duplicate, move line, select next occurrence, soft wrap and font size. | ⌘/, ⌘D, ⌥⌘[ ⌥⌘], ⌥⌘E, ⌃⇧⌘L, ⌘+ ⌘- ⌃⌘0 |
 | | Xcode-style `<#placeholder#>` snippets from completions, with Tab or ⌃/ jumping to the next placeholder. | Tab, ⌃/, ⌃⇧/ |
@@ -122,11 +123,12 @@ src/
                     compilation-database extraction
   debugger/         DAP client and debugger model (lldb-dap)
   project.rs        project detection and gitignore-aware scanning
+  xcodeproj.rs      project.pbxproj parser and in-place editor
   search.rs         parallel find-in-workspace
   perf.rs           startup timing and memory sampling (proc_pid_rusage)
   debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR)
 vendor/
-  gpui-component/   gpui-component 0.7.3 plus a startup patch (ZCODE-PATCH.md)
+  gpui-component/   gpui-component 0.7.3 plus small patches (ZCODE-PATCH.md)
 scripts/
   e2e.py            end-to-end UI tests
   appkit_floor.swift  minimal native AppKit app, the cold-launch reference
@@ -134,7 +136,8 @@ scripts/
 
 The editor engine (rope, layout, tree-sitter highlighting, completion and
 hover UI) comes from `gpui-component`, which is Apache-2.0. zcode vendors it
-with one startup patch, described in `vendor/gpui-component/ZCODE-PATCH.md`.
+with a startup patch and a popover padding fix, both described in
+`vendor/gpui-component/ZCODE-PATCH.md`.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -149,6 +152,8 @@ cargo build --release && python3 scripts/e2e.py [--simulator] [--compare-apps]  
 a temporary copy of `samples/` taken from git `HEAD`, so local edits and
 saved breakpoints can't leak in. It covers:
 * Open Quickly, definition, completion with placeholders, comment and undo, Document Items, find and references
+* project settings: a General field edited and restored, with
+  `project.pbxproj` checked byte for byte
 * the build-error → issue flow
 * run, test and debug for a Swift package
 * cold launch: first frame before the minimal native AppKit app and under 250 ms (medians of 5); opening a project through an already-running instance (< 150 ms)
@@ -164,8 +169,9 @@ The control channel also takes window screenshots
 
 ## Known limitations
 
-* Xcode projects are read through `xcodebuild`; editing `.pbxproj` (adding
-  targets or files to groups) isn't supported. Projects that use
+* Project settings cover build settings and the General fields. Adding or
+  removing targets, configurations, packages or capabilities still needs
+  Xcode, as does adding files to groups and targets. Projects that use
   file-system-synchronized groups (the Xcode 16+ default) pick up new files
   automatically.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas, Instruments or

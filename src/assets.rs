@@ -8,6 +8,7 @@ use gpui_kit::{AssetSource, Result, SharedString};
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
     [
+        AppWindow,
         ArrowDownToLine,
         ArrowUpFromLine,
         Box,
@@ -27,6 +28,7 @@ gpui_kit::assets::icon_assets!(
         FileCog,
         FileImage,
         FileText,
+        FlaskConical,
         Folder,
         FolderCode,
         FolderOpen,
@@ -38,6 +40,7 @@ gpui_kit::assets::icon_assets!(
         Laptop,
         Layers,
         LayoutTemplate,
+        Library,
         ListOrdered,
         Loader,
         MemoryStick,
@@ -48,6 +51,7 @@ gpui_kit::assets::icon_assets!(
         PanelLeft,
         Pencil,
         Play,
+        Puzzle,
         Redo,
         RefreshCw,
         Search,

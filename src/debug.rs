@@ -10,6 +10,8 @@
 //!   mouse <x> <y> / click <x> <y>  move / click at window coordinates (points)
 //!   open <path>[:line]         open a file in the frontmost workspace
 //!   wait <ms>                  pause
+//!   rename <path> -> <name>    rename a file or folder (a name containing `/` moves it)
+//!   project-setting <KEY> <value>  edit a field of the open project settings
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -176,6 +178,15 @@ fn run_command(
                 })
                 .map_err(|e| e.to_string())?;
             Ok(String::new())
+        }
+        "project-setting" => {
+            let (key, value) = arg.split_once(' ').unwrap_or((arg, ""));
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            let settings = workspace.read(cx).project_settings.clone().ok_or("project settings not open")?;
+            window
+                .update(cx, |_, window, cx| settings.update(cx, |s, cx| s.set_field(key, value, window, cx)))
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
         }
         "keymap" => {
             // Every menu/Quick Actions command with all keystrokes bound to it.
