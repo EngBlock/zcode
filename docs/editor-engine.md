@@ -215,3 +215,23 @@ glyph, click runs). The three canvases layered over the editor, their
 `gutter_width` arithmetic with gpui-base's private constants, and their
 own hit-testing are gone. Git change bars (2.3) will be a
 `BeforeNumbers(px(3.))` lane over the hunks' anchors.
+
+### Highlight layers (`highlights.rs`)
+
+```rust
+editor.set_highlight_layer("semantic-tokens", HighlightPriority::SEMANTIC_TOKENS,
+    vec![(range, HighlightStyle { color: Some(..), ..Default::default() })], cx);
+editor.clear_highlight_layer("semantic-tokens", cx);
+```
+
+Per frame, over the visible bytes: tree-sitter styles, the engine's own
+LSP semantic tokens (`DocumentRangeSemanticTokensProvider`), then the
+layers from the lowest priority to the highest, then text decorations,
+then diagnostics. Where layers overlap, a higher layer's set fields win
+and its unset fields let the lower ones show (a references background over
+a semantic color). Each layer is sorted by start with a running maximum of
+ends, so finding the visible ranges is a binary search even with overlaps;
+ranges follow edits like decorations. The composition is deterministic
+(`compose_in_order`): GPUI's `combine_highlights` folds overlapping styles
+in hash-set order, which can't express a priority, so decorations use the
+new composition too.

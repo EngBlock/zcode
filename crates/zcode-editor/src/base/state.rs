@@ -177,6 +177,8 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) anchors: crate::anchors::Anchors,
     /// Lanes of gutter marks (`gutter.rs`).
     pub(crate) gutter: crate::gutter::Gutter,
+    /// Styled ranges over syntax highlighting (`highlights.rs`).
+    pub(crate) highlight_layers: crate::highlights::HighlightLayers,
     pub(super) inline_tokens: Option<Box<super::inline_tokens::InlineTokenStore>>,
     pub(super) pending_token: Option<super::InlineToken>,
     pub(super) replaying_history: bool,
@@ -585,6 +587,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             undo_manager,
             anchors: Default::default(),
             gutter: Default::default(),
+            highlight_layers: Default::default(),
             inline_tokens: None,
             pending_token: None,
             replaying_history: false,
@@ -3695,6 +3698,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             self.text.replace(range.clone(), new_text);
 
             self.anchors.adjust_for_edit(range, new_text.len());
+            self.highlight_layers.adjust_for_edit(range, new_text.len());
             M::adjust_annotations(self, range, new_text.len());
             recorded |= self.push_history(
                 &old_text,
@@ -4076,6 +4080,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             M::reset_annotations(self);
         } else {
             self.anchors.adjust_for_edit(&range, new_text.len());
+            self.highlight_layers.adjust_for_edit(&range, new_text.len());
             M::adjust_annotations(self, &range, new_text.len());
         }
         if mask_changed {
@@ -4218,6 +4223,7 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
         }
 
         self.anchors.adjust_for_edit(&range, new_text.len());
+        self.highlight_layers.adjust_for_edit(&range, new_text.len());
         M::adjust_annotations(self, &range, new_text.len());
         if let Some(diagnostics) = self.mode.diagnostics_mut() {
             diagnostics.reset(&self.text)

@@ -88,7 +88,18 @@ fn compose_decorations(
 
     // Decorations are application-authored overrides and must win over syntax
     // and semantic highlighting when both set the same style property.
-    Some(gpui::combine_highlights(styles, visible_decorations).collect())
+    Some(crate::highlights::compose_in_order(styles.into_iter().chain(visible_decorations)))
+}
+
+/// Highlight layers over unhighlighted text, covering the visible range.
+fn plain_text_layers(
+    layers: &crate::highlights::HighlightLayers,
+    visible: &Range<usize>,
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    if layers.is_empty() {
+        return Vec::new();
+    }
+    layers.compose(vec![(visible.clone(), HighlightStyle::default())], visible)
 }
 
 fn compose_decoration_collections<'a>(
@@ -2196,7 +2207,7 @@ impl<M: InputModeKind> TextElement<M> {
                 return (!state.masked)
                     .then(|| {
                         compose_decoration_collections(
-                            Vec::new(),
+                            plain_text_layers(&state.highlight_layers, &visible_byte_range),
                             state.extras.decoration_layers().into_iter(),
                             visible_byte_range,
                         )
@@ -2208,7 +2219,7 @@ impl<M: InputModeKind> TextElement<M> {
             return (!state.masked)
                 .then(|| {
                     compose_decoration_collections(
-                        Vec::new(),
+                        plain_text_layers(&state.highlight_layers, &visible_byte_range),
                         state.extras.decoration_layers().into_iter(),
                         visible_byte_range,
                     )
@@ -2304,8 +2315,10 @@ impl<M: InputModeKind> TextElement<M> {
             styles.push(hover_style);
         }
 
-        // Compose tree-sitter, semantic, application, then diagnostic styles.
+        // Compose tree-sitter, semantic, highlight layers, application, then
+        // diagnostic styles.
         styles = gpui::combine_highlights(custom_styles, styles).collect();
+        styles = state.highlight_layers.compose(styles, &visible_byte_range);
         if !state.masked {
             styles = compose_decoration_collections(
                 styles,

@@ -86,6 +86,7 @@ mod undo_manager;
 
 mod anchors;
 mod gutter;
+mod highlights;
 mod history;
 #[cfg(test)]
 mod test_support;
@@ -114,6 +115,7 @@ pub use gutter::{
     PaintedGutterItem,
 };
 pub use cursor::Selection;
+pub use highlights::HighlightPriority;
 pub use decorations::{
     RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, TextDecoration,
     TextDecorationCollection,
