@@ -35,6 +35,8 @@
 //!   reveal <path>              reveal a file in the project navigator, package sources included
 //!   variable <name> copy|describe  the Variables view's Copy Value / Print Description
 //!   hover                      log the editor's hover (Quick Help or a data tip) at the cursor
+//!   type-latency <text>        type `text`, logging keystroke-to-frame times as JSON
+//!   editor <probe>             the editor's extension points (see `Workspace::editor_probe`)
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -72,6 +74,7 @@ pub fn start(cx: &mut App, workspaces: impl Fn(&mut App) -> Vec<Entity<Workspace
                         cx.update(|cx| cx.quit());
                         Ok(String::new())
                     }
+                    "type-latency" => type_latency(&arg, cx).await,
                     "hover" => match cx.update(|cx| start_hover(&workspaces, cx)) {
                         Ok(task) => task.await.map_err(|e| format!("{e:#}")).map(|hover| hover_text(hover.as_ref())),
                         Err(err) => Err(err),
@@ -91,6 +94,40 @@ pub fn start(cx: &mut App, workspaces: impl Fn(&mut App) -> Vec<Entity<Workspace
         }
     })
     .detach();
+}
+
+/// Types `text` a character at a time, timing each keystroke from its
+/// dispatch to the end of the next frame: what typing feels like, minus the
+/// display. Logs the median, 95th percentile and maximum in milliseconds.
+async fn type_latency(text: &str, cx: &mut AsyncApp) -> Result<String, String> {
+    let mut samples = vec![];
+    for ch in text.chars() {
+        let key = if ch == ' ' { "space".to_string() } else { ch.to_string() };
+        let mut keystroke = Keystroke::parse(&key).map_err(|e| e.to_string())?;
+        keystroke.key_char = Some(ch.to_string());
+        let (tx, rx) = futures::channel::oneshot::channel();
+        let start = std::time::Instant::now();
+        cx.update(|cx| {
+            let window = front_window(cx).ok_or("no window")?;
+            window
+                .update(cx, |_, window, cx| {
+                    window.on_next_frame(move |_, _| {
+                        tx.send(std::time::Instant::now()).ok();
+                    });
+                    window.dispatch_keystroke(keystroke, cx);
+                })
+                .map_err(|e| e.to_string())
+        })?;
+        if let Ok(end) = rx.await {
+            samples.push((end - start).as_secs_f64() * 1000.);
+        }
+    }
+    if samples.is_empty() {
+        return Err("no frames".into());
+    }
+    samples.sort_by(f64::total_cmp);
+    let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
+    Ok(serde_json::json!({ "keys": samples.len(), "median_ms": at(0.5), "p95_ms": at(0.95), "max_ms": at(1.0) }).to_string())
 }
 
 fn front_window(cx: &App) -> Option<AnyWindowHandle> {
