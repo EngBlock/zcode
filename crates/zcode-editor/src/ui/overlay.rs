@@ -4,7 +4,7 @@ use gpui::{AnyElement, App, Entity, EntityId, Global, IntoElement, WeakEntity, W
 use ropey::Rope;
 
 use super::{
-    popovers::{CodeActionMenu, CompletionMenu, DiagnosticPopover, HoverPopover},
+    popovers::{CodeActionMenu, CompletionMenu, DiagnosticPopover, HoverPopover, SignatureHelpPopover},
     search::SearchPanel,
 };
 use crate::{InputBaseState, InputModeKind};
@@ -67,10 +67,12 @@ pub(crate) struct LspOverlays {
     code_actions: Entity<CodeActionMenu>,
     hover: Option<Entity<HoverPopover>>,
     diagnostic: Option<Entity<DiagnosticPopover>>,
+    signature_help: Option<Entity<SignatureHelpPopover>>,
     completion_signature: OverlaySignature,
     code_action_signature: OverlaySignature,
     hover_signature: Option<std::ops::Range<usize>>,
     diagnostic_signature: Option<std::rc::Rc<crate::DiagnosticEntry>>,
+    signature_help_revision: Option<u64>,
 }
 
 /// What the state read out of the engine for one sync pass.
@@ -84,6 +86,7 @@ pub(crate) struct LspSnapshot {
     code_action: OverlaySignature,
     hover: Option<std::ops::Range<usize>>,
     diagnostic: Option<std::rc::Rc<crate::DiagnosticEntry>>,
+    signature_help: Option<u64>,
     cursor: usize,
 }
 
@@ -93,6 +96,7 @@ impl LspSnapshot {
             || self.code_action.open
             || self.hover.is_some()
             || self.diagnostic.is_some()
+            || self.signature_help.is_some()
     }
 }
 
@@ -176,6 +180,7 @@ impl OverlayMode for crate::EditorMode {
                 .hover_popover()
                 .map(|popover| popover.symbol_range.clone()),
             diagnostic: state.diagnostic_popover(),
+            signature_help: state.signature_help().map(|help| help.revision()),
             cursor: state.cursor(),
         })
     }
@@ -190,10 +195,12 @@ impl OverlayMode for crate::EditorMode {
             code_actions: CodeActionMenu::new(state.clone(), window, cx),
             hover: None,
             diagnostic: None,
+            signature_help: None,
             completion_signature: OverlaySignature::default(),
             code_action_signature: OverlaySignature::default(),
             hover_signature: None,
             diagnostic_signature: None,
+            signature_help_revision: None,
         })
     }
 
@@ -270,6 +277,12 @@ impl OverlayMode for crate::EditorMode {
                 .diagnostic
                 .as_deref()
                 .map(|entry| DiagnosticPopover::new(entry, state.clone(), cx));
+        }
+
+        if snapshot.signature_help != lsp.signature_help_revision {
+            lsp.signature_help_revision = snapshot.signature_help;
+            let help = state.read(cx).signature_help().map(|help| help.help.clone());
+            lsp.signature_help = help.map(|help| SignatureHelpPopover::new(state.clone(), help, cx));
         }
     }
 }
@@ -382,6 +395,9 @@ impl<M: OverlayMode> InputOverlayHost<M> {
             }
             if let Some(diagnostic) = lsp.diagnostic.as_ref() {
                 floating.push(diagnostic.clone().into_any_element());
+            }
+            if let Some(signature_help) = lsp.signature_help.as_ref() {
+                floating.push(signature_help.clone().into_any_element());
             }
         }
         InputOverlays { search, floating }
@@ -601,6 +617,44 @@ mod tests {
                 after_first,
                 "new items must be noticed"
             );
+        });
+    }
+
+    /// Signature help is a floating popover of its own, rebuilt when its
+    /// content changes, and gone with Escape.
+    #[gpui::test]
+    fn signature_help_floats_until_escape(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::test_init);
+        let (probe, cx) = cx.add_window_view(|window, cx| OverlayProbe {
+            state: cx.new(|cx| crate::EditorState::new(window, cx).language("swift")),
+        });
+        let state = probe.read_with(cx, |probe, _| probe.state.clone());
+        cx.update(|window, cx| {
+            let help = |active| lsp_types::SignatureHelp {
+                signatures: vec![lsp_types::SignatureInformation {
+                    label: "f(a: Int, b: Int)".into(),
+                    documentation: None,
+                    parameters: None,
+                    active_parameter: None,
+                }],
+                active_signature: None,
+                active_parameter: Some(active),
+            };
+            state.update(cx, |state, cx| {
+                state.extras.signature_help = Some(crate::SignatureHelpState::for_test(help(0), 0));
+                cx.notify();
+            });
+            let mut host = InputOverlayHost::new(state.clone(), window, cx);
+            assert_eq!(host.sync(&state, window, cx).floating.len(), 1);
+            let first = host.lsp.as_ref().unwrap().signature_help.clone().unwrap();
+            host.sync(&state, window, cx);
+            assert_eq!(host.lsp.as_ref().unwrap().signature_help.as_ref().unwrap(), &first, "same revision, same popover");
+            state.update(cx, |state, _| state.extras.signature_help = Some(crate::SignatureHelpState::for_test(help(1), 1)));
+            host.sync(&state, window, cx);
+            assert_ne!(host.lsp.as_ref().unwrap().signature_help.as_ref().unwrap(), &first, "new content, new popover");
+
+            state.update(cx, |state, cx| assert!(state.route_overlay_action(Box::new(crate::Escape), window, cx)));
+            assert!(host.sync(&state, window, cx).is_empty());
         });
     }
 

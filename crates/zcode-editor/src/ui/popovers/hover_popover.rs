@@ -69,6 +69,8 @@ pub(crate) struct Popover {
     editor: Entity<EditorState>,
     range: Range<usize>,
     width_limit: Range<Pixels>,
+    /// Closes (as a hover does) when the mouse goes down or moves away.
+    dismiss_on_mouse: bool,
     content_builder: Box<dyn Fn(&mut Window, &mut App) -> AnyElement>,
 }
 
@@ -95,8 +97,15 @@ impl Popover {
             range,
             style: StyleRefinement::default(),
             width_limit: px(200.)..px(500.),
+            dismiss_on_mouse: true,
             content_builder: Box::new(move |window, cx| (f)(window, cx).into_any_element()),
         }
+    }
+
+    /// Stays open whatever the mouse does; its owner closes it.
+    pub fn sticky(mut self) -> Self {
+        self.dismiss_on_mouse = false;
+        self
     }
 
     /// Get the bounds of the range in the editor, if it is visible.
@@ -241,6 +250,9 @@ impl Element for Popover {
         };
 
         popover.paint(window, cx);
+        if !self.dismiss_on_mouse {
+            return;
+        }
 
         let editor = self.editor.clone();
         // Mouse down out to hide.

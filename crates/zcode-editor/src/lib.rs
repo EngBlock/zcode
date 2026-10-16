@@ -92,6 +92,7 @@ mod edits;
 mod history;
 mod linked;
 mod modal;
+mod viewport;
 pub mod multibuffer;
 #[cfg(test)]
 mod test_support;
@@ -124,6 +125,7 @@ pub use cursor::Selection;
 pub use edits::BufferEdit;
 pub use highlights::HighlightPriority;
 pub use modal::{CursorShape, KeystrokeInterceptor};
+pub use viewport::ViewportChanged;
 pub use decorations::{
     RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, TextDecoration,
     TextDecorationCollection,
@@ -152,8 +154,8 @@ pub use language_config::{AutoClosingPair, BracketPair, IndentationRules};
 pub use lsp::{
     CodeActionItem, CodeActionMenuState, CodeActionProvider, CompletionMenuOptions,
     CompletionMenuState, CompletionProvider, DefinitionProvider, DocumentColorProvider,
-    DocumentRangeSemanticTokensProvider, HoverPopoverState, HoverProvider, InputOverlayKind, Lsp,
-    ShowDocumentHandler,
+    HoverPopoverState, HoverProvider, InputOverlayKind, Lsp, ShowDocumentHandler,
+    SignatureHelpProvider, SignatureHelpState, split_signature_label,
 };
 pub use lsp_types::Position;
 pub use mask_pattern::MaskPattern;

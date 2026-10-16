@@ -341,6 +341,11 @@ impl InputBaseState<EditorMode> {
         } else {
             None
         };
+        // With no menu open, Escape closes signature help.
+        if kind.is_none() && self.extras.signature_help.is_some() && action.partial_eq(&crate::Escape) {
+            self.dismiss_signature_help(cx);
+            return true;
+        }
         let Some((kind, handler)) = kind.zip(self.overlay_action_handler.clone()) else {
             return false;
         };

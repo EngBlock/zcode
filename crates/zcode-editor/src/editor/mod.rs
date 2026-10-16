@@ -33,6 +33,7 @@ impl InputModeKind for EditorMode {
 
     fn reset_language_features(state: &mut InputBaseState<Self>) {
         state.extras.lsp.reset();
+        state.extras.signature_help = None;
     }
 
     fn reset_annotations(state: &mut InputBaseState<Self>) {
@@ -103,6 +104,7 @@ impl InputModeKind for EditorMode {
         cx: &mut gpui::Context<InputBaseState<Self>>,
     ) {
         state.handle_completion_trigger(range, text, window, cx);
+        state.handle_signature_help_trigger(text, cx);
     }
 
     fn clear_inline_completion(
@@ -117,6 +119,12 @@ impl InputModeKind for EditorMode {
         cx: &mut gpui::Context<InputBaseState<Self>>,
     ) {
         state.hide_context_menu(cx);
+        // Called on every edit and caret move: signature help follows them.
+        state.retrigger_signature_help(cx);
+    }
+
+    fn on_blur(state: &mut InputBaseState<Self>, cx: &mut gpui::Context<InputBaseState<Self>>) {
+        state.dismiss_signature_help(cx);
     }
 
     fn is_context_menu_open(state: &InputBaseState<Self>, cx: &App) -> bool {
@@ -221,15 +229,6 @@ impl crate::InputExtras for super::EditorExtras {
 
     fn range_decorations(&self, ranges: &[std::ops::Range<usize>]) -> Vec<&super::RangeDecoration> {
         self.range_decorations.intersecting(ranges)
-    }
-
-    fn semantic_token_styles(
-        &self,
-        text: &ropey::Rope,
-        range: &std::ops::Range<usize>,
-        resolver: &dyn crate::HighlightStyleResolver,
-    ) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> {
-        self.lsp.semantic_tokens_for_range(text, range, resolver)
     }
 
     fn document_color_swatches(

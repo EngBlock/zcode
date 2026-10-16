@@ -28,10 +28,7 @@ use ropey::Rope;
 
 use super::decorations::DecorationCollections;
 use super::lsp::{ContextMenuContent, HoverDefinition, InlineCompletion};
-use crate::{
-    HighlightStyleResolver, InputEdit, InputHighlighter, RangeDecoration, SyntaxContext,
-    TextDecoration,
-};
+use crate::{InputEdit, InputHighlighter, RangeDecoration, SyntaxContext, TextDecoration};
 use crate::{HoverPopoverState, Lsp};
 use gpui::Task;
 
@@ -85,16 +82,6 @@ pub trait InputExtras: Default + 'static {
 
     /// Geometric decorations intersecting visible, non-folded buffer spans.
     fn range_decorations(&self, _ranges: &[std::ops::Range<usize>]) -> Vec<&RangeDecoration> {
-        Vec::new()
-    }
-
-    /// Semantic-token styles for a visible range, when an LSP supplies them.
-    fn semantic_token_styles(
-        &self,
-        _text: &Rope,
-        _range: &std::ops::Range<usize>,
-        _resolver: &dyn HighlightStyleResolver,
-    ) -> Vec<(std::ops::Range<usize>, gpui::HighlightStyle)> {
         Vec::new()
     }
 
@@ -277,6 +264,10 @@ pub trait InputModeKind: sealed::Sealed + Sized + 'static {
     ) {
     }
 
+    /// Closes what belongs to the focused editor alone (signature help)
+    /// when it loses focus.
+    fn on_blur(_state: &mut InputBaseState<Self>, _cx: &mut gpui::Context<InputBaseState<Self>>) {}
+
     /// Closes any open completion or code-action menu.
     fn hide_context_menu(
         _state: &mut InputBaseState<Self>,
@@ -357,6 +348,7 @@ pub struct EditorExtras {
     pub(crate) inline_completion: InlineCompletion,
     pub(crate) context_menu_content: ContextMenuContent,
     pub(crate) hover_popover: Option<HoverPopoverState>,
+    pub(crate) signature_help: Option<crate::SignatureHelpState>,
     pub(crate) hover_definition: HoverDefinition,
     pub(crate) context_menu_task: Task<anyhow::Result<()>>,
 }
@@ -370,6 +362,7 @@ impl Default for EditorExtras {
             inline_completion: InlineCompletion::default(),
             context_menu_content: ContextMenuContent::default(),
             hover_popover: None,
+            signature_help: None,
             hover_definition: HoverDefinition::default(),
             context_menu_task: Task::ready(Ok(())),
         }

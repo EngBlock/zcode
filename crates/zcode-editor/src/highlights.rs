@@ -3,8 +3,7 @@
 //!
 //! Each layer has a key, so its owner replaces it wholesale (semantic tokens
 //! after each response, the references to the symbol under the cursor), and
-//! a priority. Over the tree-sitter (and engine semantic-token) styles,
-//! layers apply from the lowest priority to the highest: a field a higher
+//! a priority. Over the tree-sitter styles, layers apply from the lowest priority to the highest: a field a higher
 //! layer sets (color, weight, background, underline) wins, a field it leaves
 //! unset shows through. Text decorations and diagnostics stay above every
 //! layer. Ranges are UTF-8 bytes and follow edits; a range an edit empties

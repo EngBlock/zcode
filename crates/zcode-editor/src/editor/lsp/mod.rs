@@ -1,5 +1,5 @@
 use anyhow::Result;
-use gpui::{App, Context, Hsla, SharedString, Task, Window};
+use gpui::{App, Context, Hsla, Task, Window};
 use ropey::Rope;
 use std::rc::Rc;
 
@@ -11,7 +11,7 @@ mod definitions;
 mod document_colors;
 mod hover;
 mod overlay;
-mod semantic_tokens;
+mod signature_help;
 
 pub use code_actions::*;
 pub use completions::*;
@@ -19,7 +19,7 @@ pub use definitions::*;
 pub use document_colors::*;
 pub use hover::*;
 pub use overlay::*;
-pub use semantic_tokens::*;
+pub use signature_help::*;
 
 /// Host hook to show a document when following an LSP location
 /// (Go to Definition), modeled after the `window/showDocument` request.
@@ -45,10 +45,10 @@ pub struct Lsp {
     pub hover_provider: Option<Rc<dyn HoverProvider>>,
     /// The definition provider.
     pub definition_provider: Option<Rc<dyn DefinitionProvider>>,
+    /// The signature help provider.
+    pub signature_help_provider: Option<Rc<dyn SignatureHelpProvider>>,
     /// The document color provider.
     pub document_color_provider: Option<Rc<dyn DocumentColorProvider>>,
-    /// The range semantic tokens provider.
-    pub semantic_tokens_provider: Option<Rc<dyn DocumentRangeSemanticTokensProvider>>,
     /// Optional host hook to show documents for Go to Definition locations,
     /// following the `window/showDocument` request (see [`ShowDocumentHandler`]).
     ///
@@ -59,14 +59,10 @@ pub struct Lsp {
     pub completion_menu: CompletionMenuOptions,
 
     pub(crate) document_colors: Vec<(lsp_types::Range, Hsla)>,
-    /// Cached semantic tokens as absolute position ranges + theme token-type
-    /// names. Color is resolved from the name at paint time so theme switches
-    /// take effect without a refetch.
-    pub(crate) semantic_tokens: Vec<(lsp_types::Range, SharedString)>,
     pub(crate) _hover_task: Task<Result<()>>,
     pub(crate) _definition_task: Task<Result<()>>,
     pub(crate) _document_color_task: Task<()>,
-    pub(crate) _semantic_tokens_task: Task<()>,
+    pub(crate) _signature_help_task: Task<()>,
 }
 
 impl Default for Lsp {
@@ -76,16 +72,15 @@ impl Default for Lsp {
             code_action_providers: vec![],
             hover_provider: None,
             definition_provider: None,
+            signature_help_provider: None,
             document_color_provider: None,
             completion_menu: CompletionMenuOptions::default(),
-            semantic_tokens_provider: None,
             show_document: None,
             document_colors: vec![],
-            semantic_tokens: vec![],
             _hover_task: Task::ready(Ok(())),
             _definition_task: Task::ready(Ok(())),
             _document_color_task: Task::ready(()),
-            _semantic_tokens_task: Task::ready(()),
+            _signature_help_task: Task::ready(()),
         }
     }
 }
@@ -99,17 +94,15 @@ impl Lsp {
         cx: &mut Context<InputBaseState<EditorMode>>,
     ) {
         self.update_document_colors(text, window, cx);
-        self.update_semantic_tokens(text, window, cx);
     }
 
     /// Reset all LSP states.
     pub(crate) fn reset(&mut self) {
         self.document_colors.clear();
-        self.semantic_tokens.clear();
         self._hover_task = Task::ready(Ok(()));
         self._definition_task = Task::ready(Ok(()));
         self._document_color_task = Task::ready(());
-        self._semantic_tokens_task = Task::ready(());
+        self._signature_help_task = Task::ready(());
     }
 }
 

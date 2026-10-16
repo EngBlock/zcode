@@ -2567,24 +2567,15 @@ impl<M: InputModeKind> TextElement<M> {
             })
             .collect();
 
-        // Range semantic tokens, resolved from the LSP provider's cached
-        // result through the active highlight theme so it shares the same
-        // colour vocabulary as the tree-sitter path. Empty Vec when no
-        // provider is set, so `combine_highlights` short-circuits.
-        let custom_styles = state.extras.semantic_token_styles(
-            text,
-            &visible_byte_range,
-            state.editor_style.highlight_styles.as_ref(),
-        );
-
         // hover definition style
         if let Some(hover_style) = M::hover_definition_style(self.state.read(cx), cx) {
             styles.push(hover_style);
         }
 
-        // Compose tree-sitter, semantic, highlight layers, application, then
+        // Compose tree-sitter (with the hover underline), the highlight
+        // layers (semantic tokens among them), application decorations, then
         // diagnostic styles.
-        styles = gpui::combine_highlights(custom_styles, styles).collect();
+        styles = gpui::combine_highlights(std::iter::empty(), styles).collect();
         styles = state.highlight_layers.compose(styles, &visible_byte_range);
         if !state.masked {
             styles = compose_decoration_collections(
@@ -3756,7 +3747,13 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     layout.cursor_bounds != prepaint.last_layout.cursor_bounds
                         || layout.line_height != prepaint.last_layout.line_height
                 });
+            let rows = crate::viewport::rows_of(&prepaint.last_layout.visible_buffer_lines);
+            let rows_changed =
+                state.last_layout.as_ref().and_then(|layout| crate::viewport::rows_of(&layout.visible_buffer_lines)) != rows;
             state.last_layout = Some(prepaint.last_layout.clone());
+            if rows_changed && let Some(rows) = rows {
+                cx.emit(crate::ViewportChanged { rows });
+            }
             state.gutter.painted = prepaint.gutter.as_ref().map(|gutter| gutter.painted()).unwrap_or_default();
             state.gutter.geometry = std::mem::take(&mut prepaint.gutter_geometry);
             state.last_bounds = Some(bounds);

@@ -3372,6 +3372,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
 
         M::hide_context_menu(self, cx);
+        M::on_blur(self, cx);
         self.undo_manager.break_transaction_coalescing();
 
         // NOTE: Do not cancel select, when blur.
