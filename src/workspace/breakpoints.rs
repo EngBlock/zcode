@@ -312,7 +312,7 @@ impl Workspace {
 
     /// Edit Breakpoint… for the breakpoint on the cursor's line.
     pub(super) fn edit_breakpoint_at_cursor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(buffer) = self.active_buffer() else { return };
+        let Some(buffer) = self.active_item() else { return };
         let line = buffer.editor.read(cx).cursor_position().line + 1;
         let id = self.debugger.read(cx).breakpoint_at(&buffer.path, line).map(|bp| bp.id);
         match id {
@@ -510,7 +510,7 @@ impl Workspace {
             .collect();
         // Where to click in the gutter: the line numbers' column, and the
         // markers painted last frame.
-        let gutter = self.active_buffer().and_then(|buffer| {
+        let gutter = self.active_item().and_then(|buffer| {
             let state = buffer.editor.read(cx);
             let geometry = state.gutter_geometry();
             let line_height = state.line_height()?;
@@ -610,5 +610,16 @@ impl Workspace {
             let provider = state.lsp_mut().hover_provider.clone()?;
             Some(provider.hover(&text, offset, window, cx))
         })
+    }
+}
+
+impl Workspace {
+    /// Debug ▸ Breakpoints ▸ Create Breakpoint at Current Line (⌘\).
+    pub(super) fn toggle_breakpoint(&mut self, _: &crate::actions::ToggleBreakpoint, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(item) = self.active_item() else { return };
+        let path = item.path.clone();
+        let line = item.editor.read(cx).cursor_position().line + 1;
+        self.debugger
+            .update(cx, |d, cx| d.toggle_breakpoint(path, line, cx));
     }
 }

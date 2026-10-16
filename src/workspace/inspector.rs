@@ -53,7 +53,7 @@ impl Workspace {
     /// The file the inspector shows: the navigator's pick, else the active
     /// file.
     pub(super) fn inspected_path(&self) -> Option<PathBuf> {
-        self.inspected.clone().or_else(|| self.active_buffer().map(|b| b.path.clone()))
+        self.inspected.clone().or_else(|| self.active_item().map(|b| b.path.clone()))
     }
 
     /// View ▸ Inspectors ▸ File (⌥⌘1), optionally for a specific file.

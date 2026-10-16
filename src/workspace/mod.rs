@@ -1,4 +1,5 @@
-//! The project window: navigator, editor tabs, debug area, toolbar, status.
+//! The project window: navigator, editor panes, inspector, debug area,
+//! toolbar, status.
 
 mod add_files;
 mod add_package;
@@ -6,19 +7,29 @@ mod bookmark_dialog;
 mod bookmarks;
 mod breakpoint_editor;
 mod breakpoints;
+mod buffers;
 mod console;
 mod edit_scheme;
 mod editing;
 mod inspector;
 mod editor_probe;
+mod events;
+mod find;
+mod issues;
 mod line_anchors;
+mod navigation;
 mod navigator;
 mod packages;
+mod pane;
+mod pane_group;
+mod pane_view;
 mod panels;
+mod panes;
 mod pickers;
 mod plist_editor;
 mod project_files;
 mod project_settings;
+mod source_control;
 mod test_gutter;
 mod testing;
 
@@ -26,32 +37,31 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use zcode_editor::{Diagnostic as EditorDiagnostic, DiagnosticSeverity};
 use gpui_kit::component::input::{InputEvent, InputState};
-use zcode_editor::{EditorState, Position, RopeExt as _, TabSize};
 use gpui_kit::component::tree::{TreeItem, TreeState};
 use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
 use crate::actions::*;
-use crate::build::log::{Issue, IssueSource, Severity};
-use crate::build::{BuildAction, BuildController, BuildEvent};
-use crate::debugger::{DebugState, DebugTarget, Debugger, DebuggerEvent};
-use zcode_editor::{RangeDecoration, RangeDecorationCollection, RangeDecorationStyle};
-use crate::lsp::{self, DocumentProviders, LspStore, LspStoreEvent};
+use crate::build::BuildController;
+use crate::debugger::Debugger;
+use crate::lsp::LspStore;
 use crate::project::{self, ProjectInfo};
-use crate::search::{FileMatches, SearchOptions};
+use crate::search::SearchOptions;
 use crate::session::{ProjectSession, Session};
 
+pub use buffers::Buffer;
+pub use find::FindState;
 pub use navigator::NavigatorTab;
+pub use pane::{AssistantMode, EditorItem, Item, Pane, PaneId};
+pub use pane_group::SplitAxis;
 pub use panels::DebugTab;
 pub use plist_editor::{PlistEditor, PlistEditorEvent};
 pub use project_settings::{ProjectSettings, ProjectSettingsEvent};
 
 const DEFAULT_FONT_SIZE: f32 = 13.;
-const MAX_OPEN_FILE_SIZE: u64 = 16 * 1024 * 1024;
 
 /// A position to reveal after opening a file.
 #[derive(Clone, Debug)]
@@ -62,68 +72,11 @@ pub enum Target {
     Offset(usize),
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct HistoryEntry {
-    path: PathBuf,
-    offset: usize,
-}
-
-pub struct Buffer {
-    pub path: PathBuf,
-    pub editor: Entity<EditorState>,
-    pub dirty: bool,
-    /// A package's checked-out source: shown, never edited or saved.
-    pub read_only: bool,
-    /// Text as last loaded/saved, so undoing back to it clears `dirty`.
-    saved_text: zcode_editor::Rope,
-    pub language: SharedString,
-    mtime: Option<SystemTime>,
-    breakpoint_anchors: line_anchors::LineAnchors<crate::debugger::Breakpoint>,
-    bookmark_anchors: line_anchors::LineAnchors<(crate::bookmarks::Bookmark, crate::bookmarks::Slot)>,
-    exec_mark: Option<RangeDecorationCollection>,
-    /// Property lists: the structured editor over the same text.
-    pub plist: Option<PlistBuffer>,
-    _subscriptions: Vec<Subscription>,
-}
-
-pub struct PlistBuffer {
-    /// Saved back in the format it was read in.
-    pub format: crate::plist::Format,
-    pub editor: Entity<PlistEditor>,
-    /// Open As ▸ Source Code.
-    pub as_source: bool,
-}
-
-impl Buffer {
-    pub fn title(&self) -> String {
-        self.path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default()
-    }
-
-    /// The property list editor, when the tab shows it instead of the text.
-    pub fn shown_plist(&self) -> Option<&Entity<PlistEditor>> {
-        self.plist.as_ref().filter(|p| !p.as_source).map(|p| &p.editor)
-    }
-}
-
 struct Modal {
     view: AnyView,
     /// Where a popover points (window coordinates); sheets are centered.
     position: Option<Point<Pixels>>,
     _subscription: Subscription,
-}
-
-pub struct FindState {
-    pub input: Entity<InputState>,
-    pub options: SearchOptions,
-    pub results: Arc<Vec<FileMatches>>,
-    pub searching: bool,
-    pub error: Option<String>,
-    pub title: Option<String>,
-    cancel: Arc<AtomicBool>,
-    _task: Option<Task<()>>,
 }
 
 pub struct Workspace {
@@ -139,12 +92,20 @@ pub struct Workspace {
     pub lsp: Entity<LspStore>,
     pub build: Entity<BuildController>,
     pub debugger: Entity<Debugger>,
+    /// Open files, one buffer each however many panes show them.
     pub buffers: Vec<Buffer>,
-    pub active: Option<usize>,
-    /// The project editor tab, shown in place of the active buffer while
-    /// `show_project_settings` is set.
+    /// The editor area: panes of tabs, how they're split, the focused one.
+    panes: Vec<Pane>,
+    pane_group: pane_group::PaneGroup,
+    active_pane: PaneId,
+    next_pane_id: u64,
+    /// Focus Editor Pane: only the focused pane is shown.
+    zoomed: bool,
+    /// The project editor, in whichever pane has its tab.
     pub project_settings: Option<Entity<ProjectSettings>>,
-    pub show_project_settings: bool,
+    project_settings_subscriptions: Vec<Subscription>,
+    /// Where execution stopped, marked in every pane showing it.
+    exec_location: Option<(PathBuf, u32)>,
     xcode_projects: Vec<PathBuf>,
     /// Parsed projects for the File inspector.
     project_index: project_files::ProjectIndex,
@@ -176,8 +137,6 @@ pub struct Workspace {
     pub font_size: f32,
     pub soft_wrap: bool,
     memory_label: String,
-    back: Vec<HistoryEntry>,
-    forward: Vec<HistoryEntry>,
     modal: Option<Modal>,
     issue_cursor: Option<usize>,
     debug_scroll: UniformListScrollHandle,
@@ -257,9 +216,14 @@ impl Workspace {
             build,
             debugger,
             buffers: vec![],
-            active: None,
+            panes: vec![Pane::new(PaneId(0))],
+            pane_group: pane_group::PaneGroup::new(PaneId(0)),
+            active_pane: PaneId(0),
+            next_pane_id: 1,
+            zoomed: false,
             project_settings: None,
-            show_project_settings: false,
+            project_settings_subscriptions: vec![],
+            exec_location: None,
             xcode_projects: vec![],
             project_index: Default::default(),
             project_edit_lock: Default::default(),
@@ -296,8 +260,6 @@ impl Workspace {
             font_size: session.font_size.unwrap_or(DEFAULT_FONT_SIZE),
             soft_wrap: false,
             memory_label: String::new(),
-            back: vec![],
-            forward: vec![],
             modal: None,
             issue_cursor: None,
             debug_scroll: UniformListScrollHandle::new(),
@@ -347,7 +309,7 @@ impl Workspace {
         mark("background tasks");
         this.restore_tabs(saved, opened_path, window, cx);
         mark("restore tabs");
-        if this.active.is_none() {
+        if this.buffers.is_empty() {
             // Keep shortcuts working before any file is open.
             this.focus_handle.focus(window, cx);
         }
@@ -367,11 +329,11 @@ impl Workspace {
     }
 
     pub fn title(&self) -> String {
-        if self.show_project_settings {
+        if self.showing_project_settings() {
             return format!("{} — Project Settings", self.project.name);
         }
-        match self.active_buffer() {
-            Some(buffer) => format!("{} — {}", self.project.name, buffer.title()),
+        match self.active_item() {
+            Some(item) => format!("{} — {}", self.project.name, item.title()),
             None => self.project.name.clone(),
         }
     }
@@ -473,7 +435,7 @@ impl Workspace {
 
     pub(super) fn new_file(&mut self, _: &NewFile, window: &mut Window, cx: &mut Context<Self>) {
         let dir = self
-            .active_buffer()
+            .active_item()
             .and_then(|b| b.path.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| self.project.root.clone());
         self.new_file_in(dir, window, cx);
@@ -497,8 +459,9 @@ impl Workspace {
             self.notify_error(format!("Couldn’t move {name} to the Trash: {err}"), window, cx);
             return;
         }
-        while let Some(ix) = self.buffers.iter().position(|b| b.path.starts_with(&path)) {
-            self.force_close(ix, window, cx);
+        let trashed: Vec<PathBuf> = self.buffers.iter().map(|b| b.path.clone()).filter(|p| p.starts_with(&path)).collect();
+        for file in trashed {
+            self.close_file_everywhere(&file, window, cx);
         }
         self.debugger.update(cx, |d, cx| d.remove_breakpoints_in(&path, cx));
         if self.bookmarks.remove_in(&path) {
@@ -546,16 +509,23 @@ impl Workspace {
         if self.bookmarks.move_files(&path, &target) {
             self.save_session(cx);
         }
+        // Tabs reopen at the new path, in the panes they were in.
+        let focused = self.active_pane;
         let mut reopen = vec![];
-        while let Some(ix) = self.buffers.iter().position(|b| b.path.starts_with(&path)) {
-            let old = self.buffers[ix].path.clone();
-            let rel = old.strip_prefix(&path).unwrap_or(Path::new(""));
-            reopen.push(if rel.as_os_str().is_empty() { target.clone() } else { target.join(rel) });
-            self.force_close(ix, window, cx);
+        for pane in &self.panes {
+            for item in pane.items.iter().filter_map(Item::editor).filter(|item| item.path.starts_with(&path)) {
+                let rel = item.path.strip_prefix(&path).unwrap_or(Path::new(""));
+                reopen.push((pane.id, if rel.as_os_str().is_empty() { target.clone() } else { target.join(rel) }));
+            }
         }
-        for new_path in reopen {
-            self.open_file(new_path, None, false, window, cx);
+        let moved: Vec<PathBuf> = self.buffers.iter().map(|b| b.path.clone()).filter(|p| p.starts_with(&path)).collect();
+        for file in moved {
+            self.close_file_everywhere(&file, window, cx);
         }
+        for (pane, new_path) in reopen {
+            self.open_file_in(pane, new_path, None, false, window, cx);
+        }
+        self.focus_pane(focused, window, cx);
         self.rescan(cx);
         self.refresh_scm(cx);
         self.move_in_projects(path, target, window, cx);
@@ -596,85 +566,17 @@ impl Workspace {
         self.add_new_file_to_projects(path, window, cx);
     }
 
-    fn reload_from_disk(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) else {
-            return;
-        };
-        let text = match (&buffer.plist, std::fs::read(path)) {
-            (Some(_), Ok(bytes)) => match crate::plist::load(bytes) {
-                Ok((format, text)) => {
-                    if let Some(plist) = buffer.plist.as_mut() {
-                        plist.format = format;
-                    }
-                    text
-                }
-                Err(_) => return,
-            },
-            (None, Ok(bytes)) => match String::from_utf8(bytes) {
-                Ok(text) => text,
-                Err(_) => return,
-            },
-            (_, Err(_)) => return,
-        };
-        buffer.mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        buffer.saved_text = zcode_editor::Rope::from(text.as_str());
-        let editor = buffer.editor.clone();
-        let Some(window) = cx.windows().first().copied() else { return };
-        window
-            .update(cx, |_, window, cx| {
-                editor.update(cx, |state, cx| {
-                    if *state.text() != text {
-                        let cursor = state.cursor();
-                        state.set_value(text, window, cx);
-                        let clamped = cursor.min(state.text().len());
-                        state.set_selected_range(clamped..clamped, cx);
-                    }
-                });
-            })
-            .ok();
-        let text = self
-            .buffers
-            .iter()
-            .find(|b| b.path == path)
-            .map(|b| b.editor.read(cx).text().clone());
-        if let Some(text) = text {
-            self.lsp.update(cx, |lsp, cx| lsp.document_changed(path, text, cx));
-        }
-        if let Some(plist) = self.buffers.iter().find(|b| b.path == path).and_then(|b| b.plist.as_ref()) {
-            plist.editor.update(cx, |editor, cx| editor.text_replaced(cx));
-        }
-        // Replacing the text collapsed the anchors; breakpoints and bookmarks
-        // keep their lines.
-        self.anchor_breakpoints(path, true, cx);
-        self.anchor_bookmarks(path, true, cx);
-    }
-
-    fn restore_tabs(
-        &mut self,
-        saved: ProjectSession,
-        opened_path: PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let opened_file = opened_path.is_file()
-            && !opened_path.ends_with("Package.swift")
-            && project::detect(&opened_path).root == self.project.root
-            && opened_path.extension().is_some_and(|e| e != "xcodeproj" && e != "xcworkspace");
-        for path in saved.open_files.iter().filter(|p| p.exists()) {
-            self.open_file(path.clone(), None, false, window, cx);
-        }
-        if opened_file {
-            self.open_file(opened_path, None, false, window, cx);
-        } else if let Some(active) = saved.active_file.filter(|p| p.exists()) {
-            self.open_file(active, None, false, window, cx);
-        }
-    }
-
     pub fn save_session(&mut self, cx: &App) {
         let build = self.build.read(cx);
+        let layout = self.pane_layout();
+        let mut open_files: Vec<PathBuf> = vec![];
+        for pane in layout.panes() {
+            open_files.extend(pane.files.iter().filter(|f| !open_files.contains(f)).cloned().collect::<Vec<_>>());
+        }
         let state = ProjectSession {
-            open_files: self.buffers.iter().map(|b| b.path.clone()).collect(),
-            active_file: self.active_buffer().map(|b| b.path.clone()),
+            open_files,
+            active_file: self.active_item().map(|item| item.path.clone()),
+            panes: Some(layout),
             scheme: build.scheme.clone(),
             destination: build.destination.as_ref().map(|d| d.id.clone()),
             configuration: Some(build.configuration.clone()),
@@ -702,1024 +604,12 @@ impl Workspace {
     }
 
     // ---------------------------------------------------------------------
-    // Buffers
-
-    pub fn active_buffer(&self) -> Option<&Buffer> {
-        self.active.and_then(|ix| self.buffers.get(ix))
-    }
-
-    /// The active tab's text editor, unless the tab shows a property list.
-    pub fn active_editor(&self) -> Option<Entity<EditorState>> {
-        self.active_buffer().filter(|b| b.shown_plist().is_none()).map(|b| b.editor.clone())
-    }
-
-    /// The path of the buffer `editor` (an entity id) edits; it follows
-    /// renames, which a path captured when the editor opened wouldn't.
-    fn buffer_path_of(&self, editor: EntityId) -> Option<PathBuf> {
-        self.buffers.iter().find(|b| b.editor.entity_id() == editor).map(|b| b.path.clone())
-    }
-
-    /// The active editor's gutter items of `lane` as painted last frame:
-    /// 1-based line and bounds.
-    fn painted_gutter(&self, lane: &str, cx: &App) -> Vec<(u32, Bounds<Pixels>)> {
-        let Some(editor) = self.active_editor() else { return vec![] };
-        editor
-            .read(cx)
-            .painted_gutter_items()
-            .iter()
-            .filter(|item| item.lane.as_ref() == lane)
-            .map(|item| (item.row + 1, item.bounds))
-            .collect()
-    }
-
-    /// The gutter's lanes: breakpoint markers, bookmark ribbons over them,
-    /// test diamonds over both, each taking its clicks first.
-    fn install_gutter_lanes(&self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
-        let lanes = [self.breakpoint_lane(editor, cx), self.bookmark_lane(editor, cx), self.test_lane(editor, cx)];
-        editor.update(cx, |state, cx| {
-            for lane in lanes {
-                state.set_gutter_lane(lane, cx);
-            }
-        });
-    }
-
-    fn language_for(path: &Path) -> &'static str {
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        match (name, ext) {
-            ("Podfile" | "Fastfile" | "Gemfile", _) => "ruby",
-            ("Makefile", _) => "make",
-            (_, "swift" | "swiftinterface") => "swift",
-            (_, "m" | "h" | "c") => "c",
-            (_, "mm" | "cc" | "cpp" | "cxx" | "hpp" | "hh") => "cpp",
-            (_, "json" | "xcscheme" | "resolved") if ext != "xcscheme" => "json",
-            (_, "plist" | "entitlements" | "xcscheme" | "xml" | "storyboard" | "xib" | "html") => {
-                "html"
-            }
-            (_, "md" | "markdown") => "markdown",
-            (_, "yml" | "yaml") => "yaml",
-            (_, "toml") => "toml",
-            (_, "sh" | "bash" | "zsh") => "bash",
-            (_, "rs") => "rust",
-            (_, "js" | "mjs" | "ts") => "javascript",
-            (_, "py") => "python",
-            _ => "text",
-        }
-    }
-
-    /// Opens (or focuses) a file, optionally revealing a location.
-    pub fn open_file(
-        &mut self,
-        path: PathBuf,
-        target: Option<Target>,
-        record_history: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let path = path.canonicalize().unwrap_or(path);
-        if record_history {
-            self.push_history(cx);
-        }
-        if let Some(ix) = self.buffers.iter().position(|b| b.path == path) {
-            self.activate(ix, window, cx);
-            if let Some(target) = target {
-                self.reveal_target(ix, target, window, cx);
-            }
-            return;
-        }
-
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        if size > MAX_OPEN_FILE_SIZE {
-            self.notify_error(format!("{} is too large to open", path.display()), window, cx);
-            return;
-        }
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                self.notify_error(format!("Couldn’t open {}: {err}", path.display()), window, cx);
-                return;
-            }
-        };
-        // Property lists open in the property list editor; binary ones are
-        // edited as XML and saved as binary again.
-        let plist_format = if crate::plist::is_property_list(&path) || crate::plist::is_binary(&bytes) {
-            match crate::plist::load(bytes.clone()) {
-                Ok((format, _)) => Some(format),
-                Err(err) if crate::plist::is_binary(&bytes) => {
-                    self.notify_error(format!("Couldn’t open {}: {err:#}", path.display()), window, cx);
-                    return;
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
-        let text = match plist_format {
-            Some(crate::plist::Format::Binary) => crate::plist::load(bytes).map(|(_, text)| text).unwrap_or_default(),
-            _ => match String::from_utf8(bytes) {
-                Ok(text) => text,
-                Err(_) => {
-                    self.notify_error(
-                        format!("{} is not a UTF-8 text file", path.display()),
-                        window,
-                        cx,
-                    );
-                    return;
-                }
-            },
-        };
-        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
-        let language = Self::language_for(&path);
-        let read_only = crate::packages::location::is_package_checkout(&path);
-        let soft_wrap = self.soft_wrap;
-        let editor = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .language(language)
-                .line_number(true)
-                .indent_guides(true)
-                .tab_size(TabSize {
-                    tab_size: 4,
-                    hard_tabs: false,
-                })
-                .soft_wrap(soft_wrap)
-                .default_value(text)
-        });
-        editor.update(cx, |state, cx| state.set_read_only(read_only, cx));
-        self.install_gutter_lanes(&editor, cx);
-
-        let lsp_language = lsp::language_id_for(&path);
-        if let Some(language_id) = lsp_language {
-            let apply_edit: crate::lsp::ApplyEditFn = {
-                let workspace = cx.weak_entity();
-                Rc::new(move |edit, window, cx| {
-                    workspace
-                        .update(cx, |this, cx| this.apply_workspace_edit(edit, window, cx))
-                        .ok();
-                })
-            };
-            DocumentProviders::new(self.lsp.downgrade(), path.clone(), apply_edit)
-                .install(&editor, cx);
-            let workspace = cx.weak_entity();
-            editor.update(cx, |state, _| {
-                state.lsp_mut().show_document = Some(Rc::new(move |params, window, cx| {
-                    let Some(path) = lsp::uri_to_path(&params.uri) else {
-                        return false;
-                    };
-                    let target = params.selection.map(Target::LspRange);
-                    // Called while the editor is being updated: navigate after.
-                    let workspace = workspace.clone();
-                    window.defer(cx, move |window, cx| {
-                        workspace
-                            .update(cx, |this, cx| this.open_file(path, target, true, window, cx))
-                            .ok();
-                    });
-                    true
-                }));
-            });
-            self.lsp.update(cx, |store, cx| {
-                store.open_document(path.clone(), language_id, editor.read(cx).text().clone(), cx)
-            });
-        }
-
-        let change = cx.subscribe(&editor, {
-            let path = path.clone();
-            move |this, _, event: &InputEvent, cx| {
-                if let InputEvent::Change = event {
-                    if let Some(buffer) = this.buffers.iter_mut().find(|b| b.path == path) {
-                        let text = buffer.editor.read(cx).text();
-                        // Cheap length check first; full compare only when equal.
-                        let dirty = text.len() != buffer.saved_text.len() || *text != buffer.saved_text;
-                        if dirty != buffer.dirty {
-                            buffer.dirty = dirty;
-                            cx.notify();
-                        }
-                    }
-                    let text = this
-                        .buffers
-                        .iter()
-                        .find(|b| b.path == path)
-                        .map(|b| b.editor.read(cx).text().clone());
-                    if let Some(text) = text {
-                        this.lsp
-                            .update(cx, |lsp, cx| lsp.document_changed(&path, text, cx));
-                    }
-                    this.schedule_test_reparse(&path, cx);
-                    this.track_breakpoints(&path, cx);
-                    this.track_bookmarks(&path, cx);
-                }
-            }
-        });
-        // Variable values on hover while paused, in front of Quick Help.
-        crate::debugger::hover::install(&editor, self.debugger.downgrade(), cx);
-        let observe = cx.observe(&editor, |_, _, cx| cx.notify());
-
-        let mut subscriptions = vec![change, observe];
-        let plist = plist_format.map(|format| {
-            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            let schema = crate::plist::schema::Schema::for_file_name(&name);
-            let plist_editor = cx.new(|cx| PlistEditor::new(editor.clone(), schema, cx));
-            let path = path.clone();
-            subscriptions.push(cx.subscribe_in(&plist_editor, window, move |this, _, event: &PlistEditorEvent, window, cx| {
-                if let PlistEditorEvent::OpenAsSource = event
-                    && let Some(ix) = this.buffers.iter().position(|b| b.path == path)
-                {
-                    this.open_as(ix, true, window, cx);
-                }
-            }));
-            subscriptions.push(cx.observe(&plist_editor, |_, _, cx| cx.notify()));
-            PlistBuffer { format, editor: plist_editor, as_source: false }
-        });
-        let saved_text = editor.read(cx).text().clone();
-        self.buffers.push(Buffer {
-            path: path.clone(),
-            saved_text,
-            editor,
-            dirty: false,
-            read_only,
-            language: language.into(),
-            mtime,
-            breakpoint_anchors: Default::default(),
-            bookmark_anchors: Default::default(),
-            exec_mark: None,
-            plist,
-            _subscriptions: subscriptions,
-        });
-        let ix = self.buffers.len() - 1;
-        self.refresh_diagnostics_for(&path, cx);
-        self.anchor_breakpoints(&path, false, cx);
-        self.anchor_bookmarks(&path, false, cx);
-        self.activate(ix, window, cx);
-        if let Some(target) = target {
-            self.reveal_target(ix, target.clone(), window, cx);
-            // Scrolling needs the editor's first layout; reveal again after
-            // it unless the user has already moved the cursor.
-            let revealed_at = self.buffers[ix].editor.read(cx).selected_range();
-            let workspace = cx.weak_entity();
-            cx.spawn_in(window, async move |_, cx| {
-                cx.background_executor()
-                    .timer(Duration::from_millis(32))
-                    .await;
-                workspace
-                    .update_in(cx, |this, window, cx| {
-                        if let Some(ix) = this.buffers.iter().position(|b| b.path == path)
-                            && this.buffers[ix].editor.read(cx).selected_range() == revealed_at
-                        {
-                            this.reveal_target(ix, target, window, cx);
-                        }
-                    })
-                    .ok();
-            })
-            .detach();
-        }
-    }
-
-    fn reveal_target(&mut self, ix: usize, target: Target, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(buffer) = self.buffers.get(ix) else { return };
-        buffer.editor.update(cx, |state, cx| {
-            let text = state.text().clone();
-            let range = match target {
-                Target::Offset(offset) => offset..offset,
-                Target::Line { line, column } => {
-                    let offset = lsp::lsp_to_offset(&text, lsp_types::Position::new(line, column));
-                    offset..offset
-                }
-                Target::LspRange(range) => lsp::lsp_range_to_offsets(&text, range),
-            };
-            state.set_selected_range(range.start..range.start, cx);
-            if range.end > range.start {
-                state.set_selected_range(range, cx);
-            }
-            state.focus(window, cx);
-        });
-        cx.notify();
-    }
-
-    pub fn activate(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if ix >= self.buffers.len() {
-            return;
-        }
-        self.active = Some(ix);
-        self.show_project_settings = false;
-        self.inspected = None;
-        match self.buffers[ix].shown_plist().cloned() {
-            Some(plist) => plist.read(cx).focus_handle(cx).focus(window, cx),
-            None => {
-                let editor = self.buffers[ix].editor.clone();
-                editor.update(cx, |state, cx| state.focus(window, cx));
-            }
-        }
-        window.set_window_title(&self.title());
-        window.set_window_edited(self.buffers.iter().any(|b| b.dirty));
-        self.reveal_active_in_tree(cx);
-        cx.notify();
-    }
-
-    fn reveal_active_in_tree(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.active_buffer().map(|b| b.path.to_string_lossy().to_string()) else {
-            return;
-        };
-        let id: SharedString = path.into();
-        self.tree.update(cx, |tree, cx| {
-            if let Some(ix) = tree.index_of(&id) {
-                tree.set_selected_index(Some(ix), cx);
-                tree.scroll_to_item(ix, ScrollStrategy::Nearest);
-            }
-        });
-    }
-
-    pub fn close_buffer(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if ix >= self.buffers.len() {
-            return;
-        }
-        if self.buffers[ix].dirty {
-            let name = self.buffers[ix].title();
-            let answer = window.prompt(
-                PromptLevel::Warning,
-                &format!("Do you want to save the changes you made to “{name}”?"),
-                Some("Your changes will be lost if you don’t save them."),
-                &[
-                    PromptButton::ok("Save"),
-                    PromptButton::new("Don’t Save"),
-                    PromptButton::cancel("Cancel"),
-                ],
-                cx,
-            );
-            cx.spawn_in(window, async move |this, cx| {
-                let choice = answer.await.unwrap_or(2);
-                this.update_in(cx, |this, window, cx| match choice {
-                    0 => {
-                        this.save_buffer(ix, window, cx);
-                        this.force_close(ix, window, cx);
-                    }
-                    1 => this.force_close(ix, window, cx),
-                    _ => {}
-                })
-                .ok();
-            })
-            .detach();
-            return;
-        }
-        self.force_close(ix, window, cx);
-    }
-
-    fn force_close(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if ix >= self.buffers.len() {
-            return;
-        }
-        let buffer = self.buffers.remove(ix);
-        self.lsp.update(cx, |lsp, _| lsp.close_document(&buffer.path));
-        self.active = match self.active {
-            _ if self.buffers.is_empty() => None,
-            Some(active) if active > ix => Some(active - 1),
-            Some(active) if active == ix => Some(ix.min(self.buffers.len() - 1)),
-            other => other,
-        };
-        if let Some(active) = self.active {
-            self.activate(active, window, cx);
-        } else if let Some(settings) = self.project_settings.clone() {
-            self.show_project_settings = true;
-            settings.read(cx).focus_handle(cx).focus(window, cx);
-            window.set_window_title(&self.title());
-        } else {
-            window.set_window_title(&self.title());
-            self.focus_handle.focus(window, cx);
-        }
-        window.set_window_edited(self.buffers.iter().any(|b| b.dirty));
-        cx.notify();
-    }
-
-    pub fn save_buffer(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(buffer) = self.buffers.get_mut(ix).filter(|b| !b.read_only) else { return };
-        let mut text = buffer.editor.read(cx).text().to_string();
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
-        }
-        let format = buffer.plist.as_ref().map_or(crate::plist::Format::Xml, |p| p.format);
-        let bytes = match crate::plist::encode(&text, format) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                let message = format!("Couldn’t save {}: {err:#}", buffer.path.display());
-                self.notify_error(message, window, cx);
-                return;
-            }
-        };
-        match std::fs::write(&buffer.path, &bytes) {
-            Ok(()) => {
-                buffer.dirty = false;
-                buffer.saved_text = buffer.editor.read(cx).text().clone();
-                buffer.mtime = std::fs::metadata(&buffer.path).and_then(|m| m.modified()).ok();
-                let path = buffer.path.clone();
-                self.lsp.update(cx, |lsp, cx| lsp.did_save(&path, cx));
-                if lsp::language_id_for(&path).is_some() {
-                    self.schedule_index_refresh(cx);
-                }
-            }
-            Err(err) => {
-                let message = format!("Couldn’t save {}: {err}", buffer.path.display());
-                self.notify_error(message, window, cx);
-            }
-        }
-        window.set_window_edited(self.buffers.iter().any(|b| b.dirty));
-        cx.notify();
-    }
-
-    /// Open As ▸ Source Code (`as_source`) or ▸ Property List for a tab.
-    pub fn open_as(&mut self, ix: usize, as_source: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(plist) = self.buffers.get_mut(ix).and_then(|b| b.plist.as_mut()) else { return };
-        plist.as_source = as_source;
-        self.activate(ix, window, cx);
-    }
-
-    /// Opens a file and shows it as source code or as a property list.
-    pub fn open_file_as(&mut self, path: PathBuf, as_source: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_file(path.clone(), None, true, window, cx);
-        let path = path.canonicalize().unwrap_or(path);
-        if let Some(ix) = self.buffers.iter().position(|b| b.path == path) {
-            self.open_as(ix, as_source, window, cx);
-        }
-    }
-
-    /// Refreshes the index a moment after the last save of a source file.
-    fn schedule_index_refresh(&mut self, cx: &mut Context<Self>) {
-        self.index_refresh = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(1500)).await;
-            this.update(cx, |this, cx| {
-                this.build.update(cx, |build, cx| build.refresh_index(cx));
-            })
-            .ok();
-        }));
-    }
-
-    pub fn save_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        for ix in 0..self.buffers.len() {
-            if self.buffers[ix].dirty {
-                self.save_buffer(ix, window, cx);
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------------
     // Project settings
 
     /// The `.xcodeproj` bundles the project editor shows, found during the
     /// background scan.
     pub(super) fn xcode_projects(&self) -> &[PathBuf] {
         &self.xcode_projects
-    }
-
-    /// Shows the project editor (opening it if needed), like clicking the
-    /// project in Xcode's navigator.
-    pub fn open_project_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let settings = match self.project_settings.clone() {
-            Some(settings) => {
-                settings.update(cx, |s, cx| s.reload_if_changed(window, cx));
-                settings
-            }
-            None => {
-                let projects = self.xcode_projects.clone();
-                if projects.is_empty() {
-                    return;
-                }
-                let settings = cx.new(|cx| ProjectSettings::new(projects, window, cx));
-                self._subscriptions
-                    .push(cx.subscribe_in(&settings, window, Self::on_project_settings_event));
-                self.project_settings = Some(settings.clone());
-                settings
-            }
-        };
-        self.show_project_settings = true;
-        settings.read(cx).focus_handle(cx).focus(window, cx);
-        window.set_window_title(&self.title());
-        cx.notify();
-    }
-
-    pub fn close_project_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.project_settings = None;
-        self.show_project_settings = false;
-        match self.active {
-            Some(ix) => self.activate(ix, window, cx),
-            None => {
-                window.set_window_title(&self.title());
-                self.focus_handle.focus(window, cx);
-            }
-        }
-        cx.notify();
-    }
-
-    fn on_project_settings_event(
-        &mut self,
-        _: &Entity<ProjectSettings>,
-        event: &ProjectSettingsEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            ProjectSettingsEvent::OpenFile(path) => self.open_file(path.clone(), None, true, window, cx),
-            // Schemes, configurations and supported platforms may have changed.
-            ProjectSettingsEvent::Changed => {
-                self.build.update(cx, |build, cx| build.reload(cx));
-                self.refresh_project_index(cx);
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Navigation history
-
-    fn current_location(&self, cx: &App) -> Option<HistoryEntry> {
-        let buffer = self.active_buffer()?;
-        Some(HistoryEntry {
-            path: buffer.path.clone(),
-            offset: buffer.editor.read(cx).cursor(),
-        })
-    }
-
-    fn push_history(&mut self, cx: &App) {
-        if let Some(entry) = self.current_location(cx)
-            && self.back.last() != Some(&entry)
-        {
-            self.back.push(entry);
-            if self.back.len() > 100 {
-                self.back.remove(0);
-            }
-            self.forward.clear();
-        }
-    }
-
-    fn go_back(&mut self, _: &GoBack, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(entry) = self.back.pop() {
-            if let Some(current) = self.current_location(cx) {
-                self.forward.push(current);
-            }
-            self.open_file(entry.path, Some(Target::Offset(entry.offset)), false, window, cx);
-        }
-    }
-
-    fn go_forward(&mut self, _: &GoForward, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(entry) = self.forward.pop() {
-            if let Some(current) = self.current_location(cx) {
-                self.back.push(current);
-            }
-            self.open_file(entry.path, Some(Target::Offset(entry.offset)), false, window, cx);
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // Diagnostics and issues
-
-    fn on_lsp_event(
-        &mut self,
-        _: &Entity<LspStore>,
-        event: &LspStoreEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            LspStoreEvent::DiagnosticsChanged(path) => {
-                self.refresh_diagnostics_for(path, cx);
-                cx.notify();
-            }
-            LspStoreEvent::StatusChanged => cx.notify(),
-            LspStoreEvent::ApplyEdit(edit) => {
-                self.apply_workspace_edit(edit.clone(), window, cx);
-            }
-        }
-    }
-
-    fn on_build_event(
-        &mut self,
-        build: &Entity<BuildController>,
-        event: &BuildEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            BuildEvent::IssuesChanged => {
-                let paths: Vec<PathBuf> = self.buffers.iter().map(|b| b.path.clone()).collect();
-                for path in paths {
-                    self.refresh_diagnostics_for(&path, cx);
-                }
-            }
-            BuildEvent::CompileDatabaseUpdated(path) => {
-                let cache_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-                let args = Self::lsp_args(&self.project, &cache_dir);
-                let db = path.clone();
-                self.lsp.update(cx, |lsp, cx| {
-                    lsp.set_extra_args(args, cx);
-                    lsp.files_changed(&[db]);
-                });
-            }
-            BuildEvent::TestsChanged => {}
-            BuildEvent::StoredSchemeOptionsChanged => self.save_session(cx),
-            BuildEvent::ConfigurationChanged => {
-                // A package's test targets arrive with its schemes.
-                self.assign_test_targets(cx);
-                if let Some(id) = self.restore_destination.take() {
-                    build.update(cx, |build, cx| {
-                        if let Some(dest) = build.destinations.iter().find(|d| d.id == id).cloned() {
-                            build.set_destination(dest, cx);
-                        } else {
-                            // Keep waiting until destinations load.
-                            if build.destinations.is_empty() {
-                                self.restore_destination = Some(id);
-                            }
-                        }
-                    });
-                }
-            }
-            BuildEvent::PhaseChanged => {
-                let phase = build.read(cx).phase.clone();
-                match phase {
-                    crate::build::Phase::Running { .. } => {
-                        self.show_debug_area = true;
-                        self.debug_tab = DebugTab::Console;
-                    }
-                    crate::build::Phase::Finished { success: false, .. } => {
-                        if build.read(cx).error_count() > 0 {
-                            self.navigator = NavigatorTab::Issues;
-                            self.show_navigator = true;
-                        } else {
-                            self.show_debug_area = true;
-                            self.debug_tab = DebugTab::BuildLog;
-                        }
-                    }
-                    crate::build::Phase::Finished { action: BuildAction::Test, .. } => {
-                        self.navigator = NavigatorTab::Tests;
-                    }
-                    _ => {}
-                }
-                // Builds resolve packages too.
-                if matches!(phase, crate::build::Phase::Finished { .. }) {
-                    self.refresh_packages(cx);
-                }
-                let _ = window;
-            }
-            BuildEvent::AttachDebugger { pid } => {
-                let pid = *pid;
-                self.debugger
-                    .update(cx, |d, cx| d.start(DebugTarget::Attach { pid }, cx));
-            }
-            BuildEvent::AttachDeviceDebugger(attach) => {
-                let target = DebugTarget::AttachDevice(attach.clone());
-                self.debugger.update(cx, |d, cx| d.start(target, cx));
-            }
-            BuildEvent::LaunchDebugger { program, cwd, args, env } => {
-                let target = DebugTarget::Launch {
-                    program: program.clone(),
-                    cwd: cwd.clone(),
-                    args: args.clone(),
-                    env: env.clone(),
-                };
-                self.show_debug_area = true;
-                self.debugger.update(cx, |d, cx| d.start(target, cx));
-            }
-            BuildEvent::LogUpdated | BuildEvent::ConsoleUpdated => {
-                let count = self.debug_line_count(cx);
-                if count > 0 {
-                    self.debug_scroll
-                        .scroll_to_item(count - 1, ScrollStrategy::Bottom);
-                }
-            }
-        }
-        cx.notify();
-    }
-
-    fn on_debugger_event(
-        &mut self,
-        _: &Entity<Debugger>,
-        event: &DebuggerEvent,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match event {
-            DebuggerEvent::Output(line) => {
-                let line = line.clone();
-                self.build.update(cx, |b, cx| b.append_console(line, cx));
-            }
-            DebuggerEvent::BreakpointsChanged => {
-                let paths: Vec<PathBuf> = self.buffers.iter().map(|b| b.path.clone()).collect();
-                for path in paths {
-                    self.anchor_breakpoints(&path, false, cx);
-                }
-            }
-            DebuggerEvent::Stopped { path, line } => {
-                // The console's `(lldb)` prompt appears while paused.
-                self.console_input(window, cx);
-                self.show_debug_area = true;
-                self.debug_tab = DebugTab::Console;
-                self.navigator = NavigatorTab::Debug;
-                self.show_navigator = true;
-                let target = Target::Line { line: line.saturating_sub(1), column: 0 };
-                self.open_file(path.clone(), Some(target), false, window, cx);
-                self.set_exec_mark(Some((path.clone(), *line)), cx);
-                window.activate_window();
-            }
-            DebuggerEvent::StateChanged => {
-                if !matches!(self.debugger.read(cx).state, DebugState::Stopped { .. }) {
-                    self.set_exec_mark(None, cx);
-                }
-            }
-            DebuggerEvent::Ended { exit_code } => {
-                let code = *exit_code;
-                self.set_exec_mark(None, cx);
-                self.build.update(cx, |b, cx| b.finish_debug_run(code, cx));
-            }
-        }
-        cx.notify();
-    }
-
-    /// Byte range covering a whole 1-based line, newline included.
-    fn line_range(text: &zcode_editor::Rope, line: u32) -> Option<std::ops::Range<usize>> {
-        let row = line.checked_sub(1)? as usize;
-        if row >= text.lines_len() {
-            return None;
-        }
-        let start = text.line_start_offset(row);
-        let end = (text.line_end_offset(row) + 1).min(text.len());
-        (end > start).then_some(start..end)
-    }
-
-    /// Highlights the line execution stopped on (green, like Xcode).
-    fn set_exec_mark(&mut self, location: Option<(PathBuf, u32)>, cx: &mut Context<Self>) {
-        for buffer in &mut self.buffers {
-            let decorations: Vec<RangeDecoration> = match &location {
-                Some((path, line)) if *path == buffer.path => {
-                    let text = buffer.editor.read(cx).text().clone();
-                    Self::line_range(&text, *line)
-                        .map(|range| {
-                            vec![RangeDecoration::new(range)
-                                .with_style(RangeDecorationStyle::Fill)
-                                .with_color(gpui_kit::hsla(0.33, 0.7, 0.45, 0.28))]
-                        })
-                        .unwrap_or_default()
-                }
-                _ => vec![],
-            };
-            match &buffer.exec_mark {
-                Some(mark) => mark.set(decorations, cx),
-                None if !decorations.is_empty() => {
-                    let mark = buffer
-                        .editor
-                        .update(cx, |state, cx| state.create_range_decorations_collection(decorations, cx));
-                    buffer.exec_mark = Some(mark);
-                }
-                None => {}
-            }
-        }
-    }
-
-    pub(super) fn toggle_breakpoint(&mut self, _: &crate::actions::ToggleBreakpoint, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(buffer) = self.active_buffer() else { return };
-        let path = buffer.path.clone();
-        let line = buffer.editor.read(cx).cursor_position().line + 1;
-        self.debugger
-            .update(cx, |d, cx| d.toggle_breakpoint(path, line, cx));
-    }
-
-    /// Test failures name only the file; map such paths into the project.
-    fn resolve_issue_path(&self, path: &Path) -> PathBuf {
-        if path.is_absolute() {
-            return path.to_path_buf();
-        }
-        self.files
-            .iter()
-            .find(|f| f.file_name() == path.file_name())
-            .map(|f| self.project.root.join(f))
-            .unwrap_or_else(|| path.to_path_buf())
-    }
-
-    /// Combined, de-duplicated issues: live (LSP) diagnostics plus the last
-    /// build's issues.
-    pub fn all_issues(&self, cx: &App) -> Vec<Issue> {
-        let mut issues: Vec<Issue> = vec![];
-        for (path, diagnostics) in self.lsp.read(cx).diagnostics() {
-            for d in diagnostics {
-                let severity = match d.severity {
-                    Some(lsp_types::DiagnosticSeverity::ERROR) => Severity::Error,
-                    Some(lsp_types::DiagnosticSeverity::WARNING) => Severity::Warning,
-                    _ => continue,
-                };
-                issues.push(Issue {
-                    severity,
-                    message: d.message.lines().next().unwrap_or("").to_string(),
-                    path: Some(path.clone()),
-                    line: Some(d.range.start.line + 1),
-                    column: Some(d.range.start.character + 1),
-                    source: IssueSource::Live,
-                });
-            }
-        }
-        issues.extend(self.packages.issues.iter().cloned());
-        for issue in &self.build.read(cx).issues {
-            if issue.severity == Severity::Note {
-                continue;
-            }
-            let mut issue = issue.clone();
-            issue.path = issue.path.as_deref().map(|p| self.resolve_issue_path(p));
-            let issue = &issue;
-            let duplicate = issues.iter().any(|i| {
-                i.path == issue.path && i.line == issue.line && i.message == issue.message
-            });
-            if !duplicate {
-                issues.push(issue.clone());
-            }
-        }
-        issues.sort_by(|a, b| {
-            a.severity
-                .cmp(&b.severity)
-                .then((a.source == IssueSource::Package).cmp(&(b.source == IssueSource::Package)).reverse())
-                .then(a.path.cmp(&b.path))
-                .then(a.line.cmp(&b.line))
-        });
-        issues
-    }
-
-    fn refresh_diagnostics_for(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let Some(buffer) = self.buffers.iter().find(|b| b.path == path) else { return };
-        let live = self.lsp.read(cx).diagnostics_for(path).to_vec();
-        let build_issues: Vec<Issue> = self
-            .build
-            .read(cx)
-            .issues
-            .iter()
-            .filter(|i| i.path.as_deref().map(|p| self.resolve_issue_path(p)).as_deref() == Some(path))
-            .cloned()
-            .collect();
-        buffer.editor.update(cx, |state, cx| {
-            let text = state.text().clone();
-            let to_pos = |p: lsp_types::Position| -> Position {
-                text.offset_to_position(lsp::lsp_to_offset(&text, p))
-            };
-            let mut entries: Vec<EditorDiagnostic> = live
-                .iter()
-                .map(|d| {
-                    let severity = match d.severity {
-                        Some(lsp_types::DiagnosticSeverity::ERROR) => DiagnosticSeverity::Error,
-                        Some(lsp_types::DiagnosticSeverity::WARNING) => DiagnosticSeverity::Warning,
-                        Some(lsp_types::DiagnosticSeverity::INFORMATION) => DiagnosticSeverity::Info,
-                        _ => DiagnosticSeverity::Hint,
-                    };
-                    let mut end = d.range.end;
-                    if end == d.range.start {
-                        end.character += 1;
-                    }
-                    EditorDiagnostic::new(to_pos(d.range.start)..to_pos(end), d.message.clone())
-                        .with_severity(severity)
-                        .with_source("sourcekit-lsp")
-                })
-                .collect();
-            for issue in build_issues {
-                let line = issue.line.unwrap_or(1).saturating_sub(1);
-                let col = issue.column.unwrap_or(1).saturating_sub(1);
-                let start = to_pos(lsp_types::Position::new(line, col));
-                let end = Position::new(start.line, start.character + 1);
-                let severity = match issue.severity {
-                    Severity::Error => DiagnosticSeverity::Error,
-                    Severity::Warning => DiagnosticSeverity::Warning,
-                    Severity::Note => DiagnosticSeverity::Info,
-                };
-                let duplicate = live.iter().any(|d| d.range.start.line == line && d.message == issue.message);
-                if !duplicate {
-                    entries.push(
-                        EditorDiagnostic::new(start..end, issue.message.clone())
-                            .with_severity(severity)
-                            .with_source("build"),
-                    );
-                }
-            }
-            if let Some(set) = state.diagnostics_mut() {
-                set.clear();
-                set.extend(entries);
-            }
-            cx.notify();
-        });
-    }
-
-    pub fn open_issue(&mut self, issue: &Issue, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = issue.path.clone() else { return };
-        // Project-level issues (signing) are fixed in the project settings,
-        // signing errors in the target's Signing & Capabilities tab.
-        if path.extension().is_some_and(|e| e == "xcodeproj" || e == "xcworkspace") {
-            self.open_project_settings(window, cx);
-            if crate::build::log::is_signing_issue(issue)
-                && let Some(settings) = self.project_settings.clone()
-            {
-                let target = crate::build::log::signing_target(&issue.message).unwrap_or_default();
-                settings.update(cx, |settings, cx| {
-                    if settings.show(&target, "Signing", window, cx).is_err() {
-                        settings.show_signing(window, cx);
-                    }
-                });
-            }
-            return;
-        }
-        let target = Target::Line {
-            line: issue.line.unwrap_or(1).saturating_sub(1),
-            column: issue.column.unwrap_or(1).saturating_sub(1),
-        };
-        self.open_file(path, Some(target), true, window, cx);
-    }
-
-    fn step_issue(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let issues: Vec<Issue> = self
-            .all_issues(cx)
-            .into_iter()
-            .filter(|i| i.path.is_some())
-            .collect();
-        if issues.is_empty() {
-            return;
-        }
-        let len = issues.len() as isize;
-        let next = match self.issue_cursor {
-            Some(ix) => ((ix as isize + delta).rem_euclid(len)) as usize,
-            None if delta >= 0 => 0,
-            None => (len - 1) as usize,
-        };
-        self.issue_cursor = Some(next);
-        let issue = issues[next].clone();
-        self.open_issue(&issue, window, cx);
-    }
-
-    // ---------------------------------------------------------------------
-    // Workspace edits (rename, code actions)
-
-    pub fn apply_workspace_edit(
-        &mut self,
-        edit: lsp_types::WorkspaceEdit,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let mut per_file: Vec<(PathBuf, Vec<lsp_types::TextEdit>)> = vec![];
-        if let Some(changes) = edit.changes {
-            for (uri, edits) in changes {
-                if let Some(path) = lsp::uri_to_path(&uri) {
-                    per_file.push((path, edits));
-                }
-            }
-        }
-        if let Some(lsp_types::DocumentChanges::Edits(doc_edits)) = edit.document_changes {
-            for doc in doc_edits {
-                if let Some(path) = lsp::uri_to_path(&doc.text_document.uri) {
-                    let edits = doc
-                        .edits
-                        .into_iter()
-                        .map(|e| match e {
-                            lsp_types::OneOf::Left(edit) => edit,
-                            lsp_types::OneOf::Right(annotated) => annotated.text_edit,
-                        })
-                        .collect();
-                    per_file.push((path, edits));
-                }
-            }
-        }
-        let mut touched = 0;
-        let previously_active = self.active_buffer().map(|b| b.path.clone());
-        for (path, mut edits) in per_file {
-            let path = path.canonicalize().unwrap_or(path);
-            // Package checkouts are read-only.
-            if crate::packages::location::is_package_checkout(&path) {
-                continue;
-            }
-            // Apply back to front so earlier offsets stay valid.
-            edits.sort_by_key(|e| std::cmp::Reverse(e.range.start));
-            // Edits land in (possibly newly opened) tabs rather than straight
-            // on disk: the language server sees the new text immediately and
-            // the user can review the change before saving.
-            if !self.buffers.iter().any(|b| b.path == path) && path.is_file() {
-                self.open_file(path.clone(), None, false, window, cx);
-            }
-            if let Some(buffer) = self.buffers.iter().find(|b| b.path == path) {
-                buffer.editor.update(cx, |state, cx| {
-                    for edit in &edits {
-                        let text = state.text().clone();
-                        let range = lsp::lsp_range_to_offsets(&text, edit.range);
-                        state.set_selected_range(range, cx);
-                        state.replace(edit.new_text.clone(), window, cx);
-                    }
-                });
-            } else if let Ok(contents) = std::fs::read_to_string(&path) {
-                let mut text = zcode_editor::Rope::from(contents.as_str());
-                for edit in &edits {
-                    let range = lsp::lsp_range_to_offsets(&text, edit.range);
-                    let mut s = text.to_string();
-                    s.replace_range(range, &edit.new_text);
-                    text = zcode_editor::Rope::from(s.as_str());
-                }
-                std::fs::write(&path, text.to_string()).ok();
-                self.lsp.read(cx).files_changed(std::slice::from_ref(&path));
-            }
-            touched += 1;
-        }
-        if let Some(ix) = previously_active.and_then(|p| self.buffers.iter().position(|b| b.path == p)) {
-            self.activate(ix, window, cx);
-        }
-        if touched > 1 {
-            window.push_notification(
-                Notification::info(format!("Updated {touched} files")),
-                cx,
-            );
-        }
-        cx.notify();
     }
 
     // ---------------------------------------------------------------------
@@ -1774,101 +664,6 @@ impl Workspace {
         window.push_notification(Notification::error(message), cx);
     }
 
-    // ---------------------------------------------------------------------
-    // Find in workspace
-
-    pub fn run_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let query = self.find.input.read(cx).value().to_string();
-        let _ = window;
-        self.find.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-        if query.is_empty() {
-            self.find.results = Arc::new(vec![]);
-            self.find.searching = false;
-            cx.notify();
-            return;
-        }
-        let regex = match crate::search::build_regex(&query, &self.find.options) {
-            Ok(regex) => regex,
-            Err(err) => {
-                self.find.error = Some(err.to_string());
-                cx.notify();
-                return;
-            }
-        };
-        self.find.error = None;
-        self.find.title = None;
-        self.find.searching = true;
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.find.cancel = cancel.clone();
-        let root = self.project.root.clone();
-        let files = self.files.clone();
-        self.find._task = Some(cx.spawn(async move |this, cx| {
-            let results = cx
-                .background_spawn(async move { crate::search::search(&root, &files, &regex, &cancel) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.find.results = Arc::new(results);
-                this.find.searching = false;
-                cx.notify();
-            })
-            .ok();
-        }));
-        cx.notify();
-    }
-
-    // ---------------------------------------------------------------------
-    // Source control (read-only status)
-
-    pub fn refresh_scm(&mut self, cx: &mut Context<Self>) {
-        let root = self.project.root.clone();
-        let task = cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    let mut status = std::process::Command::new("/usr/bin/git");
-                    status
-                        .args(["status", "--porcelain=v1", "-uall"])
-                        .current_dir(&root);
-                    let mut branch = std::process::Command::new("/usr/bin/git");
-                    branch
-                        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                        .current_dir(&root);
-                    let toplevel = std::process::Command::new("/usr/bin/git")
-                        .args(["rev-parse", "--show-toplevel"])
-                        .current_dir(&root)
-                        .output()
-                        .ok()
-                        .filter(|o| o.status.success())
-                        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
-                    let status = crate::build::process::run_quiet(status).await.ok();
-                    let branch = crate::build::process::run_quiet(branch).await.ok();
-                    (status, branch, toplevel)
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                let (status, branch, toplevel) = result;
-                if let (Some((true, out)), Some(top)) = (status, toplevel) {
-                    this.scm_status = out
-                        .lines()
-                        .filter(|l| l.len() > 3)
-                        .map(|l| {
-                            // "XY path" or "R  old -> new"; show the most
-                            // significant status letter and the current path.
-                            let code = l[..2].trim();
-                            let status = if code == "??" { "??" } else { &code[..1] };
-                            let path = l[3..].rsplit(" -> ").next().unwrap_or(&l[3..]);
-                            (status.to_string(), top.join(path.trim_matches('"')))
-                        })
-                        .collect();
-                }
-                this.scm_branch = branch
-                    .filter(|(ok, _)| *ok)
-                    .map(|(_, b)| b.trim().to_string());
-                cx.notify();
-            })
-            .ok();
-        });
-        self._tasks.push(task);
-    }
 }
 
 impl Workspace {
@@ -1876,10 +671,10 @@ impl Workspace {
     /// A debug-channel command for the property list editor on screen: the
     /// active tab's, or the project settings' Info tab.
     pub fn plist_command(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
-        let editor = if self.show_project_settings {
+        let editor = if self.showing_project_settings() {
             self.project_settings.as_ref().and_then(|s| s.read(cx).info_editor()).ok_or("the Info tab isn’t shown")?
         } else {
-            self.active_buffer().and_then(|b| b.shown_plist().cloned()).ok_or("no property list editor shown")?
+            self.active_item().and_then(|item| item.shown_plist().cloned()).ok_or("no property list editor shown")?
         };
         editor.update(cx, |editor, cx| editor.command(command, window, cx))
     }
@@ -1887,8 +682,8 @@ impl Workspace {
     pub fn debug_state(&mut self, cx: &App) -> serde_json::Value {
         let testing = self.tests_summary(cx);
         let build = self.build.read(cx);
-        let active = self.active_buffer().map(|b| {
-            let state = b.editor.read(cx);
+        let active = self.active_item().zip(self.active_buffer()).map(|(item, b)| {
+            let state = item.editor.read(cx);
             let pos = state.cursor_position();
             serde_json::json!({
                 "path": b.path,
@@ -1905,9 +700,9 @@ impl Workspace {
                 "diagnostics": state.diagnostics().map(|d| d.len()).unwrap_or(0),
                 "completion_menu_open": state.completion_menu_state().open,
                 "completion_items": state.completion_menu_state().items.iter().take(5).map(|i| i.label.clone()).collect::<Vec<_>>(),
-                "plist": b.plist.as_ref().map(|p| {
+                "plist": item.plist.as_ref().map(|p| {
                     let mut summary = p.editor.read(cx).summary(cx);
-                    summary["format"] = format!("{:?}", p.format).into();
+                    summary["format"] = format!("{:?}", b.plist_format.unwrap_or(crate::plist::Format::Xml)).into();
                     summary["as_source"] = p.as_source.into();
                     summary
                 }),
@@ -1935,7 +730,7 @@ impl Workspace {
             "add_files": self.add_files_dialog.as_ref().and_then(|d| d.upgrade()).map(|d| d.read(cx).summary()),
             "project_settings": self.project_settings.as_ref().map(|s| {
                 let mut summary = s.read(cx).summary(cx);
-                summary["shown"] = self.show_project_settings.into();
+                summary["shown"] = self.showing_project_settings().into();
                 summary
             }),
             "navigator": format!("{:?}", self.navigator),
@@ -1963,7 +758,7 @@ impl Workspace {
             "scm_changes": self.scm_status.len(),
             "font_size": self.font_size,
             "memory": memory,
-            "history": { "back": self.back.len(), "forward": self.forward.len() },
+            "history": self.pane(self.active_pane).map(|p| serde_json::json!({ "back": p.back.len(), "forward": p.forward.len() })),
             "debugger": {
                 "state": format!("{:?}", self.debugger.read(cx).state),
                 "frames": self.debugger.read(cx).frames.iter().take(4).map(|f| format!("{} {}:{}", f.name, f.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), f.line)).collect::<Vec<_>>(),
@@ -1975,6 +770,7 @@ impl Workspace {
         state["bookmarks"] = self.bookmarks_summary(cx);
         state["packages"] = self.packages_summary(cx);
         state["console"] = self.console_summary(cx);
+        state["panes"] = self.panes_summary(cx);
         state["last_log"] = serde_json::json!(build.reports.first().map(|r| r.log_path.clone()));
         state["scheme_options"] = serde_json::json!(build.scheme_options.as_ref().map(edit_scheme::options_summary));
         state["edit_scheme"] =

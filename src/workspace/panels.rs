@@ -1,11 +1,10 @@
-//! Toolbar, editor tabs + jump bar, debug area, status bar, and the
-//! workspace's top-level render.
+//! Toolbar, debug area, status bar, and the workspace's top-level render
+//! (the editor area is `pane_view.rs`).
 
 use std::ops::Range;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Disableable as _, Selectable as _};
-use zcode_editor::Editor;
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui_kit::component::spinner::Spinner;
@@ -16,7 +15,7 @@ use gpui_kit::assets::IconName;
 
 use super::edit_scheme::SchemeAction;
 use super::pickers::{self, destination_icon};
-use super::{NavigatorTab, Workspace};
+use super::{NavigatorTab, SplitAxis, Workspace};
 use crate::actions::*;
 use crate::build::log::{LineStyle, Severity};
 use crate::build::{BuildAction, Phase};
@@ -334,229 +333,6 @@ impl Workspace {
     }
 
     // ------------------------------------------------------------------
-    // Editor area
-
-    fn render_tabs(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let settings_tab = self.project_settings.is_some().then(|| {
-            let active = self.show_project_settings;
-            h_flex()
-                .id("tab-project-settings")
-                .group("tab")
-                .h_full()
-                .px_3()
-                .gap_1p5()
-                .min_w(px(110.))
-                .max_w(px(220.))
-                .text_sm()
-                .border_r_1()
-                .border_color(theme.border)
-                .when(active, |el| el.bg(theme.tab_active).text_color(theme.tab_active_foreground))
-                .when(!active, |el| el.text_color(theme.tab_foreground).hover(|el| el.bg(theme.secondary_hover)))
-                .child(Icon::new(IconName::FolderCode).small().text_color(theme.primary))
-                .child(div().flex_1().truncate().child(self.project.name.clone()))
-                .child(
-                    div()
-                        .id("close-tab-project-settings")
-                        .size(px(16.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(theme.radius)
-                        .hover(|el| el.bg(theme.muted))
-                        .invisible()
-                        .group_hover("tab", |s| s.visible())
-                        .child(Icon::new(IconName::X).xsmall())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            cx.stop_propagation();
-                            this.close_project_settings(window, cx);
-                        })),
-                )
-                .on_mouse_down(
-                    MouseButton::Middle,
-                    cx.listener(|this, _, window, cx| this.close_project_settings(window, cx)),
-                )
-                .on_click(cx.listener(|this, _, window, cx| this.open_project_settings(window, cx)))
-        });
-        h_flex()
-            .id("tabs")
-            .h(px(32.))
-            .w_full()
-            .overflow_x_scroll()
-            .bg(theme.tab_bar)
-            .border_b_1()
-            .border_color(theme.border)
-            .children(settings_tab)
-            .children(self.buffers.iter().enumerate().map(|(ix, buffer)| {
-                let active = self.active == Some(ix) && !self.show_project_settings;
-                let dirty = buffer.dirty;
-                h_flex()
-                    .id(SharedString::from(format!("tab-{}", buffer.path.display())))
-                    .group("tab")
-                    .h_full()
-                    .px_3()
-                    .gap_1p5()
-                    .min_w(px(110.))
-                    .max_w(px(220.))
-                    .text_sm()
-                    .border_r_1()
-                    .border_color(theme.border)
-                    .when(active, |el| el.bg(theme.tab_active).text_color(theme.tab_active_foreground))
-                    .when(!active, |el| el.text_color(theme.tab_foreground).hover(|el| el.bg(theme.secondary_hover)))
-                    .child(Icon::new(pickers::file_icon(&buffer.path)).small().text_color(theme.muted_foreground))
-                    .child(div().flex_1().truncate().child(buffer.title()))
-                    .when(buffer.read_only, |el| el.child(Icon::new(IconName::Lock).xsmall().text_color(theme.muted_foreground)))
-                    .child(
-                        div()
-                            .id(("close-tab", ix))
-                            .size(px(16.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded(theme.radius)
-                            .hover(|el| el.bg(theme.muted))
-                            .map(|el| {
-                                if dirty {
-                                    el.child(div().size(px(7.)).rounded_full().bg(theme.foreground.opacity(0.6)))
-                                } else {
-                                    el.invisible()
-                                        .group_hover("tab", |s| s.visible())
-                                        .child(Icon::new(IconName::X).xsmall())
-                                }
-                            })
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.close_buffer(ix, window, cx);
-                            })),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Middle,
-                        cx.listener(move |this, _, window, cx| this.close_buffer(ix, window, cx)),
-                    )
-                    .on_click(cx.listener(move |this, _, window, cx| this.activate(ix, window, cx)))
-            }))
-    }
-
-    fn render_jump_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let Some(buffer) = self.active_buffer() else {
-            return div().into_any_element();
-        };
-        let rel = buffer
-            .path
-            .strip_prefix(&self.project.root)
-            .unwrap_or(&buffer.path)
-            .to_path_buf();
-        let cursor_line = buffer.editor.read(cx).cursor_position().line;
-        let symbol = self
-            .outline
-            .iter().rfind(|e| e.selection_range.start.line <= cursor_line)
-            .map(|e| e.name.clone());
-        // A package's sources show under the package, as in Xcode.
-        let package = self.package_path(&buffer.path);
-        let mut crumbs = vec![];
-        match package {
-            Some((name, rel)) => {
-                crumbs.push(name);
-                crumbs.extend(rel.iter().map(|c| c.to_string_lossy().to_string()));
-            }
-            None => {
-                crumbs.push(self.project.name.clone());
-                crumbs.extend(rel.iter().map(|c| c.to_string_lossy().to_string()));
-            }
-        }
-        let count = crumbs.len();
-        h_flex()
-            .h(px(24.))
-            .px_2()
-            .gap_1()
-            .text_xs()
-            .text_color(theme.muted_foreground)
-            .border_b_1()
-            .border_color(theme.border)
-            .children(crumbs.into_iter().enumerate().flat_map(move |(ix, crumb)| {
-                let mut parts = vec![];
-                if ix > 0 {
-                    parts.push(Icon::new(IconName::ChevronRight).xsmall().into_any_element());
-                }
-                parts.push(
-                    div()
-                        .when(ix + 1 == count, |el| el.text_color(theme.foreground))
-                        .child(crumb)
-                        .into_any_element(),
-                );
-                parts
-            }))
-            .when_some(symbol, |el, symbol| {
-                el.child(Icon::new(IconName::ChevronRight).xsmall())
-                    .child(
-                        div()
-                            .id("jump-symbol")
-                            .text_color(cx.theme().foreground)
-                            .child(symbol)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.show_document_items(&ShowDocumentItems, window, cx)
-                            })),
-                    )
-            })
-            .into_any_element()
-    }
-
-    fn render_editor_area(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        if let Some(settings) = self.project_settings.clone().filter(|_| self.show_project_settings) {
-            return v_flex()
-                .size_full()
-                .child(self.render_tabs(cx))
-                .child(div().flex_1().min_h_0().child(settings))
-                .into_any_element();
-        }
-        let Some(buffer) = self.active_buffer() else {
-            return v_flex()
-                .size_full()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .bg(theme.background)
-                .text_color(theme.muted_foreground)
-                .child(div().text_lg().child("No Editor"))
-                .child(hint("Open Quickly", "⇧⌘O"))
-                .child(hint("Find in Workspace", "⇧⌘F"))
-                .child(hint("Quick Actions", "⇧⌘A"))
-                .child(hint("Build / Run", "⌘B / ⌘R"))
-                .into_any_element();
-        };
-        if let Some(plist) = buffer.shown_plist().cloned() {
-            return v_flex()
-                .size_full()
-                .child(self.render_tabs(cx))
-                .child(self.render_jump_bar(cx))
-                .child(div().flex_1().min_h_0().child(plist))
-                .into_any_element();
-        }
-        let editor = buffer.editor.clone();
-        v_flex()
-            .size_full()
-            .child(self.render_tabs(cx))
-            .child(self.render_jump_bar(cx))
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        Editor::new(&editor)
-                            .bordered(false)
-                            .p_0()
-                            .h_full()
-                            .font_family(theme.mono_font_family.clone())
-                            .text_size(px(self.font_size)),
-                    ),
-            )
-            .into_any_element()
-    }
-
-    // ------------------------------------------------------------------
     // Debug area
 
     fn render_debug_area(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -842,11 +618,12 @@ impl Workspace {
             LspStatus::Exited => (IconName::CircleX, theme.danger, "sourcekit-lsp exited".to_string()),
         };
         // A property list's outline has no text cursor to show.
-        let cursor = self.active_buffer().filter(|b| b.shown_plist().is_none()).map(|b| {
-            let state = b.editor.read(cx);
+        let language = self.active_buffer().map(|b| b.language.clone()).unwrap_or_default();
+        let cursor = self.active_editor().map(|editor| {
+            let state = editor.read(cx);
             let pos = state.cursor_position();
             let selected = state.selected_range().len();
-            (pos.line + 1, pos.character + 1, selected, b.language.clone())
+            (pos.line + 1, pos.character + 1, selected, language)
         });
         let perf = Perf::global(cx);
         h_flex()
@@ -918,7 +695,7 @@ impl Workspace {
     }
 
     pub(super) fn show_document_items(&mut self, _: &ShowDocumentItems, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(buffer) = self.active_buffer() else { return };
+        let Some(buffer) = self.active_item() else { return };
         let cursor_line = buffer.editor.read(cx).cursor_position().line;
         let path = buffer.path.clone();
         let workspace = cx.weak_entity();
@@ -965,7 +742,7 @@ impl Workspace {
     }
 
     pub(super) fn jump_to_line(&mut self, _: &JumpToLine, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(buffer) = self.active_buffer() else { return };
+        let Some(buffer) = self.active_item() else { return };
         let lines = zcode_editor::RopeExt::lines_len(buffer.editor.read(cx).text());
         let delegate = pickers::JumpToLineDelegate::new(cx.weak_entity(), lines);
         let picker = cx.new(|cx| Picker::new(delegate, window, cx));
@@ -990,14 +767,6 @@ impl Workspace {
     }
 }
 
-fn hint(label: &'static str, keys: &'static str) -> impl IntoElement {
-    h_flex()
-        .gap_3()
-        .text_sm()
-        .child(div().w(px(160.)).text_right().child(label))
-        .child(div().w(px(120.)).child(keys))
-}
-
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
@@ -1008,7 +777,7 @@ impl Render for Workspace {
         } else {
             div().into_any_element()
         };
-        let editor_area = self.render_editor_area(cx).into_any_element();
+        let editor_area = self.render_editor_area(cx);
         let debug_area = if self.show_debug_area {
             self.render_debug_area(cx).into_any_element()
         } else {
@@ -1055,24 +824,41 @@ impl Render for Workspace {
             .text_color(theme.foreground)
             .on_action(cx.listener(|this, _: &Save, window, cx| {
                 // Project settings are written as they are edited.
-                if this.show_project_settings {
-                    return;
-                }
-                if let Some(ix) = this.active {
-                    this.save_buffer(ix, window, cx);
+                if let Some(path) = this.active_item().map(|item| item.path.clone()) {
+                    this.save_path(&path, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &SaveAll, window, cx| this.save_all(window, cx)))
+            // Xcode's Close Tab, Editor Pane, Window Tab, or Window.
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
+                let pane = this.active_pane;
                 if this.modal.is_some() {
                     this.dismiss_modal(window, cx);
-                } else if this.show_project_settings {
-                    this.close_project_settings(window, cx);
-                } else if let Some(ix) = this.active {
-                    this.close_buffer(ix, window, cx);
+                } else if let Some(ix) = this.pane(pane).filter(|p| !p.items.is_empty()).map(|p| p.active) {
+                    this.close_item(pane, ix, window, cx);
+                } else if this.panes.len() > 1 {
+                    this.close_pane(pane, window, cx);
                 } else {
                     window.remove_window();
                 }
+            }))
+            .on_action(cx.listener(|this, _: &CloseOtherTabs, window, cx| this.close_other_tabs(window, cx)))
+            .on_action(cx.listener(|this, _: &NewEditorPaneOnRight, window, cx| {
+                this.split_pane(SplitAxis::Horizontal, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NewEditorPaneBelow, window, cx| this.split_pane(SplitAxis::Vertical, window, cx)))
+            .on_action(cx.listener(|this, _: &CloseEditorPane, window, cx| this.close_pane(this.active_pane, window, cx)))
+            .on_action(cx.listener(|this, _: &CloseOtherEditorPanes, window, cx| this.close_other_panes(window, cx)))
+            .on_action(cx.listener(|this, _: &FocusNextEditorPane, window, cx| this.focus_next_pane(true, window, cx)))
+            .on_action(cx.listener(|this, _: &FocusPreviousEditorPane, window, cx| this.focus_next_pane(false, window, cx)))
+            .on_action(cx.listener(|this, _: &FocusEditorPane, _, cx| this.toggle_zoom(cx)))
+            .on_action(cx.listener(|this, _: &ShowAssistant, window, cx| this.toggle_assistant(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowEditorOnly, window, cx| this.show_editor_only(window, cx)))
+            .on_action(cx.listener(|this, _: &JumpToDefinitionInNextPane, window, cx| {
+                this.jump_to_definition_in_next_pane(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &JumpToCounterpartInNextPane, window, cx| {
+                this.jump_to_counterpart_in_next_pane(window, cx)
             }))
             .on_action(cx.listener(|this, _: &CloseProject, window, _| {
                 let _ = this;
@@ -1087,13 +873,13 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(Self::new_file))
             .on_action(cx.listener(|this, _: &OpenAsSourceCode, window, cx| {
-                if let Some(ix) = this.active.filter(|_| !this.show_project_settings) {
-                    this.open_as(ix, true, window, cx);
+                if let Some(ix) = this.active_item().and(this.pane(this.active_pane)).map(|p| p.active) {
+                    this.open_as(this.active_pane, ix, true, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &OpenAsPropertyList, window, cx| {
-                if let Some(ix) = this.active.filter(|_| !this.show_project_settings) {
-                    this.open_as(ix, false, window, cx);
+                if let Some(ix) = this.active_item().and(this.pane(this.active_pane)).map(|p| p.active) {
+                    this.open_as(this.active_pane, ix, false, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &ShowProjectSettings, window, cx| this.open_project_settings(window, cx)))
@@ -1152,7 +938,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &PreviousIssue, window, cx| this.step_issue(-1, window, cx)))
             .on_action(cx.listener(|this, _: &RevealInNavigator, window, cx| {
                 this.show_navigator_tab(NavigatorTab::Project, window, cx);
-                if let Some(path) = this.active_buffer().map(|b| b.path.to_string_lossy().to_string()) {
+                if let Some(path) = this.active_item().map(|item| item.path.to_string_lossy().to_string()) {
                     let id: SharedString = path.into();
                     this.tree.update(cx, |tree, cx| {
                         tree.reveal_item(&id, ScrollStrategy::Center, cx);
@@ -1162,18 +948,8 @@ impl Render for Workspace {
                     });
                 }
             }))
-            .on_action(cx.listener(|this, _: &NextTab, window, cx| {
-                if let Some(ix) = this.active {
-                    let next = (ix + 1) % this.buffers.len();
-                    this.activate(next, window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &PreviousTab, window, cx| {
-                if let Some(ix) = this.active {
-                    let len = this.buffers.len();
-                    this.activate((ix + len - 1) % len, window, cx);
-                }
-            }))
+            .on_action(cx.listener(|this, _: &NextTab, window, cx| this.step_tab(true, window, cx)))
+            .on_action(cx.listener(|this, _: &PreviousTab, window, cx| this.step_tab(false, window, cx)))
             .on_action(cx.listener(|this, _: &ShowProjectNavigator, window, cx| {
                 this.show_navigator_tab(NavigatorTab::Project, window, cx)
             }))

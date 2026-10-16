@@ -29,6 +29,8 @@
 //!   breakpoint <field> [<value>]   edit the open breakpoint editor (see `BreakpointEditor::set_field`)
 //!   console <command>          run a command at the LLDB console's prompt
 //!   bookmark <command>         a Bookmarks navigator command (see `Workspace::bookmark_command`)
+//!   pane <command>             editor panes: open-next <path>[:line] (⌥-click), focus <n>, tab / close-tab <n> <i>
+//!                              (see `Workspace::pane_command`)
 //!   package <field> [<value>]  Add Package Dependencies: `open [query]`, `local <path>` (after Add
 //!                              Local…'s panel), or a field of the open sheet (see `AddPackageDialog::set_field`)
 //!   package-menu update|remove <identity>  a package's Update Package / Remove Package
@@ -374,6 +376,13 @@ fn run_command(
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.bookmark_command(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
+        }
+        "pane" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.pane_command(arg, window, cx)))
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
         }

@@ -161,7 +161,7 @@ impl Workspace {
 
     /// The test item each painted diamond stands for: (bounds, line, item).
     pub(super) fn painted_diamonds(&self, cx: &App) -> Vec<(Bounds<Pixels>, u32, usize)> {
-        let Some(path) = self.active_buffer().map(|b| b.path.clone()) else { return vec![] };
+        let Some(path) = self.active_item().map(|b| b.path.clone()) else { return vec![] };
         self.painted_gutter(TEST_LANE, cx)
             .into_iter()
             .filter_map(|(line, bounds)| {

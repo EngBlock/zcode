@@ -117,12 +117,9 @@ impl Workspace {
         f: impl FnOnce(&mut EditorState, SharedString, &mut Window, &mut Context<EditorState>),
     ) {
         // A property list's outline handles its own editing commands.
-        let Some(buffer) = self.active_buffer().filter(|b| b.shown_plist().is_none()) else { return };
-        let language = buffer.language.clone();
-        buffer
-            .editor
-            .clone()
-            .update(cx, |state, cx| f(state, language, window, cx));
+        let Some(editor) = self.active_editor() else { return };
+        let language = self.active_buffer().map(|b| b.language.clone()).unwrap_or_default();
+        editor.update(cx, |state, cx| f(state, language, window, cx));
     }
 
     /// Like `with_active_editor`, for commands that change the text: the
@@ -385,10 +382,10 @@ impl Workspace {
     pub(super) fn toggle_soft_wrap(&mut self, _: &ToggleSoftWrap, window: &mut Window, cx: &mut Context<Self>) {
         self.soft_wrap = !self.soft_wrap;
         let wrap = self.soft_wrap;
-        for buffer in &self.buffers {
-            buffer
-                .editor
-                .update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
+        for pane in &self.panes {
+            for item in pane.items.iter().filter_map(super::Item::editor) {
+                item.editor.update(cx, |state, cx| state.set_soft_wrap(wrap, window, cx));
+            }
         }
         cx.notify();
     }
@@ -404,7 +401,7 @@ impl Workspace {
     }
 
     pub(super) fn jump_to_counterpart(&mut self, _: &JumpToCounterpart, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.active_buffer().map(|b| b.path.clone()) else { return };
+        let Some(path) = self.active_item().map(|b| b.path.clone()) else { return };
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let candidates: &[&str] = match ext {
             "h" | "hpp" | "hh" => &["m", "mm", "c", "cpp", "cc"],
@@ -425,7 +422,7 @@ impl Workspace {
 
     /// The server plus the active document's URI, text and cursor.
     fn lsp_context(&mut self, cx: &mut Context<Self>) -> Option<(Arc<lsp::LanguageServer>, PathBuf, Rope, Range<usize>)> {
-        let buffer = self.active_buffer()?;
+        let buffer = self.active_item()?;
         let path = buffer.path.clone();
         let (text, selection) = {
             let state = buffer.editor.read(cx);
@@ -437,7 +434,7 @@ impl Workspace {
         Some((server, path, text, selection))
     }
 
-    fn lsp_unavailable(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn lsp_unavailable(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.notify_error(
             "The language server isn’t ready for this file yet.".into(),
             window,

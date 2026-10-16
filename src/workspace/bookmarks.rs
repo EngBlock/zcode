@@ -244,9 +244,9 @@ impl Workspace {
             self.bookmark_find_results(window, cx);
             return;
         }
-        let Some(buffer) = self.active_buffer().filter(|b| b.shown_plist().is_none()) else {
+        let Some(buffer) = self.active_item().filter(|b| b.shown_plist().is_none()) else {
             // A property list has no lines to bookmark; its file can be.
-            if self.active_buffer().is_some() {
+            if self.active_item().is_some() {
                 self.bookmark_file(with_dialog, window, cx);
             }
             return;
@@ -265,7 +265,7 @@ impl Workspace {
 
     /// Edit ▸ Bookmark File (⌃⇧⌘'), or With Dialog (⌃⌥⇧⌘').
     pub(super) fn bookmark_file(&mut self, with_dialog: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.active_buffer().map(|b| b.path.clone()) else { return };
+        let Some(path) = self.active_item().map(|b| b.path.clone()) else { return };
         let title = file_name(&path);
         self.new_bookmark(Location::File { path }, title, with_dialog, window, cx);
     }
@@ -347,7 +347,7 @@ impl Workspace {
 
     /// Jump to Next / Previous Bookmark (in this file, or `in_workspace`).
     pub(super) fn step_bookmark(&mut self, forward: bool, in_workspace: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(buffer) = self.active_buffer() else {
+        let Some(buffer) = self.active_item() else {
             if in_workspace && let Some(first) = self.bookmarks.in_order().first().map(|b| b.id) {
                 self.open_bookmark(first, window, cx);
             }
@@ -379,7 +379,7 @@ impl Workspace {
         }
         let target = bookmark.location.line().map(|line| Target::Line { line: line - 1, column: 0 });
         self.open_file(path.clone(), target, true, window, cx);
-        let line = self.active_buffer().map(|b| b.editor.read(cx).cursor_position().line + 1).unwrap_or(1);
+        let line = self.active_item().map(|b| b.editor.read(cx).cursor_position().line + 1).unwrap_or(1);
         self.bookmarks_ui.last_opened = Some((id, path, line));
     }
 

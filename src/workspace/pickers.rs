@@ -207,6 +207,17 @@ impl PickerDelegate for OpenQuicklyDelegate {
     }
 
     fn confirm(&mut self, index: usize, window: &mut Window, cx: &mut Context<Picker<Self>>) -> bool {
+        self.open(index, false, window, cx)
+    }
+
+    /// ⌥-Return opens in the next pane, the assistant when there is one.
+    fn confirm_alternate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Picker<Self>>) -> bool {
+        self.open(index, true, window, cx)
+    }
+}
+
+impl OpenQuicklyDelegate {
+    fn open(&mut self, index: usize, next_pane: bool, window: &mut Window, cx: &mut Context<Picker<Self>>) -> bool {
         let (path, target) = match &self.matches[index] {
             OpenQuicklyMatch::File { path, line } => (
                 path.clone(),
@@ -220,7 +231,11 @@ impl PickerDelegate for OpenQuicklyDelegate {
         self.workspace
             .update(cx, |ws, cx| {
                 ws.dismiss_modal(window, cx);
-                ws.open_file(path, target, true, window, cx);
+                if next_pane {
+                    ws.open_in_next_pane(path, target, window, cx);
+                } else {
+                    ws.open_file(path, target, true, window, cx);
+                }
             })
             .ok();
         false
@@ -512,7 +527,7 @@ impl PickerDelegate for JumpToLineDelegate {
         self.workspace
             .update(cx, |ws, cx| {
                 ws.dismiss_modal(window, cx);
-                if let Some(path) = ws.active_buffer().map(|b| b.path.clone()) {
+                if let Some(path) = ws.active_item().map(|b| b.path.clone()) {
                     ws.open_file(
                         path,
                         Some(Target::Line {

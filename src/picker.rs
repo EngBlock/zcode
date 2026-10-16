@@ -9,7 +9,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::assets::IconName;
 
-use crate::actions::{PickerConfirm, PickerDismiss, PickerSelectNext, PickerSelectPrevious};
+use crate::actions::{PickerConfirm, PickerConfirmAlternate, PickerDismiss, PickerSelectNext, PickerSelectPrevious};
 
 #[derive(Clone, Default)]
 pub struct PickerItem {
@@ -32,6 +32,11 @@ pub trait PickerDelegate: Sized + 'static {
     fn items(&self) -> &[PickerItem];
     /// Return `true` to close the picker.
     fn confirm(&mut self, index: usize, window: &mut Window, cx: &mut Context<Picker<Self>>) -> bool;
+    /// ⌥-Return or ⌥-click (Open Quickly: open in the next pane); `confirm`
+    /// unless the delegate has an alternative.
+    fn confirm_alternate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Picker<Self>>) -> bool {
+        self.confirm(index, window, cx)
+    }
     fn two_line(&self) -> bool {
         false
     }
@@ -151,8 +156,24 @@ impl<D: PickerDelegate> Picker<D> {
         self.confirm_index(self.selected, window, cx);
     }
 
+    fn confirm_selected_alternate(&mut self, _: &PickerConfirmAlternate, window: &mut Window, cx: &mut Context<Self>) {
+        self.confirm_index_with(self.selected, true, window, cx);
+    }
+
     fn confirm_index(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if index < self.delegate.items().len() && self.delegate.confirm(index, window, cx) {
+        self.confirm_index_with(index, false, window, cx);
+    }
+
+    fn confirm_index_with(&mut self, index: usize, alternate: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if index >= self.delegate.items().len() {
+            return;
+        }
+        let close = if alternate {
+            self.delegate.confirm_alternate(index, window, cx)
+        } else {
+            self.delegate.confirm(index, window, cx)
+        };
+        if close {
             cx.emit(DismissEvent);
         }
     }
@@ -223,9 +244,9 @@ impl<D: PickerDelegate> Picker<D> {
                                     .child(hint),
                             )
                         })
-                        .on_click(cx.listener(move |this, _, window, cx| {
+                        .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                             this.selected = ix;
-                            this.confirm_index(ix, window, cx);
+                            this.confirm_index_with(ix, event.modifiers().alt, window, cx);
                         }))
                         .into_any_element(),
                 )
@@ -273,6 +294,7 @@ impl<D: PickerDelegate> Render for Picker<D> {
             .on_action(cx.listener(Self::select_next))
             .on_action(cx.listener(Self::select_previous))
             .on_action(cx.listener(Self::confirm_selected))
+            .on_action(cx.listener(Self::confirm_selected_alternate))
             .on_action(cx.listener(Self::dismiss))
             .child(
                 h_flex().p_2().child(

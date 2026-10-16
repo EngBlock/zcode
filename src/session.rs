@@ -8,8 +8,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProjectSession {
+    /// Every open file and the focused one, as sessions saved them before
+    /// editor panes (and still do, for older versions); `panes` wins.
     pub open_files: Vec<PathBuf>,
     pub active_file: Option<PathBuf>,
+    /// The editor area's panes and splits with their tabs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub panes: Option<PaneLayout>,
     pub scheme: Option<String>,
     pub destination: Option<String>,
     pub configuration: Option<String>,
@@ -31,6 +36,39 @@ pub struct ProjectSession {
     /// Bookmarks and bookmarked searches, in the navigator's order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bookmarks: Vec<crate::bookmarks::Entry>,
+}
+
+/// The editor area as saved: a pane, or panes side by side or stacked.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PaneLayout {
+    Pane(PaneState),
+    Split { axis: crate::workspace::SplitAxis, members: Vec<PaneLayout> },
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaneState {
+    pub files: Vec<PathBuf>,
+    pub active: Option<PathBuf>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub focused: bool,
+    /// An assistant: the pane it assists (its index in layout order), and
+    /// whether it follows that pane's counterparts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assistant_of: Option<usize>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub counterparts: bool,
+}
+
+impl PaneLayout {
+    /// The panes in layout order (left to right, top to bottom).
+    pub fn panes(&self) -> Vec<&PaneState> {
+        match self {
+            PaneLayout::Pane(pane) => vec![pane],
+            PaneLayout::Split { members, .. } => members.iter().flat_map(PaneLayout::panes).collect(),
+        }
+    }
 }
 
 impl ProjectSession {
@@ -114,5 +152,35 @@ mod tests {
         assert!(!text.contains("\"breakpoints\":"), "the old map isn't written: {text}");
         let reread: ProjectSession = serde_json::from_str(&text).unwrap();
         assert_eq!(reread.all_breakpoints(), saved.breakpoints_v2);
+    }
+
+    #[test]
+    fn pane_layouts_round_trip_and_older_sessions_have_none() {
+        use crate::workspace::SplitAxis;
+        let old: ProjectSession = serde_json::from_str(r#"{ "open_files": ["/a.swift"], "active_file": "/a.swift" }"#).unwrap();
+        assert_eq!(old.panes, None);
+        let pane = |files: &[&str], focused| {
+            PaneLayout::Pane(PaneState {
+                files: files.iter().map(PathBuf::from).collect(),
+                active: files.first().map(PathBuf::from),
+                focused,
+                ..Default::default()
+            })
+        };
+        let layout = PaneLayout::Split {
+            axis: SplitAxis::Horizontal,
+            members: vec![
+                pane(&["/a.swift", "/b.swift"], false),
+                PaneLayout::Split { axis: SplitAxis::Vertical, members: vec![pane(&["/a.swift"], true), pane(&[], false)] },
+            ],
+        };
+        let saved = ProjectSession { panes: Some(layout.clone()), ..Default::default() };
+        let text = serde_json::to_string(&saved).unwrap();
+        assert!(text.contains(r#""axis":"vertical""#) && !text.contains("counterparts"), "{text}");
+        let reread: ProjectSession = serde_json::from_str(&text).unwrap();
+        assert_eq!(reread.panes, Some(layout));
+        let panes = reread.panes.as_ref().unwrap().panes();
+        assert_eq!(panes.len(), 3);
+        assert!(panes[1].focused && panes[2].files.is_empty());
     }
 }

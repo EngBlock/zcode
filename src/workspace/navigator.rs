@@ -204,7 +204,7 @@ impl Workspace {
             .text_sm()
             .font_weight(FontWeight::SEMIBOLD)
             .rounded(theme.radius)
-            .when(self.show_project_settings, |el| el.bg(theme.sidebar_accent))
+            .when(self.showing_project_settings(), |el| el.bg(theme.sidebar_accent))
             .child(Icon::new(IconName::FolderCode).small().text_color(theme.primary))
             .child(self.project.name.clone())
             .child(
@@ -306,14 +306,18 @@ impl Workspace {
                                         el.child(Icon::new(IconName::CircleX).xsmall().text_color(theme.danger))
                                     }),
                             )
-                            .on_click(move |_, window, cx| {
+                            .on_click(move |event, window, cx| {
                                 let path = path.clone();
+                                let next_pane = event.modifiers().alt;
                                 workspace
                                     .update(cx, |this, cx| {
                                         if is_folder {
                                             // The File inspector follows the selection.
                                             this.inspected = Some(path);
                                             cx.notify();
+                                        } else if next_pane {
+                                            // ⌥-click: in the assistant (the next pane), as in Xcode.
+                                            this.open_in_next_pane(path, None, window, cx)
                                         } else {
                                             this.open_file(path, None, true, window, cx)
                                         }

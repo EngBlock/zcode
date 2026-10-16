@@ -354,7 +354,7 @@ impl Workspace {
 
     /// The innermost test (or else class or suite) around the cursor.
     fn test_at_cursor(&self, cx: &App) -> Option<usize> {
-        let buffer = self.active_buffer()?;
+        let buffer = self.active_item()?;
         let line = buffer.editor.read(cx).cursor_position().line;
         self.tests
             .index
