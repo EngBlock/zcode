@@ -117,6 +117,18 @@ impl<'a> Document<'a> {
         Some(TextEdit { range: entry.key_span.clone(), text: format!("<key>{}</key>", escape(key)) })
     }
 
+    /// Renames an entry and, when `value` is given, replaces its value too,
+    /// in one edit.
+    pub fn set_entry(&self, path: &[usize], key: &str, value: Option<&Value>) -> Option<TextEdit> {
+        let Some(value) = value else { return self.set_key(path, key) };
+        let (last, parent_path) = path.split_last()?;
+        let Value::Dict(entries) = &self.root.at(parent_path)?.value else { return None };
+        let entry = entries.get(*last)?;
+        let between = &self.text[entry.key_span.end..entry.value.span.start];
+        let text = format!("<key>{}</key>{between}{}", escape(key), self.value_text(value, path.len()));
+        Some(TextEdit { range: entry.key_span.start..entry.value.span.end, text })
+    }
+
     pub fn remove(&self, path: &[usize]) -> Option<TextEdit> {
         let (&ix, parent_path) = path.split_last()?;
         let parent = self.root.at(parent_path)?;
@@ -194,6 +206,24 @@ impl<'a> Document<'a> {
     }
 }
 
+/// Sets a top-level key of a dictionary property list (adding it at the
+/// end), or removes it when `value` is `None`; one edit, the rest of the
+/// text kept. `None` when nothing changes.
+pub fn set_top_level(text: &str, key: &str, value: Option<&Value>) -> anyhow::Result<Option<String>> {
+    let root = super::parse_xml(text)?;
+    let Value::Dict(entries) = &root.value else { anyhow::bail!("the property list isn’t a dictionary") };
+    let doc = Document::new(text, &root);
+    let existing = entries.iter().position(|e| e.key == key);
+    let edit = match (existing, value) {
+        (Some(ix), Some(value)) if entries[ix].value.value == *value => return Ok(None),
+        (Some(ix), Some(value)) => doc.set_value(&[ix], value),
+        (Some(ix), None) => doc.remove(&[ix]),
+        (None, Some(value)) => doc.insert(&[], entries.len(), Some(key), value),
+        (None, None) => return Ok(None),
+    };
+    Ok(edit.map(|e| e.apply(text)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +251,8 @@ mod tests {
         assert_like_xcode(&out);
         let out = edit(INFO, |d| d.set_key(&[2], "UIRequiresFullScreen"));
         assert!(out.contains("<key>UIRequiresFullScreen</key>\n\t<true/>"));
+        let out = edit(INFO, |d| d.set_entry(&[0], "UIRequiredDeviceCapabilities", Some(&Value::Array(vec![]))));
+        assert!(out.contains("<dict>\n\t<key>UIRequiredDeviceCapabilities</key>\n\t<array/>\n\t<key>UIBackgroundModes</key>"), "{out}");
         let out = edit(INFO, |d| d.set_value(&[1, 0], &Value::String("fetch".into())));
         assert!(out.contains("\t\t<string>fetch</string>\n\t</array>"));
         // A container value is written at its depth.
@@ -288,6 +320,15 @@ mod tests {
         assert_eq!(out, "<plist><dict><key>b</key><true/></dict></plist>");
         let out = edit(text, |d| d.insert(&[], 1, Some("c"), &Value::Integer(3)));
         assert_eq!(out, "<plist><dict><key>a</key><string>x</string><key>c</key><integer>3</integer><key>b</key><true/></dict></plist>");
+    }
+
+    #[test]
+    fn sets_top_level_keys() {
+        let out = set_top_level(INFO, "UIRequiresFullScreen", Some(&Value::Bool(true))).unwrap().unwrap();
+        assert!(out.ends_with("\t<true/>\n\t<key>UIRequiresFullScreen</key>\n\t<true/>\n</dict>\n</plist>\n"), "{out}");
+        assert_eq!(set_top_level(&out, "UIRequiresFullScreen", Some(&Value::Bool(true))).unwrap(), None);
+        assert_eq!(set_top_level(&out, "UIRequiresFullScreen", None).unwrap().unwrap(), INFO);
+        assert_eq!(set_top_level(INFO, "Missing", None).unwrap(), None);
     }
 
     #[test]

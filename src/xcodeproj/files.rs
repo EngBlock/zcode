@@ -431,6 +431,31 @@ impl ProjectFiles {
         self.items.get(&self.main_group)?.resolved.as_deref()
     }
 
+    /// The folder Xcode creates a target's own files in (its Info.plist and
+    /// entitlements): the target's synchronized folder, a top-level group
+    /// named after it, or the folder of its first source file.
+    pub fn target_folder(&self, target_id: &str) -> PathBuf {
+        let Some(target) = self.target(target_id) else { return self.project_dir.clone() };
+        let synchronized = target.synchronized_groups.iter().filter_map(|id| self.items.get(id)?.resolved.clone()).next();
+        let named = || {
+            let main = self.items.get(&self.main_group)?;
+            main.children
+                .iter()
+                .filter_map(|id| self.items.get(id))
+                .find(|i| i.is_group() && i.display_name() == Some(target.name.as_str()))
+                .and_then(|i| i.resolved.clone())
+        };
+        let sources = || {
+            target
+                .phase(PhaseKind::Sources)?
+                .files
+                .iter()
+                .filter_map(|bf| self.items.get(self.build_files.get(bf)?)?.resolved.clone())
+                .find_map(|p| p.parent().map(Path::to_path_buf))
+        };
+        synchronized.or_else(named).or_else(sources).unwrap_or_else(|| self.project_dir.clone())
+    }
+
     /// Whether `path` belongs in this project's group tree: under its folder
     /// and not in a synchronized folder.
     pub fn contains(&self, path: &Path) -> bool {
@@ -918,6 +943,85 @@ pub fn add_files(xcodeproj: &Path, text: &str, paths: &[PathBuf], targets: &[Str
     editor.finish()
 }
 
+/// The exception set's ISA that takes files out of a synchronized folder's
+/// targets.
+pub const EXCEPTION_SET: &str = "PBXFileSystemSynchronizedBuildFileExceptionSet";
+
+impl Editor<'_> {
+    /// Takes `path` out of `target`'s membership of its synchronized folder,
+    /// as Xcode does for a target's Info.plist (which would otherwise be
+    /// copied as a resource next to the processed one).
+    fn exclude_from_synchronized(&mut self, root: &Item, path: &Path, target: &Target) {
+        let Some(relative) = root.resolved.as_deref().and_then(|r| path.strip_prefix(r).ok()) else { return };
+        let relative = relative.to_string_lossy().to_string();
+        let existing: Vec<String> = self
+            .batch
+            .object(&root.id)
+            .and_then(|o| o.get("exceptions"))
+            .map(Node::items)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(Node::as_str)
+            .map(str::to_string)
+            .collect();
+        for id in existing {
+            let Some(set) = self.batch.object(&id) else { continue };
+            if set.get_str("isa") != Some(EXCEPTION_SET) || set.get_str("target") != Some(target.id.as_str()) {
+                continue;
+            }
+            let members: Vec<String> =
+                set.get("membershipExceptions").map(Node::items).unwrap_or_default().iter().filter_map(Node::as_str).map(str::to_string).collect();
+            if members.iter().any(|m| *m == relative) {
+                return;
+            }
+            // Xcode keeps the list sorted.
+            let position = members.iter().find(|m| **m > relative).map_or(Position::End, |m| Position::Before(super::quote(m)));
+            self.batch.add_to_list(&id, "membershipExceptions", &super::quote(&relative), None, position);
+            self.changed = true;
+            return;
+        }
+        let id = self.batch.ids.next();
+        let folder = root.display_name().unwrap_or("").to_string();
+        let comment = format!("Exceptions for \"{folder}\" folder in \"{}\" target", target.name);
+        self.batch.add_object(NewObject {
+            id: id.clone(),
+            isa: EXCEPTION_SET,
+            comment: Some(comment.clone()),
+            fields: vec![
+                ("membershipExceptions", Field::List(vec![(super::quote(&relative), None)])),
+                ("target", Field::Ref(target.id.clone(), Some(target.name.clone()))),
+            ],
+            one_line: false,
+        });
+        self.batch.add_to_list(&root.id, "exceptions", &id, Some(comment), Position::End);
+        self.changed = true;
+    }
+}
+
+/// Adds a file Xcode creates for a target (its Info.plist or entitlements)
+/// to the project: a file reference in the group for its folder, in no build
+/// phase. In a synchronized folder there's no reference to add; `exclude`
+/// (for an Info.plist) takes it out of the target's members there.
+pub fn add_target_file(xcodeproj: &Path, text: &str, path: &Path, target_id: &str, exclude: bool) -> Result<Option<String>> {
+    let mut editor = Editor::new(xcodeproj, text)?;
+    let path = canonical(path);
+    if let Some(root) = editor.files.synchronized_root(&path).cloned() {
+        if exclude && let Some(target) = editor.files.target(target_id).cloned() {
+            editor.exclude_from_synchronized(&root, &path, &target);
+        }
+        return editor.finish();
+    }
+    if editor.files.file_reference(&path).is_some() {
+        return Ok(None);
+    }
+    let group = match path.parent().and_then(|dir| editor.ensure_group(dir)) {
+        Some(group) => group,
+        None => editor.files.main_group.clone(),
+    };
+    editor.add_into(&group, &path, &[], &AddOptions::default());
+    editor.finish()
+}
+
 /// Removes every reference to `paths` (files or folders) and their build
 /// files, as Move to Trash does in Xcode.
 pub fn remove_paths(xcodeproj: &Path, text: &str, paths: &[PathBuf]) -> Result<Option<String>> {
@@ -1125,6 +1229,55 @@ mod tests {
 
     fn object_ids(text: &str) -> Vec<String> {
         super::super::parse(text).unwrap().get("objects").unwrap().entries().iter().map(|e| e.key.clone()).collect()
+    }
+
+    #[test]
+    fn finds_the_folder_for_a_targets_own_files() {
+        let (proj, dir) = classic();
+        let files = ProjectFiles::parse(&proj, CLASSIC).unwrap();
+        assert_eq!(files.target_folder(APP), dir.join("HelloClassic"));
+        let synced = sample("HelloZ");
+        let files = ProjectFiles::parse(&synced.join("HelloZ.xcodeproj"), SYNCED).unwrap();
+        assert_eq!(files.target_folder("A10000000000000000000006"), synced.join("HelloZ"));
+        assert_eq!(files.target_folder("A10000000000000000000016"), synced.join("HelloZTests"));
+    }
+
+    #[test]
+    fn adds_a_targets_entitlements_as_xcode_does() {
+        let (proj, dir) = classic();
+        let path = dir.join("HelloClassic/HelloClassic.entitlements");
+        let out = add_target_file(&proj, CLASSIC, &path, APP, false).unwrap().unwrap();
+        let added = inserted(CLASSIC, &out);
+        assert!(added.iter().any(|l| l.contains("/* HelloClassic.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HelloClassic.entitlements; sourceTree = \"<group>\"; };")), "{added:?}");
+        // In the group, in no build phase.
+        assert!(added.iter().any(|l| l.ends_with("/* HelloClassic.entitlements */,")), "{added:?}");
+        assert!(!added.iter().any(|l| l.contains("in Resources")), "{added:?}");
+        // Already there: nothing to do.
+        assert_eq!(add_target_file(&proj, &out, &path, APP, false).unwrap(), None);
+    }
+
+    #[test]
+    fn excludes_a_synchronized_info_plist_from_its_target() {
+        let dir = sample("HelloZ");
+        let proj = dir.join("HelloZ.xcodeproj");
+        let app = "A10000000000000000000006";
+        // Entitlements need nothing in a synchronized folder.
+        assert_eq!(add_target_file(&proj, SYNCED, &dir.join("HelloZ/HelloZ.entitlements"), app, false).unwrap(), None);
+        let out = add_target_file(&proj, SYNCED, &dir.join("HelloZ/Info.plist"), app, true).unwrap().unwrap();
+        let added = inserted(SYNCED, &out);
+        assert!(out.contains("/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */\n"), "{out}");
+        assert!(added.iter().any(|l| l.ends_with("/* Exceptions for \"HelloZ\" folder in \"HelloZ\" target */ = {")), "{added:?}");
+        assert!(added.contains(&"isa = PBXFileSystemSynchronizedBuildFileExceptionSet;".to_string()));
+        assert!(added.contains(&"Info.plist,".to_string()), "{added:?}");
+        assert!(added.contains(&"target = A10000000000000000000006 /* HelloZ */;".to_string()), "{added:?}");
+        assert!(added.contains(&"exceptions = (".to_string()), "{added:?}");
+        // The section comes before the synchronized groups', as Xcode orders them.
+        assert!(out.find("PBXFileSystemSynchronizedBuildFileExceptionSet section").unwrap() < out.find("PBXFileSystemSynchronizedRootGroup section").unwrap());
+        // A second file joins the same set, sorted.
+        let again = add_target_file(&proj, &out, &dir.join("HelloZ/Extra.plist"), app, true).unwrap().unwrap();
+        let block = &again[again.find("membershipExceptions = (").unwrap()..];
+        assert!(block.starts_with("membershipExceptions = (\n\t\t\t\tExtra.plist,\n\t\t\t\tInfo.plist,\n"), "{block}");
+        assert_eq!(add_target_file(&proj, &again, &dir.join("HelloZ/Info.plist"), app, true).unwrap(), None);
     }
 
     #[test]
