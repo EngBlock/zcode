@@ -349,3 +349,55 @@ How 2.5 hosts it, with what exists now (the end-to-end test
 What it doesn't cover yet: one undo step spanning several files (each file
 undoes on its own), and excerpts that grow when context is expanded
 (remove and re-add the excerpt).
+
+## How the upcoming features hook in
+
+| Feature (roadmap) | Hooks |
+|---|---|
+| Git change bars (2.3) | a gutter lane `BeforeNumbers(px(3.))` whose items come from the hunks, kept on line anchors between diffs |
+| Inline blame (2.3) | an inlay group at the end of the cursor's line, replaced when the cursor moves |
+| Diff view (2.3) | blocks for deleted lines under their row, a highlight layer for added ones; side by side is two editors |
+| Inlay hints (2.4) | an inlay group per response (`before_text` for parameter names), on anchors so they survive typing until the next response |
+| Semantic tokens (2.4) | a highlight layer at `HighlightPriority::SEMANTIC_TOKENS`, or the engine's `DocumentRangeSemanticTokensProvider` |
+| Signature help, call/type hierarchy (2.4) | the existing popovers and pickers; nothing new in the engine |
+| Multibuffers (2.5) | the excerpt model, `BufferEdit` events, read-only ranges, blocks for headers, a gutter lane for source line numbers (see above) |
+| Vim mode (2.7) | the keystroke interceptor, cursor shapes, an extra key context, transactions for one-step undo of a command |
+| Edit predictions (3.3) | an inlay at the cursor for the first line and a block for the rest; Tab accepts through `edit` in a `transact` |
+| Minimap (later) | an element beside the editor reading the rope and the highlight styles; the display map already gives row ↔ offset |
+| Read-only views (package sources, generated interfaces) | `set_read_only`, or read-only ranges for parts of a file |
+
+## Performance
+
+The extraction moved code without changing it, and the extension points cost
+nothing when unused (no lanes, inlays, blocks or layers means the same paths
+as before; gutter lanes query their owners for visible rows only).
+Measured on this branch against `master`, alternating runs, release builds,
+load average 4–14:
+
+| | master | branch |
+|---|---|---|
+| Cold launch, welcome window, first pixels (median of 15) | 246.5 ms | 245.8 ms |
+| Cold launch, ZKit with 3 Swift tabs restored, first pixels (median of 9) | 263.9 ms | 266.3 ms |
+| Typing in the middle of a 6,000-line Swift file, 21 tabs open: keystroke → frame (median / p95) | 4.7 / 6.2 ms | 3.9–4.8 / 6.1–6.2 ms |
+| Memory with those 21 tabs (resident / footprint) | 159 MB / 420 MB | 159 MB / 420 MB |
+
+The binary grows by 3.6 MB (54 → 57.6 MB): gpui-base's engine stays linked
+for gpui-component's text fields, next to this copy. Typing latency comes
+from the control channel's `type-latency` command (dispatch to the end of
+the next frame).
+
+## Limits and follow-ups
+
+* The engine is still generic over the text-field modes it came with; only
+  the editor mode is instantiated. Removing the others (masks, number
+  stepping, touch selection) would shrink the crate by a few thousand lines.
+* The LSP inline-completion ghost text predates inlays and blocks and still
+  paints over the text after the caret; 3.3 should replace it.
+* Inlays aren't counted in the scroll width when soft wrap is off, and an
+  editor using inline tokens (zcode's doesn't) doesn't wrap around inlays.
+* Blocks sit below a row; a header above the first excerpt (2.5) needs an
+  `above` flag. Clicking a block puts the caret at the start of the next
+  line.
+* Undo restores anchors that an edit moved into replaced text, but anchors
+  moved by text that typing coalesced into one undo step come back where
+  the coalesced step leaves them.
