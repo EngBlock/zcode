@@ -104,6 +104,7 @@ XCODE_SHORTCUTS = [
     ("f8", "zcode::StepOut", "Debug ▸ Step Out"),
     ("cmd-\\", "zcode::ToggleBreakpoint", "Debug ▸ Breakpoints ▸ Create Breakpoint at Current Line"),
     ("cmd-y", "zcode::ToggleBreakpointsActive", "Debug ▸ Activate Breakpoints"),
+    ("cmd-alt-\\", "zcode::CreateSymbolicBreakpoint", "Debug ▸ Breakpoints ▸ Create Symbolic Breakpoint…"),
     ("cmd-k", "zcode::ClearConsole", "Debug ▸ Debug Workflow ▸ Clear Console"),
 ]
 
@@ -246,6 +247,37 @@ def finished(s):
 def console_has(z, text, timeout=300):
     """Waits for a console line containing `text`."""
     return z.wait_for(lambda s: any(text in l for l in s["console_tail"]), timeout=timeout)
+
+
+def console_output(z, command, timeout=60):
+    """The console lines after the last `(lldb) <command>`, once there are some."""
+    echo = f"(lldb) {command}"
+
+    def lines(s):
+        tail = s["console_tail"]
+        if echo not in tail:
+            return []
+        return tail[len(tail) - tail[::-1].index(echo):]
+
+    return lines(z.wait_for(lambda s: lines(s), timeout=timeout, interval=0.3))
+
+
+def stopped(z, timeout=300, variables=True):
+    """Waits for the debugger to stop with frames (and variables)."""
+    return z.wait_for(lambda s: s["debugger"]["state"].startswith("Stopped") and s["debugger"]["frames"]
+                      and (s["debugger"]["variables"] or not variables), timeout=timeout, interval=0.5)
+
+
+def debug_run_ends(z, timeout=300):
+    """Waits for a debugged program (started after clearing the console) to end."""
+    return z.wait_for(lambda s: any(l.startswith("Program ended") for l in s["console_tail"]) and finished(s),
+                      timeout=timeout, interval=0.5)
+
+
+def gutter_row(z, line):
+    """Where to click on `line`'s number in the active editor's gutter."""
+    g = z.dump()["breakpoints"]["gutter"]
+    return g["x"], next(y for l, y in g["rows"] if l == line)
 
 
 def scheme_editor(z):
@@ -450,6 +482,11 @@ def xcode_project_checks(z, samples, sim):
         s = z.wait_for(lambda s: s["debugger"]["state"].startswith("Stopped") and s["debugger"]["frames"], timeout=300)
         assert f"ContentView.swift:{appear_line}" in s["debugger"]["frames"][0], s["debugger"]
         assert not any("Main Thread Checker not found" in l for l in s["console_tail"]), s["console_tail"]
+        # The LLDB console works on the attached simulator app.
+        z.run("console p 6 * 7")
+        assert any("42" in l for l in console_output(z, "p 6 * 7", timeout=120)), z.dump()["console_tail"]
+        z.run("console bt 1")
+        assert any("ContentView.swift" in l for l in console_output(z, "bt 1")), z.dump()["console_tail"]
         z.run(f"open {content}:{appear_line}", "keys cmd-\\", "keys cmd-.", "wait 1500")
         # Restore the scheme the run check edited, byte for byte.
         z.run("keys cmd-<", "wait 300", "edit-scheme remove-argument -sim \"two words\"",
@@ -501,7 +538,7 @@ def xcode_project_checks(z, samples, sim):
         check("Simulator: one test and one suite from gutter diamonds (XCTest scope)", single_tests_on_simulator)
         check("Simulator: test plan (Smoke) honored by the in-simulator runner", test_plan_on_simulator)
         check("Run on iOS Simulator (⌘R) with console", run_on_simulator)
-        check("Debug on iOS Simulator (breakpoint stop)", debug_on_simulator)
+        check("Debug on iOS Simulator (breakpoint stop, LLDB console)", debug_on_simulator)
 
 
 def classic_project_checks(z, samples):
@@ -621,6 +658,30 @@ def classic_project_checks(z, samples):
     check("Edit Scheme (⌘<): arguments, environment, diagnostics written into the shared .xcscheme", edit_scheme_run_options)
     check("Run on My Mac gets the scheme's arguments and environment", run_mac_app_with_options)
     check("Edit Scheme: Test configuration, then everything undone restores the file byte for byte", edit_scheme_restores_file)
+
+    content = os.path.join(app, "ContentView.swift")
+
+    def debug_mac_app():
+        launched = line_of(content, 'print("HelloClassic launched")')
+        arguments = line_of(content, 'print("arguments:')
+        z.run(f"open {content}:{launched}", "wait 300", "keys cmd-\\")
+        z.run(f"open {content}:{arguments}", "wait 300", "keys cmd-\\", "action zcode::EditBreakpoint", "wait 300",
+              "breakpoint add-action log launched with @CommandLine.arguments.count@ argument(s), hit %H",
+              "breakpoint auto-continue on", "breakpoint close")
+        z.run("action zcode::ClearConsole", "keys cmd-r")
+        s = stopped(z, variables=False)
+        assert f"ContentView.swift:{launched}" in s["debugger"]["frames"][0], s["debugger"]
+        z.run("console p ProcessInfo.processInfo.processName")
+        out = console_output(z, "p ProcessInfo.processInfo.processName", timeout=120)
+        assert any('"HelloClassic"' in l for l in out), out
+        # The log message prints and the app runs on without stopping.
+        z.run("keys ctrl-cmd-y")
+        s = console_has(z, "launched with 1 argument(s), hit 1", timeout=60)
+        console_has(z, "arguments: ", timeout=30)
+        assert z.dump()["debugger"]["state"] == "Running", z.dump()["debugger"]
+        z.run("keys cmd-.", "wait 1500", "action zcode::DeleteAllBreakpoints")
+
+    check("Mac app under lldb-dap: breakpoint stop, LLDB console, auto-continuing log message", debug_mac_app)
 
     suite = os.path.join(root, "HelloClassicTests", "GreeterSuite.swift")
     xctests = os.path.join(root, "HelloClassicTests", "GreeterTests.swift")
@@ -746,6 +807,153 @@ def package_checks(z, samples):
     check("Swift package: Run on My Mac (⌘R)", run_package)
     check("Swift package: Test (⌘U) → Test navigator", test_package)
     check("Swift package: breakpoint, variables, step over (F6)", debug_package)
+
+    tick_line = line_of(main, 'print("tick')
+    throw_line = line_of(main, "throw Unverified")
+    greeting_line = line_of(main, "print(greeter.greeting")
+
+    def breakpoint_gutter():
+        z.run(f"open {main}:{tick_line}", "wait 400")
+        x, y = gutter_row(z, tick_line)
+        z.run(f"click {x} {y}", "wait 200")
+        s = z.dump()
+        assert [(b["line"], b["enabled"]) for b in s["breakpoints"]["list"]] == [(tick_line, True)], s["breakpoints"]
+        assert [m["line"] for m in s["breakpoints"]["markers"]] == [tick_line], s["breakpoints"]["markers"]
+        z.run(f"click {x} {y}", "wait 200")
+        assert not z.dump()["breakpoints"]["list"][0]["enabled"], "a click disables it"
+        z.run(f"click {x} {y}", "wait 200")
+        assert z.dump()["breakpoints"]["list"][0]["enabled"], "and enables it"
+        z.run("screenshot " + os.path.join(WORK, "breakpoint-gutter.png"))
+        # Lines inserted above move it down; undoing them moves it back.
+        z.run(f"open {main}:1", "keys enter enter", "wait 200")
+        assert z.dump()["breakpoints"]["list"][0]["line"] == tick_line + 2, z.dump()["breakpoints"]["list"]
+        for _ in range(3):
+            if not z.dump()["active"]["dirty"]:
+                break
+            z.run("keys cmd-z", "wait 200")
+        assert z.dump()["breakpoints"]["list"][0]["line"] == tick_line, z.dump()["breakpoints"]["list"]
+        # A double-click edits it (and leaves it enabled); a right-click shows its menu.
+        z.run(f"open {main}:{tick_line}", "wait 300")
+        x, y = gutter_row(z, tick_line)
+        z.run(f"double-click {x} {y}", "wait 300")
+        s = z.dump()
+        assert s["breakpoints"]["editor"]["title"] == f"main.swift:{tick_line}" and s["breakpoints"]["list"][0]["enabled"], s["breakpoints"]
+        z.run("screenshot " + os.path.join(WORK, "breakpoint-editor.png"), "breakpoint close")
+        z.run(f"right-click {x} {y}", "wait 300")
+        assert z.dump()["breakpoints"]["menu_open"], "the breakpoint's menu"
+        z.run("keys escape", "wait 200")
+
+    def conditional_breakpoint_and_console():
+        z.run(f"open {main}:{tick_line}", "wait 300", "action zcode::EditBreakpoint", "wait 300",
+              "breakpoint condition i == 2", "breakpoint close")
+        assert z.dump()["breakpoints"]["list"][0]["condition"] == "i == 2"
+        z.run("action zcode::ClearConsole", "keys cmd-r")
+        s = stopped(z)
+        assert "i = 2" in s["debugger"]["variables"] and "tick 1" in s["console_tail"] and "tick 2" not in s["console_tail"], s
+        assert s["console"]["prompt"], s["console"]
+        # The LLDB console: po, p, expr, v and any lldb command.
+        z.run("console po i")
+        assert console_output(z, "po i") == ["2"], z.dump()["console_tail"]
+        z.run("console p i * 10")
+        assert any("20" in l for l in console_output(z, "p i * 10")), z.dump()["console_tail"]
+        z.run("console expr greeter.name")
+        assert any('"zcode"' in l for l in console_output(z, "expr greeter.name")), z.dump()["console_tail"]
+        z.run("console v i")
+        assert console_output(z, "v i") == ["(Int) i = 2"], z.dump()["console_tail"]
+        z.run("console bt 1")
+        assert any("main.swift:" in l for l in console_output(z, "bt 1")), z.dump()["console_tail"]
+        # ↑/↓ walk the history at the (lldb) prompt; Return runs the line again.
+        z.run("action zcode::ActivateConsole", "wait 200", "keys up", "wait 100")
+        assert z.dump()["console"]["input"] == "bt 1", z.dump()["console"]
+        z.run("keys up", "keys up", "wait 100")
+        assert z.dump()["console"]["input"] == "expr greeter.name", z.dump()["console"]
+        z.run("keys down", "wait 100", "keys enter", "wait 300")
+        assert z.dump()["console_tail"].count("(lldb) v i") == 2, z.dump()["console_tail"]
+        # The Variables view's Print Description, and data tips on hover.
+        z.run("variable i describe")
+        s = z.wait_for(lambda s: "Printing description of i:" in s["console_tail"], timeout=30, interval=0.3)
+        tail = s["console_tail"]
+        assert tail[tail.index("Printing description of i:") + 1:][:1] == ["2"], tail
+        z.run(f"open {main}:{tick_line}", "wait 200", keys_right(column_of(main, "\\(i)", 2)))
+        tip = json.loads(z.run("hover")[-1])["hover"]
+        assert "i: Int = 2" in tip, tip
+        z.run(f"open {main}:{greeting_line}", "wait 200", keys_right(column_of(main, "greeter.greeting")))
+        tip = json.loads(z.run("hover")[-1])["hover"]
+        assert "greeter: ZKit.Greeter" in tip and 'name = "zcode"' in tip, tip
+        # The condition held once; the program runs to its end.
+        z.run("keys ctrl-cmd-y")
+        debug_run_ends(z)
+
+    def ignore_count():
+        z.run(f"open {main}:{tick_line}", "wait 300", "action zcode::EditBreakpoint", "wait 300",
+              "breakpoint condition", "breakpoint ignore 1", "breakpoint close")
+        assert z.dump()["breakpoints"]["list"][0]["ignore"] == 1
+        z.run("action zcode::ClearConsole", "keys cmd-r")
+        assert "i = 2" in stopped(z)["debugger"]["variables"], "the first hit is ignored"
+        z.run("keys ctrl-cmd-y")
+        z.wait_for(lambda s: "i = 3" in s["debugger"]["variables"], timeout=60, interval=0.5)
+        z.run("keys ctrl-cmd-y")
+        debug_run_ends(z)
+
+    def log_message_and_auto_continue():
+        z.run(f"open {main}:{tick_line}", "wait 300", "action zcode::EditBreakpoint", "wait 300", "breakpoint ignore 0",
+              "breakpoint add-action log tick @i * 10@ in %B, hit %H", "breakpoint add-action command p i + 100",
+              "breakpoint auto-continue on", "breakpoint close")
+        bp = z.dump()["breakpoints"]["list"][0]
+        assert bp["auto_continue"] and [a["type"] for a in bp["actions"]] == ["log", "command"], bp
+        z.run("action zcode::ClearConsole", "keys cmd-r")
+        tail = debug_run_ends(z)["console_tail"]
+        for hit in (1, 2, 3):
+            assert f"tick {hit * 10} in main.swift:{tick_line}, hit {hit}" in tail, tail
+        assert any(l.endswith("103") for l in tail), tail
+
+    def symbolic_breakpoint():
+        z.run("action zcode::DeleteAllBreakpoints", "keys cmd-alt-\\", "wait 300")
+        assert z.dump()["breakpoints"]["editor"]["title"] == "Symbolic Breakpoint", z.dump()["breakpoints"]
+        z.run("breakpoint symbol Greeter.greeting", "breakpoint module zhello", "breakpoint close")
+        assert [b["title"] for b in z.dump()["breakpoints"]["list"]] == ["Greeter.greeting"]
+        z.run("action zcode::ClearConsole", "keys cmd-r")
+        s = stopped(z)
+        assert "Greeter.greeting" in s["debugger"]["frames"][0] and "Greeter.swift:" in s["debugger"]["frames"][0], s["debugger"]
+        z.run("keys ctrl-cmd-y")
+        debug_run_ends(z)
+        # In another module it doesn't resolve, so the run doesn't stop.
+        z.run("breakpoint edit 0", "wait 300", "breakpoint module Foundation", "breakpoint close", "action zcode::ClearConsole", "keys cmd-r")
+        debug_run_ends(z)
+
+    def swift_error_and_exception_breakpoints():
+        z.run("action zcode::DeleteAllBreakpoints", "action zcode::CreateSwiftErrorBreakpoint", "wait 200")
+        s = z.dump()
+        assert [b["title"] for b in s["breakpoints"]["list"]] == ["Swift Error"] and s["navigator"] == "Breakpoints", s["breakpoints"]
+        z.run("action zcode::ClearConsole", "keys cmd-r")
+        s = stopped(z)
+        assert "Swift Throw" in s["debugger"]["state"], s["debugger"]
+        # The throwing line is shown, as in Xcode.
+        assert s["active"]["path"] == main and s["active"]["line"] == throw_line, s["active"]
+        # An exception breakpoint added while paused reaches lldb at once.
+        z.run("action zcode::CreateExceptionBreakpoint", "wait 300", "breakpoint exception Objective-C", "breakpoint close")
+        assert [b["title"] for b in z.dump()["breakpoints"]["list"]] == ["Swift Error", "All Objective-C Exceptions"]
+        z.run("console breakpoint list")
+        listed = "\n".join(console_output(z, "breakpoint list"))
+        assert "swift_willThrow" in listed and "objc_exception_throw" in listed, listed
+        z.run("keys ctrl-cmd-y")
+        debug_run_ends(z)
+
+    def breakpoints_left_for_relaunch():
+        # Disabled, so later runs don't stop: checked after a relaunch.
+        z.run(f"open {main}:{tick_line}", "wait 300", "keys cmd-\\", "action zcode::EditBreakpoint", "wait 300",
+              "breakpoint condition i > 1", "breakpoint add-action sound Pop", "breakpoint close")
+        for ix in range(3):
+            z.run(f"breakpoint enable {ix} off")
+        assert not any(b["enabled"] for b in z.dump()["breakpoints"]["list"])
+
+    check("Breakpoints: gutter click adds, disables and enables; follows inserted lines; double-click edits", breakpoint_gutter)
+    check("Breakpoints: condition; LLDB console po/p/expr/v/bt with history; Print Description; data tips", conditional_breakpoint_and_console)
+    check("Breakpoints: ignore count", ignore_count)
+    check("Breakpoints: Log Message (@expr@, %B, %H) and Debugger Command actions, auto-continue", log_message_and_auto_continue)
+    check("Breakpoints: symbolic (⌥⌘\\) with a module", symbolic_breakpoint)
+    check("Breakpoints: Swift Error and Objective-C exception breakpoints", swift_error_and_exception_breakpoints)
+    check("Breakpoints: leave some for the relaunch check", breakpoints_left_for_relaunch)
 
     def package_run_with_options():
         z.wait_for(lambda s: s["scheme_options"], timeout=60, interval=0.5)
@@ -935,10 +1143,16 @@ def main():
             o = s["scheme_options"]
             assert o["storage"] == "session" and o["run"]["lists"]["environment"] == ["ZHELLO_NAME=Scheme"], o
             assert o["test"]["lists"]["environment"] == ["ZKIT_TEST_ENV=from-scheme"] and not o["test"]["uses_run_arguments"], o
+            # Breakpoints come back with their options.
+            bps = s["breakpoints"]["list"]
+            tick_line = line_of(os.path.join(samples, "ZKit", "Sources", "zhello", "main.swift"), 'print("tick')
+            assert [b["title"] for b in bps] == ["Swift Error", "All Objective-C Exceptions", f"main.swift:{tick_line}"], bps
+            assert not any(b["enabled"] for b in bps) and bps[2]["condition"] == "i > 1", bps
+            assert bps[2]["actions"] == [{"type": "sound", "name": "Pop"}], bps
         finally:
             z.quit()
 
-    check("Swift package: scheme options survive a relaunch (session)", package_options_persist)
+    check("Swift package: scheme options and breakpoints survive a relaunch (session)", package_options_persist)
 
     print("Xcode project without scheme files:")
 
