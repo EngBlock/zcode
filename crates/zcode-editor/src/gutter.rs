@@ -92,6 +92,50 @@ impl GutterPaint {
             .paint(origin, self.line_height, TextAlign::Left, None, window, cx)
             .ok();
     }
+
+    /// Paints `text` on this row within `span` (an x range), left- or
+    /// right-aligned, in the editor's font at `scale` of its size, cut short
+    /// with an ellipsis to fit. Returns the painted width.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_label(
+        &self,
+        text: &str,
+        span: Range<Pixels>,
+        align_right: bool,
+        scale: f32,
+        color: Hsla,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Pixels {
+        let font_size = self.font_size * scale;
+        let max_width = span.end - span.start;
+        let shape = |text: SharedString, window: &mut Window| {
+            let run = TextRun {
+                len: text.len(),
+                font: self.font.clone(),
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window.text_system().shape_line(text, font_size, &[run], None)
+        };
+        let mut shaped = shape(SharedString::from(text.to_string()), window);
+        let mut chars: Vec<char> = text.chars().collect();
+        while shaped.width > max_width && !chars.is_empty() {
+            chars.pop();
+            let cut: String = chars.iter().collect::<String>().trim_end().to_string() + "…";
+            shaped = shape(cut.into(), window);
+        }
+        if text.is_empty() || shaped.width > max_width {
+            return px(0.);
+        }
+        let x = if align_right { span.end - shaped.width } else { span.start };
+        shaped
+            .paint(point(x, self.cell.top()), self.line_height, TextAlign::Left, None, window, cx)
+            .ok();
+        shaped.width
+    }
 }
 
 type PaintFn = Rc<dyn Fn(&GutterPaint, &mut Window, &mut App)>;
