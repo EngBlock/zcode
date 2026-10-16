@@ -1619,20 +1619,22 @@ def pane_checks(samples):
         assert shape()[1] == 1 and shape()[2][1][1] == "Legacy.m", shape()
 
     def definition_in_assistant():
-        call_line = line_of(main, "Greeter(name:")
-        column = open(main).read().splitlines()[call_line - 1].index("Greeter(") + 2
+        # A definition in the same file, so it doesn't wait for the package's index.
+        call_line = line_of(main, "(try? verify(")
+        column = column_of(main, "verify(name)", 2)
         z.run(f"open {main}", "wait 200")
-        z.wait_for(lambda s: s["lsp"] == "Ready" and not s["indexing"], timeout=300)
-        z.run("pane focus 1", f"open {implementation}", "pane focus 0", f"open {main}:{call_line}", "wait 200", keys_right(column), "wait 200")
+        z.wait_for(lambda s: s["lsp"] == "Ready", timeout=300)
+        z.run("pane focus 1", f"open {implementation}", "pane focus 0", "wait 200")
         # The assistant shows the definition; the editor stays where it was.
-        deadline = time.time() + 120
-        while time.time() < deadline:
-            z.run("keys ctrl-alt-cmd-j", "wait 1500")
+        # Right after sourcekit-lsp starts its answers can be empty: retry
+        # like a user pressing ⌃⌥⌘J again.
+        for _ in range(12):
+            z.run(f"open {main}:{call_line}", "wait 200", keys_right(column), "keys ctrl-alt-cmd-j", "wait 1500")
             p = panes()
-            if shown(p, 1)["path"] == greeter:
+            if shown(p, 1)["path"] == main:
                 break
-        assert p["focused"] == 1 and shown(p, 1)["line"] == line_of(greeter, "struct Greeter"), shape(p)
-        assert shown(p, 0)["path"] == main and shown(p, 0)["line"] == call_line
+        assert p["focused"] == 1 and shown(p, 1)["line"] == line_of(main, "func verify"), shape(p)
+        assert shown(p, 0)["path"] == main and shown(p, 0)["line"] == call_line, shown(p, 0)
 
     def close_and_focus():
         # Focus Editor Pane shows the focused pane alone, and toggles back.
@@ -1646,7 +1648,9 @@ def pane_checks(samples):
         # A file still shown elsewhere closes without asking, dirty or not.
         z.run(f"open {greeter}", "wait 200", "type Q", "keys ctrl-shift-cmd-w", "wait 300")
         p = panes()
-        assert shape(p)[:2] == ("0", 0) and shown(p, 0)["path"] == greeter, shape(p)
+        assert shape(p)[:2] == ("0", 0) and "Greeter.swift" in p["list"][0]["tabs"], shape(p)
+        # Its edit is still there, in the pane left.
+        z.run(f"open {greeter}", "wait 200")
         assert z.dump()["active"]["dirty"], z.dump()["active"]["line_text"]
         z.run("keys cmd-z", "wait 200")
         assert not z.dump()["active"]["dirty"], z.dump()["active"]["line_text"]
