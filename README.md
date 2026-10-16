@@ -160,6 +160,9 @@ src/
   bookmarks.rs      bookmarks: lines, files and saved find queries, kept in the session
   perf.rs           startup timing and memory sampling (proc_pid_rusage)
   debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR)
+crates/
+  zcode-editor/     the code editor: rope buffer, display map (soft wrap, folding), highlighting,
+                    undo, multiple cursors, LSP popovers, find panel (docs/editor-engine.md)
 vendor/
   gpui-component/   gpui-component 0.7.3 plus small patches (ZCODE-PATCH.md)
 scripts/
@@ -167,9 +170,12 @@ scripts/
   appkit_floor.swift  minimal native AppKit app, the cold-launch reference
 ```
 
-The editor engine (rope, layout, tree-sitter highlighting, completion and
-hover UI) comes from `gpui-component`, which is Apache-2.0. zcode vendors it
-with a startup patch and a popover padding fix, both described in
+The code editor is zcode's own crate, `crates/zcode-editor`. It started as
+the text engine of `gpui-base` and the editor UI of `gpui-component` (both
+Apache-2.0, from GPUI Kit 0.7.3; see its `NOTICE`), and zcode now evolves it
+(`docs/editor-engine.md`). The rest of `gpui-component` (widgets, theme,
+tree-sitter highlighter) is vendored with a startup patch and a visibility
+patch for the highlighter, both described in
 `vendor/gpui-component/ZCODE-PATCH.md`.
 zcode doesn't use any GPL code from Zed.
 

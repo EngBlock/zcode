@@ -5,10 +5,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui_kit::component::input::{
-    Copy, Cut, EditorState, GoToDefinition, IndentInline, Paste, Rope, RopeExt as _,
-    ToggleCodeActions,
-};
+use zcode_editor::{Copy, Cut, EditorState, GoToDefinition, IndentInline, Paste, Rope, RopeExt as _, ToggleCodeActions};
 use gpui_kit::*;
 use serde_json::{Value, json};
 
@@ -713,7 +710,7 @@ fn locations_to_matches(locations: Vec<lsp_types::Location>) -> Vec<FileMatches>
 #[cfg(test)]
 mod tests {
     use super::{line_block, toggle_comment_text, whole_line};
-    use gpui_kit::component::input::Rope;
+    use zcode_editor::Rope;
 
     #[test]
     fn comments_and_uncomments() {

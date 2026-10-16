@@ -1,0 +1,23 @@
+zcode-editor
+Copyright 2026 the zcode authors
+
+This crate is derived from GPUI Component (https://github.com/longbridge/gpui-kit),
+Copyright 2024 - 2026 Longbridge <https://longbridge.com>, licensed under the
+Apache License, Version 2.0 (LICENSE-APACHE in this directory):
+
+  * src/base, src/editor, src/input, src/textarea and most of src/lib.rs come
+    from gpui-base 0.7.3, src/input (the text-editing engine), with
+    src/base/text_boundary.rs and src/base/touch_selection.rs from
+    gpui-base's own modules of those names.
+  * src/ui comes from gpui-component 0.7.3: the Editor element and the editor
+    path of the Input element (src/ui/element.rs), the popovers, the find
+    panel, the overlay host, the default language rules, the syntax-context
+    provider and the tree-sitter adapter (src/ui/highlighter.rs).
+
+zcode changed these files: paths and visibility for a standalone crate, the
+editing actions and InputEvent shared with gpui-base rather than redefined,
+an element that renders only the code editor, the macOS text-content-type
+hook removed, and the extension points described in docs/editor-engine.md
+(gutter decorations, anchors, inlays and blocks, highlight layers, public
+undo/redo, transactions and read-only mode, keystroke interception and
+cursor shapes, the excerpt model). No code from Zed (GPL) is included.

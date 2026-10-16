@@ -8,7 +8,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use anyhow::Result;
-use gpui_kit::component::input::{EditorState, HoverProvider, Rope, RopeExt as _};
+use zcode_editor::{EditorState, HoverProvider, Rope, RopeExt as _};
 use gpui_kit::{App, AppContext as _, Entity, Task, WeakEntity, Window};
 use serde_json::{Value, json};
 

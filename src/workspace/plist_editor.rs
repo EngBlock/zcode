@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, Redo, Undo};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use zcode_editor::{Editor, EditorState, Redo, Undo};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;

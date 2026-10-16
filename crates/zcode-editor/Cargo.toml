@@ -1,0 +1,35 @@
+[package]
+name = "zcode-editor"
+version = "0.1.0"
+edition = "2024"
+description = "zcode's code editor: rope buffer, display map, highlighting, LSP UI and the extension points zcode builds on"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+# The GPUI family zcode builds on, at the versions gpui-kit 0.7.3 pins.
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+gpui-base = "=0.7.3"
+gpui-component = { version = "=0.7.3", features = ["tree-sitter"] }
+sum-tree = { package = "gpui-pre-sum-tree", version = "=0.3.9" }
+ropey = { version = "=2.0.0-beta.1", features = ["metric_chars", "metric_lines_lf", "metric_utf16"] }
+lsp-types = { version = "0.97", features = ["proposed"] }
+aho-corasick = "1.1.3"
+anyhow = "1"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+smallvec = "1"
+tracing = "0.1.41"
+tree-sitter = "0.26.13"
+unicode-linebreak = "0.1.5"
+unicode-segmentation = "1.12.0"
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-component = { version = "=0.7.3", features = ["tree-sitter", "tree-sitter-python", "tree-sitter-rust", "test-support"] }
+indoc = "2"

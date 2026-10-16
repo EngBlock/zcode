@@ -27,8 +27,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, SystemTime};
 
-use gpui_kit::component::highlighter::{Diagnostic as EditorDiagnostic, DiagnosticSeverity};
-use gpui_kit::component::input::{EditorState, InputEvent, InputState, Position, RopeExt as _, TabSize};
+use zcode_editor::{Diagnostic as EditorDiagnostic, DiagnosticSeverity};
+use gpui_kit::component::input::{InputEvent, InputState};
+use zcode_editor::{EditorState, Position, RopeExt as _, TabSize};
 use gpui_kit::component::tree::{TreeItem, TreeState};
 use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
@@ -37,7 +38,7 @@ use crate::actions::*;
 use crate::build::log::{Issue, IssueSource, Severity};
 use crate::build::{BuildAction, BuildController, BuildEvent};
 use crate::debugger::{DebugState, DebugTarget, Debugger, DebuggerEvent};
-use gpui_kit::component::input::{RangeDecoration, RangeDecorationCollection, RangeDecorationStyle};
+use zcode_editor::{RangeDecoration, RangeDecorationCollection, RangeDecorationStyle};
 use crate::lsp::{self, DocumentProviders, LspStore, LspStoreEvent};
 use crate::project::{self, ProjectInfo};
 use crate::search::{FileMatches, SearchOptions};
@@ -73,7 +74,7 @@ pub struct Buffer {
     /// A package's checked-out source: shown, never edited or saved.
     pub read_only: bool,
     /// Text as last loaded/saved, so undoing back to it clears `dirty`.
-    saved_text: gpui_kit::component::input::Rope,
+    saved_text: zcode_editor::Rope,
     pub language: SharedString,
     mtime: Option<SystemTime>,
     breakpoint_anchors: line_anchors::LineAnchors,
@@ -617,7 +618,7 @@ impl Workspace {
             (_, Err(_)) => return,
         };
         buffer.mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        buffer.saved_text = gpui_kit::component::input::Rope::from(text.as_str());
+        buffer.saved_text = zcode_editor::Rope::from(text.as_str());
         let editor = buffer.editor.clone();
         let Some(window) = cx.windows().first().copied() else { return };
         window
@@ -814,6 +815,7 @@ impl Workspace {
                 .soft_wrap(soft_wrap)
                 .default_value(text)
         });
+        editor.update(cx, |state, cx| state.set_readonly(read_only, cx));
 
         let lsp_language = lsp::language_id_for(&path);
         if let Some(language_id) = lsp_language {
@@ -1397,7 +1399,7 @@ impl Workspace {
     }
 
     /// Byte range covering a whole 1-based line, newline included.
-    fn line_range(text: &gpui_kit::component::input::Rope, line: u32) -> Option<std::ops::Range<usize>> {
+    fn line_range(text: &zcode_editor::Rope, line: u32) -> Option<std::ops::Range<usize>> {
         let row = line.checked_sub(1)? as usize;
         if row >= text.lines_len() {
             return None;
@@ -1666,12 +1668,12 @@ impl Workspace {
                     }
                 });
             } else if let Ok(contents) = std::fs::read_to_string(&path) {
-                let mut text = gpui_kit::component::input::Rope::from(contents.as_str());
+                let mut text = zcode_editor::Rope::from(contents.as_str());
                 for edit in &edits {
                     let range = lsp::lsp_range_to_offsets(&text, edit.range);
                     let mut s = text.to_string();
                     s.replace_range(range, &edit.new_text);
-                    text = gpui_kit::component::input::Rope::from(s.as_str());
+                    text = zcode_editor::Rope::from(s.as_str());
                 }
                 std::fs::write(&path, text.to_string()).ok();
                 self.lsp.read(cx).files_changed(std::slice::from_ref(&path));
@@ -1866,7 +1868,7 @@ impl Workspace {
                 "column": pos.character + 1,
                 "selection": state.selected_text().to_string(),
                 "text": (state.text().len() < 8000).then(|| state.text().to_string()),
-                "line_text": gpui_kit::component::input::RopeExt::slice_line(state.text(), pos.line as usize).to_string(),
+                "line_text": zcode_editor::RopeExt::slice_line(state.text(), pos.line as usize).to_string(),
                 "diagnostics": state.diagnostics().map(|d| d.len()).unwrap_or(0),
                 "completion_menu_open": state.completion_menu_state().open,
                 "completion_items": state.completion_menu_state().items.iter().take(5).map(|i| i.label.clone()).collect::<Vec<_>>(),

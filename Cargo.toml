@@ -5,7 +5,13 @@ edition = "2024"
 description = "A fast, Zed-inspired editor for the Apple ecosystem"
 license = "Apache-2.0"
 
+[workspace]
+members = ["crates/zcode-editor"]
+default-members = [".", "crates/zcode-editor"]
+exclude = ["vendor/gpui-component"]
+
 [dependencies]
+zcode-editor = { path = "crates/zcode-editor" }
 gpui-kit = { version = "=0.7.3", features = [
     "tree-sitter",
     "tree-sitter-swift",

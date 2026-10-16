@@ -11,7 +11,7 @@ pub use store::{LspStatus, LspStore, LspStoreEvent};
 use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 
-use gpui_kit::component::input::{Rope, RopeExt as _};
+use zcode_editor::{Rope, RopeExt as _};
 
 /// LSP `languageId` for a file, or `None` when sourcekit-lsp can't serve it.
 pub fn language_id_for(path: &Path) -> Option<&'static str> {

@@ -10,10 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::Result;
-use gpui_kit::component::input::{
-    CodeActionProvider, CompletionProvider, DefinitionProvider, EditorState, HoverProvider, Rope,
-    RopeExt as _,
-};
+use zcode_editor::{CodeActionProvider, CompletionProvider, DefinitionProvider, EditorState, HoverProvider, Rope, RopeExt as _};
 use gpui_kit::{App, AppContext as _, Entity, SharedString, Task, WeakEntity, Window};
 use lsp_types::{
     CodeAction, CodeActionOrCommand, CompletionContext, CompletionItem, CompletionResponse,

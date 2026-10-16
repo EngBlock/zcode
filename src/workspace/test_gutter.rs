@@ -11,7 +11,7 @@
 use std::cell::{Cell, RefCell};
 
 use gpui_kit::component::ActiveTheme as _;
-use gpui_kit::component::input::{EditorState, RopeExt as _};
+use zcode_editor::{EditorState, RopeExt as _};
 use gpui_kit::*;
 
 use super::Workspace;

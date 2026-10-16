@@ -3,7 +3,7 @@
 //! edits and undo. After an edit the owner reads where its anchors went and
 //! moves its lines there; an anchor whose line was deleted reports `None`.
 
-use gpui_kit::component::input::{EditorState, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, RopeExt as _};
+use zcode_editor::{EditorState, RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, RopeExt as _};
 use gpui_kit::*;
 
 use super::Workspace;

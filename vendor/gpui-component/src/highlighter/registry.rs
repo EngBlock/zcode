@@ -557,7 +557,8 @@ impl LanguageRegistry {
 
     /// Returns a fresh parser and grammar for `name`, preferring a registered
     /// parser factory over the statically linked grammar.
-    pub(crate) fn parser(
+    // zcode patch: public for zcode-editor's tree-sitter adapter.
+    pub fn parser(
         &self,
         name: &str,
     ) -> Result<(tree_sitter::Parser, tree_sitter::Language)> {
@@ -586,7 +587,8 @@ impl LanguageRegistry {
 
     /// Returns whether `name` can produce a parser, either through a registered
     /// parser factory or a statically linked grammar.
-    pub(crate) fn has_parser(&self, name: &str) -> bool {
+    // zcode patch: public for zcode-editor's tree-sitter adapter.
+    pub fn has_parser(&self, name: &str) -> bool {
         let Some(config) = self.language(name) else {
             return false;
         };
@@ -600,11 +602,13 @@ impl LanguageRegistry {
     }
 
     /// Returns the grammar for `name`, preferring a registered parser factory.
-    pub(crate) fn grammar(&self, name: &str) -> Result<tree_sitter::Language> {
+    // zcode patch: public for zcode-editor's tree-sitter adapter.
+    pub fn grammar(&self, name: &str) -> Result<tree_sitter::Language> {
         Ok(self.parser(name)?.1)
     }
 
-    pub(crate) fn editing_language_name(&self, name: &str) -> SharedString {
+    // zcode patch: public for zcode-editor's tree-sitter adapter.
+    pub fn editing_language_name(&self, name: &str) -> SharedString {
         self.languages
             .lock()
             .unwrap()

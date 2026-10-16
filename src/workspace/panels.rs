@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{Disableable as _, Selectable as _};
-use gpui_kit::component::input::Editor;
+use zcode_editor::Editor;
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui_kit::component::spinner::Spinner;
@@ -535,7 +535,6 @@ impl Workspace {
                 .into_any_element();
         }
         let editor = buffer.editor.clone();
-        let read_only = buffer.read_only;
         let markers = self.render_breakpoint_gutter(&editor, cx);
         let ribbons = self.render_bookmark_gutter(&editor, cx);
         let diamonds = self.render_test_gutter(&editor, cx);
@@ -550,7 +549,6 @@ impl Workspace {
                     .min_h_0()
                     .child(
                         Editor::new(&editor)
-                            .readonly(read_only)
                             .bordered(false)
                             .p_0()
                             .h_full()
@@ -976,7 +974,7 @@ impl Workspace {
 
     pub(super) fn jump_to_line(&mut self, _: &JumpToLine, window: &mut Window, cx: &mut Context<Self>) {
         let Some(buffer) = self.active_buffer() else { return };
-        let lines = gpui_kit::component::input::RopeExt::lines_len(buffer.editor.read(cx).text());
+        let lines = zcode_editor::RopeExt::lines_len(buffer.editor.read(cx).text());
         let delegate = pickers::JumpToLineDelegate::new(cx.weak_entity(), lines);
         let picker = cx.new(|cx| Picker::new(delegate, window, cx));
         self.show_modal(picker, window, cx);
@@ -1148,11 +1146,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::go_back))
             .on_action(cx.listener(Self::go_forward))
             .on_action(cx.listener(|this, _: &FindInFile, window, cx| {
-                window.dispatch_action(Box::new(gpui_kit::component::input::Search), cx);
+                window.dispatch_action(Box::new(zcode_editor::Search), cx);
                 let _ = this;
             }))
             .on_action(cx.listener(|this, _: &FindAndReplaceInFile, window, cx| {
-                window.dispatch_action(Box::new(gpui_kit::component::input::Replace), cx);
+                window.dispatch_action(Box::new(zcode_editor::Replace), cx);
                 let _ = this;
             }))
             .on_action(cx.listener(|this, _: &FindInWorkspace, window, cx| {

@@ -14,12 +14,19 @@ keeps the full listing on other platforms. On macOS both probes choose the
 same fonts as before: `.SystemUIFont` resolves to itself, so no substitution
 happens, and Menlo is installed.
 
-**Editor popover padding (`src/input/popovers/`):** hover and diagnostic
-popovers get `px_2`/`py_1p5` padding instead of `p_1` (diagnostics had
-`px_1`/`py_0p5`). `render_markdown` passes empty `code_block_actions`, which
-hides gpui-base's code-block language label: the popover style zeroes the
-code block's padding, so the absolutely positioned label landed on the code.
-Re-apply these when updating; they are small enough to redo by hand.
+**Highlighter visibility (`src/highlighter/`):** zcode's code editor lives
+in `crates/zcode-editor` (see `docs/editor-engine.md`), and its tree-sitter
+adapter drives this crate's `SyntaxHighlighter` the way gpui-component's own
+editor does. The patch makes the pieces it needs public, without changing
+them: `parse_input_bytes`, `SyntaxHighlighter::{update_edits,
+injection_parse_data, compute_injection_layers, apply_background_tree}`, the
+`InjectionParseData` and `InjectionLayer` types (fields stay private), and
+`LanguageRegistry::{parser, has_parser, grammar, editing_language_name}`.
+Each is marked `// zcode patch`. Re-apply by making the same items `pub`.
+
+(The editor popover padding patch that used to live in `src/input/popovers/`
+moved into `crates/zcode-editor` with the editor, so this crate's input module
+is upstream again.)
 
 **Updating:** when gpui-kit moves to a newer gpui-component, check whether
 `src/theme/mono_font.rs` still enumerates fonts. If it does, re-apply the diff

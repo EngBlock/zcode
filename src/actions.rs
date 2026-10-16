@@ -3,7 +3,7 @@
 //! Shortcuts follow Xcode 27's defaults (read from its IDEKit command
 //! definitions); a few Zed favorites are added where Xcode has none.
 
-use gpui_kit::component::input::{Redo, ShowCompletions, ToggleCodeActions, Undo};
+use zcode_editor::{Redo, ShowCompletions, ToggleCodeActions, Undo};
 use gpui_kit::{Action, App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType};
 
 gpui_kit::actions!(
@@ -525,7 +525,7 @@ pub fn set_menus(cx: &mut App) {
             items.push(MenuItem::os_action("Paste", PasteOrPasteLine, OsAction::Paste));
             items.push(MenuItem::os_action(
                 "Select All",
-                gpui_kit::component::input::SelectAll,
+                zcode_editor::SelectAll,
                 OsAction::SelectAll,
             ));
             items.push(MenuItem::separator());

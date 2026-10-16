@@ -303,6 +303,7 @@ pub fn run() {
             };
             mark("app running");
             gpui_kit::init(cx);
+            zcode_editor::init(cx);
             mark("gpui_kit::init");
             crate::languages::register();
             cx.set_global(Perf::new(main_started));

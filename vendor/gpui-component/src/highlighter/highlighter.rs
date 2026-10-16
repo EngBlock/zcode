@@ -58,7 +58,8 @@ pub struct SyntaxHighlighter {
 
 /// A parsed injection layer.
 /// Stores the parsed tree and the ranges it covers.
-pub(crate) struct InjectionLayer {
+// zcode patch: public (opaque) for zcode-editor's tree-sitter adapter.
+pub struct InjectionLayer {
     pub(crate) language_name: SharedString,
     highlight_query: Arc<Query>,
     pub(crate) ranges: Vec<tree_sitter::Range>,
@@ -69,7 +70,8 @@ pub(crate) struct InjectionLayer {
 }
 
 /// Data needed to compute injection layers on a background thread.
-pub(crate) struct InjectionParseData {
+// zcode patch: public for zcode-editor's tree-sitter adapter.
+pub struct InjectionParseData {
     pub(crate) query: Arc<Query>,
     pub(crate) content_capture_index: Option<u32>,
     pub(crate) language_capture_index: Option<u32>,
@@ -157,7 +159,8 @@ impl<'a> Iterator for ByteChunks<'a> {
 /// can ask for an offset inside a multi-byte character. Slicing `&str` there
 /// panics, and a panic inside tree-sitter's `extern "C"` read callback aborts
 /// the process, so the chunk is sliced as bytes.
-pub(crate) fn parse_input_bytes(text: &Rope, offset: usize) -> &[u8] {
+// zcode patch: public for zcode-editor's tree-sitter adapter.
+pub fn parse_input_bytes(text: &Rope, offset: usize) -> &[u8] {
     if offset >= text.len() {
         return &[];
     }
@@ -606,7 +609,8 @@ impl SyntaxHighlighter {
     /// Like [`Self::update`] for several edits, in the order they were applied
     /// to reach `text`: the tree takes every edit, then reparses once. No
     /// edits means the change is unknown, as `None` does for `update`.
-    pub(crate) fn update_edits(
+    // zcode patch: public for zcode-editor's tree-sitter adapter.
+    pub fn update_edits(
         &mut self,
         edits: &[InputEdit],
         text: &Rope,
@@ -687,7 +691,8 @@ impl SyntaxHighlighter {
 
     /// Returns the data needed to compute injection layers on a background thread.
     /// Returns `None` if this language has no injections.
-    pub(crate) fn injection_parse_data(&self) -> Option<InjectionParseData> {
+    // zcode patch: public for zcode-editor's tree-sitter adapter.
+    pub fn injection_parse_data(&self) -> Option<InjectionParseData> {
         let query = self.injections_query.clone()?;
         Some(InjectionParseData {
             query,
@@ -710,7 +715,8 @@ impl SyntaxHighlighter {
     /// Compute injection layers from a freshly-parsed main tree.
     /// This is pure computation with no side effects and is safe to run on a
     /// background thread.
-    pub(crate) fn compute_injection_layers(
+    // zcode patch: public for zcode-editor's tree-sitter adapter.
+    pub fn compute_injection_layers(
         data: InjectionParseData,
         tree: &Tree,
         text: &Rope,
@@ -988,7 +994,8 @@ impl SyntaxHighlighter {
     ///
     /// `injection_layers` must also be pre-computed in the background via
     /// [`compute_injection_layers`] to avoid blocking the main thread.
-    pub(crate) fn apply_background_tree(
+    // zcode patch: public for zcode-editor's tree-sitter adapter.
+    pub fn apply_background_tree(
         &mut self,
         tree: Tree,
         text: &Rope,

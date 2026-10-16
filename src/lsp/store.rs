@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui_kit::component::input::Rope;
+use zcode_editor::Rope;
 use gpui_kit::{App, AppContext as _, BorrowAppContext as _, Context, EventEmitter, Task};
 use serde_json::{Value, json};
 
