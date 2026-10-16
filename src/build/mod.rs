@@ -591,11 +591,14 @@ impl BuildController {
                 .detach();
             }
             // In case the console's devicectl couldn't (it may be gone).
-            Some(RunTarget::Device { udid, installed, .. }) => {
+            Some(RunTarget::Device { udid, installed, result, .. }) => {
                 cx.background_spawn(async move {
                     if let Ok(Some(pid)) = devices::find_process(&udid, &installed) {
                         devices::terminate(&udid, pid).ok();
                     }
+                    // The run no longer reads devicectl's result once it exits.
+                    smol::Timer::after(Duration::from_secs(5)).await;
+                    std::fs::remove_file(result).ok();
                 })
                 .detach();
             }
