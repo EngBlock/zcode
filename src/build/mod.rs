@@ -1086,9 +1086,17 @@ async fn prepare_launch(
                 anyhow::bail!("simctl boot failed: {}", out.trim());
             }
 
-            let mut open = Command::new("/usr/bin/open");
-            open.args(["-g", "-a", "Simulator", "--args", "-CurrentDeviceUDID", &udid]);
-            process::run_quiet(open).await.ok();
+            let simulator_app = crate::toolchain::simulator_app();
+            match &simulator_app {
+                Some(app) => {
+                    let mut open = Command::new("/usr/bin/open");
+                    open.arg("-g").arg("-a").arg(app).args(["--args", "-CurrentDeviceUDID", &udid]);
+                    if let Ok((false, out)) = process::run_quiet(open).await {
+                        say(format!("warning: Could not open {}: {}", app.display(), out.trim()));
+                    }
+                }
+                None => say("warning: No Simulator app found in the active Xcode".to_string()),
+            }
 
             say(format!("Installing {}…", app.file_name().unwrap_or_default().to_string_lossy()));
             let mut install = Command::new("/usr/bin/xcrun");
@@ -1098,9 +1106,11 @@ async fn prepare_launch(
                 anyhow::bail!("simctl install failed: {}", out.trim());
             }
 
-            let mut bring_front = Command::new("/usr/bin/open");
-            bring_front.args(["-a", "Simulator"]);
-            process::run_quiet(bring_front).await.ok();
+            if let Some(app) = &simulator_app {
+                let mut bring_front = Command::new("/usr/bin/open");
+                bring_front.arg("-a").arg(app);
+                process::run_quiet(bring_front).await.ok();
+            }
 
             say(format!("Launching {bundle_id}"));
             let mut launch = Command::new("/usr/bin/xcrun");

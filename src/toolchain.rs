@@ -56,3 +56,19 @@ pub fn sdk_version(sdk: &str) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
+
+/// The app that shows simulator windows for the active Xcode: `Simulator.app`
+/// up to Xcode 26, `DeviceHub.app` from Xcode 27. Opened by path because
+/// `open -a` resolves names through Launch Services, which may not know about
+/// an Xcode outside /Applications (or may pick a different one).
+pub fn simulator_app() -> Option<PathBuf> {
+    let output = Command::new("/usr/bin/xcode-select").arg("-p").output().ok()?;
+    let developer = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let contents = developer.parent()?;
+    [
+        contents.join("Applications/DeviceHub.app"),
+        developer.join("Applications/Simulator.app"),
+    ]
+    .into_iter()
+    .find(|app| app.exists())
+}
