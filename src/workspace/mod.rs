@@ -1,6 +1,7 @@
 //! The project window: navigator, editor tabs, debug area, toolbar, status.
 
 mod add_files;
+mod edit_scheme;
 mod editing;
 mod inspector;
 mod navigator;
@@ -113,6 +114,7 @@ pub struct Workspace {
     /// Serializes `project.pbxproj` edits.
     project_edit_lock: Arc<parking_lot::Mutex<()>>,
     add_files_dialog: Option<WeakEntity<add_files::AddFilesDialog>>,
+    edit_scheme_dialog: Option<WeakEntity<edit_scheme::EditSchemeDialog>>,
     pub show_inspector: bool,
     /// What the File inspector shows when it isn't the active file (a
     /// folder picked in the navigator).
@@ -211,6 +213,7 @@ impl Workspace {
             project_index: Default::default(),
             project_edit_lock: Default::default(),
             add_files_dialog: None,
+            edit_scheme_dialog: None,
             show_inspector: saved.show_inspector.unwrap_or(false),
             inspected: None,
             inspector_info: None,
@@ -1550,6 +1553,11 @@ impl Workspace {
     }
 
     pub fn dismiss_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The scheme editor keeps its changes however it closes.
+        if let Some(dialog) = self.edit_scheme_dialog.take().and_then(|d| d.upgrade()) {
+            let options = dialog.read(cx).edited(cx);
+            self.save_edited_scheme(options, window, cx);
+        }
         if self.modal.take().is_some() {
             match self.active_editor() {
                 Some(editor) => editor.update(cx, |state, cx| state.focus(window, cx)),
@@ -1692,7 +1700,7 @@ impl Workspace {
             "status_label": perf.status_label(),
             "warning": perf.memory_warning(),
         });
-        serde_json::json!({
+        let mut state = serde_json::json!({
             "project": self.project.name,
             "kind": self.project.kind.label(),
             "files": self.files.len(),
@@ -1737,7 +1745,13 @@ impl Workspace {
                 "variables": self.debugger.read(cx).variables.iter().take(8).map(|v| format!("{} = {}", v.name, v.value)).collect::<Vec<_>>(),
                 "breakpoints": self.debugger.read(cx).breakpoints.values().map(|l| l.len()).sum::<usize>(),
             },
-        })
+        });
+        // Added separately: one `json!` this size reaches the macro recursion limit.
+        state["last_log"] = serde_json::json!(build.reports.first().map(|r| r.log_path.clone()));
+        state["scheme_options"] = serde_json::json!(build.scheme_options.as_ref().map(edit_scheme::options_summary));
+        state["edit_scheme"] =
+            serde_json::json!(self.edit_scheme_dialog.as_ref().and_then(|d| d.upgrade()).map(|d| d.read(cx).summary(cx)));
+        state
     }
 }
 

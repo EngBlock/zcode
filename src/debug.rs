@@ -18,6 +18,7 @@
 //!   inspect <path>             show the File inspector for a file or folder
 //!   membership <target> on|off toggle a Target Membership checkbox in the inspector
 //!   run-test <Target/Class/test> run a test, class or target as the Test navigator's play button does
+//!   edit-scheme <field> [<value>]  edit the open scheme editor (see `EditSchemeDialog::set_field`)
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -217,6 +218,14 @@ fn run_command(
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.show_add_files(paths, folder, window, cx)))
                 .map_err(|e| e.to_string())?;
             Ok(String::new())
+        }
+        "edit-scheme" => {
+            let (field, value) = arg.split_once(' ').unwrap_or((arg, ""));
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.edit_scheme_field(field, value, window, cx)))
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
         }
         "run-test" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;

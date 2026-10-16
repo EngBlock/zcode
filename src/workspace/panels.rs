@@ -14,6 +14,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::assets::IconName;
 
+use super::edit_scheme::SchemeAction;
 use super::pickers::{self, destination_icon};
 use super::{NavigatorTab, Workspace};
 use crate::actions::*;
@@ -1069,6 +1070,17 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::show_document_items))
             .on_action(cx.listener(Self::jump_to_line))
             .on_action(cx.listener(Self::choose_scheme))
+            .on_action(cx.listener(|this, _: &NextScheme, _, cx| this.build.update(cx, |b, cx| b.step_scheme(1, cx))))
+            .on_action(cx.listener(|this, _: &PreviousScheme, _, cx| this.build.update(cx, |b, cx| b.step_scheme(-1, cx))))
+            .on_action(cx.listener(|this, _: &EditScheme, window, cx| {
+                this.edit_scheme(SchemeAction::Run, None, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &RunWithOptions, window, cx| {
+                this.edit_scheme(SchemeAction::Run, Some(SchemeAction::Run), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &TestWithOptions, window, cx| {
+                this.edit_scheme(SchemeAction::Test, Some(SchemeAction::Test), window, cx)
+            }))
             .on_action(cx.listener(Self::choose_destination))
             .on_action(cx.listener(Self::show_performance))
             .on_action(cx.listener(Self::cut_or_cut_line))

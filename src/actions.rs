@@ -88,6 +88,11 @@ gpui_kit::actions!(
         Stop,
         Clean,
         ChooseScheme,
+        NextScheme,
+        PreviousScheme,
+        EditScheme,
+        RunWithOptions,
+        TestWithOptions,
         ChooseDestination,
         RefreshDestinations,
         // Debug
@@ -205,6 +210,12 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-.", Stop, Some(INPUT)),
         KeyBinding::new("cmd-shift-k", Clean, None),
         KeyBinding::new("ctrl-0", ChooseScheme, None),
+        KeyBinding::new("ctrl-cmd-]", NextScheme, None),
+        KeyBinding::new("ctrl-cmd-[", PreviousScheme, None),
+        KeyBinding::new("cmd-<", EditScheme, None),
+        KeyBinding::new("cmd-shift-,", EditScheme, None),
+        KeyBinding::new("cmd-alt-r", RunWithOptions, None),
+        KeyBinding::new("cmd-alt-u", TestWithOptions, None),
         KeyBinding::new("ctrl-shift-0", ChooseDestination, None),
         // Debug
         KeyBinding::new("cmd-k", ClearConsole, None),
@@ -226,6 +237,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", PickerDismiss, Some("PerfPanel")),
         KeyBinding::new("enter", PickerConfirm, Some("AddFilesDialog")),
         KeyBinding::new("escape", PickerDismiss, Some("AddFilesDialog")),
+        KeyBinding::new("escape", PickerDismiss, Some("EditSchemeDialog")),
     ]);
 }
 
@@ -326,6 +338,9 @@ pub fn commands() -> Vec<Command> {
         cmd!("Product", "Build", Build),
         cmd!("Product", "Run", Run),
         cmd!("Product", "Test", Test),
+        // Xcode's ⌥-alternates of Run and Test: the scheme editor, then run.
+        cmd!("Product", "Run…", RunWithOptions),
+        cmd!("Product", "Test…", TestWithOptions),
         cmd!("Product", "Stop", Stop),
         cmd!("Product", "-", Quit),
         // Xcode's Product ▸ Perform Action.
@@ -336,7 +351,11 @@ pub fn commands() -> Vec<Command> {
         cmd!("Product", "Clean Build Folder", Clean),
         cmd!("Product", "Clear Test Results", ClearTestResults),
         cmd!("Product", "-", Quit),
-        cmd!("Product", "Choose Scheme…", ChooseScheme),
+        cmd!("Product ▸ Scheme", "Choose Scheme…", ChooseScheme),
+        cmd!("Product ▸ Scheme", "Next Scheme", NextScheme),
+        cmd!("Product ▸ Scheme", "Previous Scheme", PreviousScheme),
+        cmd!("Product ▸ Scheme", "-", Quit),
+        cmd!("Product ▸ Scheme", "Edit Scheme…", EditScheme),
         cmd!("Product", "Choose Destination…", ChooseDestination),
         cmd!("Product", "Choose Test Plan…", ChooseTestPlan),
         cmd!("Product", "Refresh Destinations", RefreshDestinations),
@@ -351,6 +370,23 @@ pub fn commands() -> Vec<Command> {
         cmd!("Debug", "-", Quit),
         cmd!("Debug", "Clear Console", ClearConsole),
     ]
+}
+
+fn menu_item(command: &Command) -> MenuItem {
+    if command.name == "-" {
+        return MenuItem::separator();
+    }
+    MenuItem::Action {
+        name: command.name.into(),
+        action: (command.action)(),
+        os_action: match command.name {
+            "Undo" => Some(OsAction::Undo),
+            "Redo" => Some(OsAction::Redo),
+            _ => None,
+        },
+        checked: false,
+        disabled: false,
+    }
 }
 
 pub fn set_menus(cx: &mut App) {
@@ -379,22 +415,19 @@ pub fn set_menus(cx: &mut App) {
             ));
             items.push(MenuItem::separator());
         }
-        for command in commands.iter().filter(|c| c.menu == menu_name) {
-            if command.name == "-" {
-                items.push(MenuItem::separator());
-            } else {
-                items.push(MenuItem::Action {
-                    name: command.name.into(),
-                    action: (command.action)(),
-                    os_action: match command.name {
-                        "Undo" => Some(OsAction::Undo),
-                        "Redo" => Some(OsAction::Redo),
-                        _ => None,
-                    },
-                    checked: false,
-                    disabled: false,
-                });
+        // Commands of a submenu (`"Product ▸ Scheme"`) go where its first one is.
+        let submenu_of = |c: &Command| c.menu.strip_prefix(menu_name).and_then(|rest| rest.strip_prefix(" ▸ "));
+        let mut submenus: Vec<&str> = Vec::new();
+        for command in commands.iter().filter(|c| c.menu == menu_name || submenu_of(c).is_some()) {
+            if let Some(submenu) = submenu_of(command) {
+                if !submenus.contains(&submenu) {
+                    submenus.push(submenu);
+                    let entries = commands.iter().filter(|c| submenu_of(c) == Some(submenu)).map(menu_item).collect::<Vec<_>>();
+                    items.push(MenuItem::submenu(Menu::new(submenu).items(entries)));
+                }
+                continue;
             }
+            items.push(menu_item(command));
         }
         menus.push(Menu::new(menu_name).items(items));
     }
