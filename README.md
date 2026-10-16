@@ -229,8 +229,8 @@ saved breakpoints can't leak in. It covers:
   undo made in another; a property list edited in one pane and undone in
   the other; the assistant's Counterparts, ⌘↩, ⌥-Return, ⌥-click, ⌃⌥⌘↑
   and ⌃⌥⌘J; Focus Editor Pane, Close Other Tabs, ⌃⇧⌘W, ⌘W on a pane's last
-  tab; a dragged split, the layout, tabs, assistant and focus after a
-  relaunch
+  tab; a package source read-only in a split; a dragged split, the
+  layout, tabs, assistant and focus after a relaunch
 * the editor's extension points (`crates/zcode-editor`) on a copy of ZKit:
   inlays the caret steps over and that follow typing and undo, blocks that
   move the rows below them, a highlight layer following edits, and a

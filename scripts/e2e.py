@@ -1654,6 +1654,19 @@ def pane_checks(samples):
         z.run("keys ctrl-alt-cmd-t", "wait 300", "keys cmd-w", "wait 300")
         assert shape()[0] == "0", shape()
 
+    def read_only_in_every_pane():
+        # A package's checked-out source refuses edits in a pane split off it.
+        checkout = os.path.join(project, "Vendor", "SourcePackages", "checkouts", "Tally", "Tally.swift")
+        os.makedirs(os.path.dirname(checkout))
+        with open(checkout, "w") as f:
+            f.write("public let tally = 1\n")
+        z.run(f"open {checkout}:1", "wait 300", "keys ctrl-cmd-t", "wait 400", "type x", "keys cmd-/", "wait 200")
+        a = z.dump()["active"]
+        assert panes()["focused"] == 1 and a["read_only"] and a["editor_read_only"], a
+        assert a["text"] == "public let tally = 1\n" and not a["dirty"], a["text"]
+        z.run("keys ctrl-shift-cmd-w", "wait 300", "keys cmd-w", "wait 300")
+        assert shape()[0] == "0", shape()
+
     def relaunch():
         nonlocal z
         z.run(f"open {implementation}", "wait 200", "keys ctrl-alt-cmd-enter", "wait 300", "keys ctrl-alt-cmd-t", "wait 400",
@@ -1686,6 +1699,7 @@ def pane_checks(samples):
         check("Panes: the assistant's Counterparts follow the editor; ⌘↩; ⌥-Return, ⌥-click and ⌃⌥⌘↑ open in the next pane", assistant)
         check("Panes: ⌃⌥⌘J shows the definition in the assistant", definition_in_assistant)
         check("Panes: Focus Editor Pane, Close Other Tabs, ⌃⇧⌘W without asking for a file shown elsewhere, ⌘W on a pane's last tab", close_and_focus)
+        check("Panes: package sources stay read-only in every pane", read_only_in_every_pane)
         check("Panes: the split layout, tabs, assistant and focus come back after a relaunch", relaunch)
     finally:
         z.quit()
