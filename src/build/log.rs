@@ -118,6 +118,10 @@ fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
 }
 
 pub fn parse_issue(line: &str) -> Option<Issue> {
+    parse_issue_line(line).map(|issue| if is_signing_issue(&issue) { with_signing_hint(issue) } else { issue })
+}
+
+fn parse_issue_line(line: &str) -> Option<Issue> {
     static LOCATED: OnceLock<Regex> = OnceLock::new();
     static LINE_ONLY: OnceLock<Regex> = OnceLock::new();
     static GENERIC: OnceLock<Regex> = OnceLock::new();
@@ -148,6 +152,19 @@ pub fn parse_issue(line: &str) -> Option<Issue> {
             message: c[4].to_string(),
             path: Some(PathBuf::from(&c[1])),
             line: c[2].parse().ok(),
+            column: None,
+            source: IssueSource::Build,
+        });
+    }
+    // Project-level issues, signing above all: "/…/App.xcodeproj: error:
+    // Signing for "App" requires a development team. …".
+    static PROJECT: OnceLock<Regex> = OnceLock::new();
+    if let Some(c) = re(&PROJECT, r"^(/[^:]+\.(?:xcodeproj|xcworkspace)): (error|warning|note): (.+)$").captures(line) {
+        return Some(Issue {
+            severity: Severity::parse(&c[2])?,
+            message: c[3].to_string(),
+            path: Some(PathBuf::from(&c[1])),
+            line: None,
             column: None,
             source: IssueSource::Build,
         });
@@ -199,6 +216,27 @@ pub fn parse_issue(line: &str) -> Option<Issue> {
         });
     }
     None
+}
+
+/// Whether an issue is about code signing or provisioning.
+pub fn is_signing_issue(issue: &Issue) -> bool {
+    issue.severity == Severity::Error
+        && ["Signing for", "development team", "provisioning profile", "Provisioning profile", "No Account for Team", "signing certificate", "No profiles for"]
+            .iter()
+            .any(|needle| issue.message.contains(needle))
+}
+
+/// Xcode's signing errors point at its Signing & Capabilities editor; in
+/// zcode the team is set in the project settings.
+fn with_signing_hint(mut issue: Issue) -> Issue {
+    const XCODE: &str = "Select a development team in the Signing & Capabilities editor.";
+    const ZCODE: &str = "Set the target's Development Team (your team ID) in the project settings";
+    issue.message = if issue.message.contains(XCODE) {
+        issue.message.replace(XCODE, &format!("{ZCODE}."))
+    } else {
+        format!("{} {ZCODE}, and sign in to your Apple account in Xcode ▸ Settings ▸ Accounts.", issue.message)
+    };
+    issue
 }
 
 fn status(word: &str) -> TestStatus {
@@ -447,6 +485,26 @@ mod tests {
         assert_eq!(issue.line, Some(12));
         assert_eq!(issue.column, Some(5));
         assert_eq!(issue.message, "cannot find 'foo' in scope");
+    }
+
+    #[test]
+    fn parses_signing_errors() {
+        let issue = parse_issue(
+            "/Users/me/App/App.xcodeproj: error: Signing for \"App\" requires a development team. Select a development team in the Signing & Capabilities editor. (in target 'App' from project 'App')",
+        )
+        .unwrap();
+        assert_eq!(issue.severity, Severity::Error);
+        assert_eq!(issue.path.as_deref(), Some(std::path::Path::new("/Users/me/App/App.xcodeproj")));
+        assert_eq!(issue.line, None);
+        assert_eq!(
+            issue.message,
+            "Signing for \"App\" requires a development team. Set the target's Development Team (your team ID) in the project settings."
+        );
+        assert!(is_signing_issue(&issue));
+        let profile = parse_issue("error: No profiles for 'dev.zcode.App' were found: Xcode couldn't find any iOS App Development provisioning profiles matching 'dev.zcode.App'.").unwrap();
+        assert!(is_signing_issue(&profile));
+        assert!(profile.message.ends_with("in the project settings, and sign in to your Apple account in Xcode ▸ Settings ▸ Accounts."), "{}", profile.message);
+        assert!(!is_signing_issue(&parse_issue("/a/B.swift:1:2: error: cannot find 'x' in scope").unwrap()));
     }
 
     #[test]
