@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result, anyhow, bail};
 
 mod edit;
 pub mod files;
+pub mod packages;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {

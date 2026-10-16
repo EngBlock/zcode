@@ -10,6 +10,7 @@ pub mod fuzzy;
 pub mod instance;
 pub mod languages;
 pub mod lsp;
+pub mod packages;
 pub mod paths;
 pub mod perf;
 pub mod perf_panel;

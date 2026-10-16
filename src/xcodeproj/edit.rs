@@ -74,6 +74,8 @@ pub enum Field {
     /// An object reference, written `ID /* comment */`.
     Ref(String, Option<String>),
     List(Vec<(String, Option<String>)>),
+    /// A nested dictionary of strings, like a package's `requirement`.
+    Dict(Vec<(&'static str, String)>),
 }
 
 #[derive(Clone, Debug)]
@@ -111,6 +113,10 @@ impl NewObject {
                         let items: Vec<_> = items.iter().map(|(id, c)| format!("{}, ", reference(id, c))).collect();
                         format!("({})", items.concat())
                     }
+                    Field::Dict(entries) => {
+                        let entries: Vec<_> = entries.iter().map(|(k, v)| format!("{} = {}; ", quote(k), quote(v))).collect();
+                        format!("{{{}}}", entries.concat())
+                    }
                 };
                 out.push_str(&format!("{key} = {value}; "));
             }
@@ -129,11 +135,22 @@ impl NewObject {
                     }
                     out.push_str(&format!("{indent}\t);\n"));
                 }
+                Field::Dict(entries) => out.push_str(&format!("{indent}\t{key} = {};\n", render_dict(entries, &format!("{indent}\t")))),
             }
         }
         out.push_str(&format!("{indent}}};\n"));
         out
     }
+}
+
+/// A dictionary of strings written over several lines, closing at `indent`.
+fn render_dict(entries: &[(&'static str, String)], indent: &str) -> String {
+    let mut out = String::from("{\n");
+    for (key, value) in entries {
+        out.push_str(&format!("{indent}\t{} = {};\n", quote(key), quote(value)));
+    }
+    out.push_str(&format!("{indent}}}"));
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -269,26 +286,8 @@ impl<'a> Batch<'a> {
             self.replacements.push((entry.value.span.clone(), quote(value)));
             return;
         }
-        let entries = object.entries();
-        let rendered = format!("{} = {};", quote(key), quote(value));
-        let next = entries.iter().find(|e| e.key != "isa" && e.key.as_str() > key);
-        let edit = match next {
-            Some(next) if starts_line(self.text, next.span.start) => {
-                let indent = indent_of(self.text, next.span.start);
-                (line_start(self.text, next.span.start), format!("{indent}{rendered}\n"))
-            }
-            Some(next) => (next.span.start, format!("{rendered} ")),
-            None => {
-                let close = object.span.end - 1;
-                if starts_line(self.text, close) {
-                    let indent = entries.last().map(|e| indent_of(self.text, e.span.start)).unwrap_or_default();
-                    (line_start(self.text, close), format!("{indent}{rendered}\n"))
-                } else {
-                    (close, format!("{rendered} "))
-                }
-            }
-        };
-        self.replacements.push((edit.0..edit.0, edit.1));
+        let edit = entry_insertion(self.text, object, key, |_| quote(value));
+        self.replacements.push(edit);
     }
 
     pub fn remove_key(&mut self, id: &str, key: &str) {
@@ -339,12 +338,15 @@ impl<'a> Batch<'a> {
             let adding = self.new_objects.iter().any(|o| o.isa == section.isa);
             if !inside.is_empty() && !adding && inside.iter().all(|e| self.removed.contains(&e.key)) {
                 emptied.insert(ix);
-                let mut end = section.end;
-                // Take the blank line that separated it from the next one.
-                if text[end..].starts_with('\n') {
+                let (mut begin, mut end) = (section.begin, section.end);
+                // Take the blank line that separates it from the one before
+                // (or, failing that, the next one).
+                if text[..begin].ends_with("\n\n") {
+                    begin -= 1;
+                } else if text[end..].starts_with('\n') {
                     end += 1;
                 }
-                edits.push((section.begin..end, String::new()));
+                edits.push((begin..end, String::new()));
             }
         }
         for entry in objects.entries() {
@@ -366,10 +368,23 @@ impl<'a> Batch<'a> {
             adds_by_list.entry((add.owner.clone(), add.key)).or_default().push(add);
         }
         for ((owner, key), adds) in adds_by_list {
-            let list = object(&owner)
-                .and_then(|o| o.get(key))
-                .ok_or_else(|| anyhow!("{owner} has no {key} list"))?;
-            edits.extend(list_insertions(text, list, &adds));
+            let owner_object = object(&owner).ok_or_else(|| anyhow!("no object {owner}"))?;
+            match owner_object.get(key) {
+                Some(list) => edits.extend(list_insertions(text, list, &adds)),
+                // An object without the list yet (a target's first package
+                // product): add the key with its items.
+                None => edits.push(entry_insertion(text, owner_object, key, |indent| {
+                    let mut out = String::from("(\n");
+                    for add in &adds {
+                        match &add.comment {
+                            Some(c) => out.push_str(&format!("{indent}\t{} /* {c} */,\n", add.item)),
+                            None => out.push_str(&format!("{indent}\t{},\n", add.item)),
+                        }
+                    }
+                    out.push_str(&format!("{indent})"));
+                    out
+                })),
+            }
         }
 
         // New objects, in their sections.
@@ -426,6 +441,30 @@ impl<'a> Batch<'a> {
 pub fn indent_of(text: &str, offset: usize) -> String {
     let start = line_start(text, offset);
     text[start..].chars().take_while(|c| *c == ' ' || *c == '\t').collect()
+}
+
+/// Where and what to insert to add `key` to an existing object, in sorted
+/// position after `isa`, as Xcode keeps keys. `value` renders the value
+/// for the entry's indent.
+fn entry_insertion(text: &str, object: &Node, key: &str, value: impl Fn(&str) -> String) -> (Range<usize>, String) {
+    let entries = object.entries();
+    let next = entries.iter().find(|e| e.key != "isa" && e.key.as_str() > key);
+    let (at, indent, own_line) = match next {
+        Some(next) if starts_line(text, next.span.start) => (line_start(text, next.span.start), indent_of(text, next.span.start), true),
+        Some(next) => (next.span.start, String::new(), false),
+        None => {
+            let close = object.span.end - 1;
+            if starts_line(text, close) {
+                let indent = entries.last().map(|e| indent_of(text, e.span.start)).unwrap_or_default();
+                (line_start(text, close), indent, true)
+            } else {
+                (close, String::new(), false)
+            }
+        }
+    };
+    let rendered = format!("{} = {};", quote(key), value(&indent));
+    let insertion = if own_line { format!("{indent}{rendered}\n") } else { format!("{rendered} ") };
+    (at..at, insertion)
 }
 
 fn sections(text: &str, objects: &Node) -> Vec<Section> {
