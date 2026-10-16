@@ -44,6 +44,11 @@ XCODE_SHORTCUTS = [
     ("cmd-alt-s", "zcode::SaveAll", "File ▸ Save All"),
     ("cmd-w", "zcode::CloseTab", "File ▸ Close Tab"),
     ("ctrl-alt-cmd-w", "zcode::CloseProject", "File ▸ Close Workspace"),
+    ("cmd-alt-w", "zcode::CloseOtherTabs", "File ▸ Close Other Tabs"),
+    ("ctrl-cmd-t", "zcode::NewEditorPaneOnRight", "File ▸ New ▸ Editor Pane on Right"),
+    ("ctrl-alt-cmd-t", "zcode::NewEditorPaneBelow", "File ▸ New ▸ Editor Pane Below"),
+    ("ctrl-shift-cmd-w", "zcode::CloseEditorPane", "File ▸ Close Editor Pane"),
+    ("ctrl-alt-shift-cmd-w", "zcode::CloseOtherEditorPanes", "File ▸ Close Other Editor Panes"),
     ("cmd-d", "zcode::DuplicateLine", "Edit ▸ Duplicate"),
     ("ctrl-cmd-'", "zcode::BookmarkLine", "Edit ▸ Bookmark Line"),
     ("ctrl-alt-cmd-'", "zcode::BookmarkLineWithDialog", "Edit ▸ Bookmark Line With Dialog"),
@@ -67,6 +72,10 @@ XCODE_SHORTCUTS = [
     ("cmd-shift-f", "zcode::FindInWorkspace", "Find ▸ Find in Workspace…"),
     ("ctrl-shift-cmd-f", "zcode::FindSelectedSymbol", "Find ▸ Find Selected Symbol in Workspace"),
     ("ctrl-cmd-j", "zcode::JumpToDefinition", "Navigate ▸ Jump to Definition"),
+    ("ctrl-alt-cmd-j", "zcode::JumpToDefinitionInNextPane", "Navigate ▸ Jump to Definition (⌥, in the assistant)"),
+    ("ctrl-alt-cmd-up", "zcode::JumpToCounterpartInNextPane", "Navigate ▸ Jump to Next Counterpart (⌥, in the assistant)"),
+    ("ctrl-`", "zcode::FocusNextEditorPane", "Navigate ▸ Move Focus to Next Editor Pane"),
+    ("ctrl-shift-`", "zcode::FocusPreviousEditorPane", "Navigate ▸ Move Focus to Previous Editor Pane"),
     ("cmd-l", "zcode::JumpToLine", "Navigate ▸ Jump to…"),
     ("ctrl-cmd-left", "zcode::GoBack", "Navigate ▸ Go Back"),
     ("ctrl-cmd-right", "zcode::GoForward", "Navigate ▸ Go Forward"),
@@ -94,6 +103,9 @@ XCODE_SHORTCUTS = [
     ("cmd-alt-1", "zcode::ShowFileInspector", "View ▸ Inspectors ▸ File"),
     ("cmd-shift-c", "zcode::ActivateConsole", "View ▸ Debug Area ▸ Activate Console"),
     ("ctrl-6", "zcode::ShowDocumentItems", "View ▸ Editor ▸ Document Items"),
+    ("ctrl-shift-cmd-enter", "zcode::FocusEditorPane", "View ▸ Editor ▸ Focus Editor Pane"),
+    ("cmd-enter", "zcode::ShowEditorOnly", "Editor ▸ Show Editor Only"),
+    ("ctrl-alt-cmd-enter", "zcode::ShowAssistant", "Editor ▸ Assistant"),
     ("cmd-shift-a", "zcode::QuickActions", "View ▸ Show Quick Actions…"),
     ("cmd-b", "zcode::Build", "Product ▸ Build"),
     ("cmd-r", "zcode::Run", "Product ▸ Run"),
@@ -1477,6 +1489,196 @@ def editor_extension_checks(samples):
         z.quit()
 
 
+def pane_checks(samples):
+    """Editor panes on a copy of ZKit with an Objective-C pair and a property
+    list: splits, one buffer in several panes (edits, undo, breakpoints,
+    bookmarks, diamonds), the assistant, closing panes, and a relaunch."""
+    project = os.path.realpath(os.path.join(WORK, "PaneKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), project)
+    legacy = os.path.join(project, "Legacy")
+    os.makedirs(legacy)
+    header, implementation = os.path.join(legacy, "Legacy.h"), os.path.join(legacy, "Legacy.m")
+    with open(header, "w") as f:
+        f.write("int legacy(void);\n")
+    with open(implementation, "w") as f:
+        f.write('#include "Legacy.h"\n\nint legacy(void) { return 1; }\n')
+    info = os.path.join(legacy, "Info.plist")
+    with open(info, "w") as f:
+        f.write(INFO_PLIST)
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    main = os.path.join(project, "Sources", "zhello", "main.swift")
+    tests = os.path.join(project, "Tests", "ZKitTests", "GreeterTests.swift")
+    text = open(greeter).read()
+    name_line, greeting_line = line_of(greeter, "public let name"), line_of(greeter, "func greeting")
+    z = Zcode(project)
+
+    def panes():
+        return z.dump()["panes"]
+
+    def shape(p=None):
+        p = p or panes()
+        return p["layout"], p["focused"], [(x["tabs"], x["active"], x["assistant"]) for x in p["list"]]
+
+    def shown(p, ix):
+        return p["list"][ix]["shown"]
+
+    def split_and_one_buffer():
+        z.run(f"open {greeter}:{name_line}", "wait 300", "keys ctrl-cmd-t", "wait 400")
+        p = panes()
+        assert shape(p) == ("h(0, 1)", 1, [(["Greeter.swift"], "Greeter.swift", None)] * 2), shape(p)
+        assert shown(p, 1)["line"] == name_line and shown(p, 1)["linked_views"] == 1, shown(p, 1)
+        assert z.dump()["buffers"] == ["Greeter.swift"], "two panes, one buffer"
+        # Each pane has its own cursor; typing in one shows in the other.
+        z.run(f"open {greeter}:{greeting_line}", "wait 200", "type ZZ", "wait 200")
+        p = panes()
+        assert shown(p, 0)["line"] == name_line and shown(p, 1)["line"] == greeting_line, (shown(p, 0)["line"], shown(p, 1)["line"])
+        assert shown(p, 0)["text"] == shown(p, 1)["text"] != text and z.dump()["active"]["dirty"]
+        # ⌘Z in the other pane undoes it; ⇧⌘Z back in the first redoes it.
+        z.run("pane focus 0", "wait 200", "keys cmd-z", "wait 200")
+        p = panes()
+        assert shown(p, 0)["text"] == shown(p, 1)["text"] == text and not z.dump()["active"]["dirty"], shown(p, 1)["text"][:80]
+        z.run("pane focus 1", "wait 200", "keys cmd-shift-z", "wait 200")
+        assert shown(panes(), 0)["text"] != text
+        z.run("keys cmd-z", "wait 200", "keys ctrl-alt-cmd-t", "wait 400")
+        assert shape()[:2] == ("h(0, v(1, 2))", 2), shape()
+        # ⌃` and ⌃⇧` move focus around the panes; a click focuses the one clicked.
+        z.run("keys ctrl-`", "wait 200")
+        assert panes()["focused"] == 0
+        z.run("keys ctrl-shift-`", "wait 200")
+        assert panes()["focused"] == 2
+        x, y = shown(panes(), 1)["click"]
+        z.run(f"click {x} {y}", "wait 300")
+        p = panes()
+        assert p["focused"] == 1 and z.dump()["active"]["path"] == greeter, p["focused"]
+        z.run("screenshot " + os.path.join(WORK, "panes.png"))
+
+    def gutter_in_every_pane():
+        # A breakpoint and a bookmark made in one pane show in the others and
+        # follow edits and undo made anywhere: one buffer, one set of anchors.
+        z.run("pane focus 2", f"open {greeter}:{greeting_line}", "wait 200", "keys cmd-\\", "keys ctrl-cmd-'", "wait 300")
+        s = z.dump()
+        assert [b["line"] for b in s["breakpoints"]["list"]] == [greeting_line], s["breakpoints"]["list"]
+        assert greeting_line in [m["line"] for m in s["breakpoints"]["markers"]], s["breakpoints"]["markers"]
+        z.run("pane focus 0", "wait 300")
+        s = z.dump()
+        assert greeting_line in [m["line"] for m in s["breakpoints"]["markers"]], "the marker shows in every pane"
+        assert [g["line"] for g in s["bookmarks"]["gutter"]] == [greeting_line], s["bookmarks"]["gutter"]
+        z.run("pane focus 1", f"open {greeter}:1", "wait 200", "keys enter", "wait 300")
+        s = z.dump()
+        assert [b["line"] for b in s["breakpoints"]["list"]] == [greeting_line + 1], s["breakpoints"]["list"]
+        assert [b[1] for b in bookmark_list(s)] == [greeting_line + 1], bookmark_list(s)
+        z.run("pane focus 2", "wait 200", "keys cmd-z", "wait 300")
+        s = z.dump()
+        assert [b["line"] for b in s["breakpoints"]["list"]] == [greeting_line] and not s["active"]["dirty"], s["breakpoints"]["list"]
+        # Cut with its line in one pane, back with ⌘Z in another.
+        z.run(f"open {greeter}:{greeting_line}", "wait 200", "keys cmd-x", "wait 300")
+        assert bookmark_list(z.dump()) == []
+        z.run("pane focus 0", "wait 200", "keys cmd-z", "wait 300")
+        s = z.dump()
+        assert [b["line"] for b in s["breakpoints"]["list"]] == [greeting_line], s["breakpoints"]["list"]
+        assert [b[1] for b in bookmark_list(s)] == [greeting_line] and not s["active"]["dirty"], bookmark_list(s)
+        z.run(f"open {greeter}:{greeting_line}", "wait 200", "keys cmd-\\", "wait 200")
+        assert not z.dump()["breakpoints"]["list"]
+        # Test diamonds in a pane split off the test file's.
+        z.run("pane focus 2", f"open {tests}", "wait 300", "keys ctrl-cmd-t", "wait 400")
+        z.wait_for(lambda s: s["testing"]["gutter"] and s["panes"]["focused"] == 3, timeout=60, interval=0.5)
+        z.run("keys ctrl-shift-cmd-w", "wait 300")
+        assert shape()[:2] == ("h(0, v(1, 2))", 2), shape()
+
+    def plist_in_two_panes():
+        z.run("keys ctrl-alt-shift-cmd-w", "wait 300", f"open {info}", "wait 300", "keys ctrl-cmd-t", "wait 400")
+        p = panes()
+        assert p["layout"] == "h(0, 1)" and shown(p, 0)["plist"] and shown(p, 1)["plist"], shape(p)
+        rows = plist_rows(z)["rows"]
+        z.run("plist remove CFBundleDisplayName", "wait 200", "pane focus 0", "wait 300")
+        assert [r for r in plist_rows(z)["rows"] if "CFBundleDisplayName" in r] == [], "the edit shows in the other pane's outline"
+        z.run("keys cmd-z", "wait 300")
+        assert plist_rows(z)["rows"] == rows and not z.dump()["active"]["dirty"]
+
+    def assistant():
+        z.run("keys ctrl-alt-shift-cmd-w", "wait 300", f"open {implementation}", "wait 300", "keys ctrl-alt-cmd-enter", "wait 400")
+        assert shape()[0] == "h(0, 1)" and shape()[1] == 0, shape()
+        assert shape()[2][1] == (["Legacy.h"], "Legacy.h", "Counterparts"), shape()
+        # Counterparts follows the editor it assists.
+        z.run(f"open {greeter}", "wait 300")
+        assert shape()[2][1] == ([], None, "Counterparts"), shape()
+        z.run(f"open {header}", "wait 300")
+        assert shape()[2][1] == (["Legacy.m"], "Legacy.m", "Counterparts"), shape()
+        z.run("screenshot " + os.path.join(WORK, "assistant.png"))
+        # Show Editor Only closes it.
+        z.run("keys cmd-enter", "wait 300")
+        assert shape()[0] == "0", shape()
+        # ⌥-Return in Open Quickly opens a Manual assistant; ⌥-click (from the
+        # navigator) opens in the assistant with focus in it.
+        z.run("keys cmd-shift-o", "type Greeter.swift", "wait 600", "keys alt-enter", "wait 400")
+        assert shape()[:2] == ("h(0, 1)", 1) and shape()[2][1] == (["Greeter.swift"], "Greeter.swift", "Manual"), shape()
+        z.run(f"pane open-next {implementation}", "wait 300")
+        assert shape()[1] == 1 and shape()[2][1] == (["Greeter.swift", "Legacy.m"], "Legacy.m", "Manual"), shape()
+        # Next Counterpart with ⌥ (⌃⌥⌘↑) opens it in the assistant.
+        z.run("pane focus 0", f"open {header}", "wait 200", "keys ctrl-alt-cmd-up", "wait 300")
+        assert shape()[1] == 1 and shape()[2][1][1] == "Legacy.m", shape()
+
+    def definition_in_assistant():
+        call_line = line_of(main, "Greeter(name:")
+        column = open(main).read().splitlines()[call_line - 1].index("Greeter(") + 2
+        z.run(f"open {main}", "wait 200")
+        z.wait_for(lambda s: s["lsp"] == "Ready" and not s["indexing"], timeout=300)
+        z.run("pane focus 1", f"open {implementation}", "pane focus 0", f"open {main}:{call_line}", "wait 200", keys_right(column), "wait 200")
+        # The assistant shows the definition; the editor stays where it was.
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            z.run("keys ctrl-alt-cmd-j", "wait 1500")
+            p = panes()
+            if shown(p, 1)["path"] == greeter:
+                break
+        assert p["focused"] == 1 and shown(p, 1)["line"] == line_of(greeter, "struct Greeter"), shape(p)
+        assert shown(p, 0)["path"] == main and shown(p, 0)["line"] == call_line
+
+    def close_and_focus():
+        # Focus Editor Pane shows the focused pane alone, and toggles back.
+        z.run("keys ctrl-shift-cmd-enter", "wait 200")
+        assert panes()["zoomed"], shape()
+        z.run("keys ctrl-shift-cmd-enter", "wait 200")
+        assert not panes()["zoomed"], shape()
+        # Close Other Tabs (⌥⌘W) in the focused pane.
+        z.run("pane focus 0", "wait 200", "keys cmd-alt-w", "wait 300")
+        assert shape()[2][0] == (["main.swift"], "main.swift", None), shape()
+        # A file still shown elsewhere closes without asking, dirty or not.
+        z.run(f"open {greeter}", "wait 200", "type Q", "keys ctrl-shift-cmd-w", "wait 300")
+        p = panes()
+        assert shape(p)[:2] == ("0", 0) and shown(p, 0)["path"] == greeter, shape(p)
+        assert z.dump()["active"]["dirty"], z.dump()["active"]["line_text"]
+        z.run("keys cmd-z", "wait 200")
+        assert not z.dump()["active"]["dirty"], z.dump()["active"]["line_text"]
+        # ⌘W on a split pane's last tab closes the pane.
+        z.run("keys ctrl-alt-cmd-t", "wait 300", "keys cmd-w", "wait 300")
+        assert shape()[0] == "0", shape()
+
+    def relaunch():
+        nonlocal z
+        z.run(f"open {implementation}", "wait 200", "keys ctrl-alt-cmd-enter", "wait 300", "keys ctrl-alt-cmd-t", "wait 400",
+              f"open {greeter}:{greeting_line}", "wait 300")
+        before = panes()
+        assert before["layout"] == "h(v(0, 1), 2)", before["layout"]
+        z.quit()
+        z = Zcode(project)
+        after = z.wait_for(lambda s: s["panes"]["layout"] != "0", timeout=30)["panes"]
+        assert shape(after) == shape(before), (shape(after), shape(before))
+        assert shown(after, 1)["path"] == greeter and z.dump()["active"]["path"] == greeter, shown(after, 1)
+        assert after["list"][2]["assists"] == 0
+
+    try:
+        check("Panes: ⌃⌘T / ⌃⌥⌘T split; two panes are one buffer with a cursor each; undo from either; ⌃` and clicks move focus", split_and_one_buffer)
+        check("Panes: breakpoints, bookmarks and test diamonds in every pane, following edits and undo made in any", gutter_in_every_pane)
+        check("Panes: a property list in two panes; an edit in one, undone in the other", plist_in_two_panes)
+        check("Panes: the assistant's Counterparts follow the editor; ⌘↩; ⌥-Return, ⌥-click and ⌃⌥⌘↑ open in the next pane", assistant)
+        check("Panes: ⌃⌥⌘J shows the definition in the assistant", definition_in_assistant)
+        check("Panes: Focus Editor Pane, Close Other Tabs, ⌃⇧⌘W without asking for a file shown elsewhere, ⌘W on a pane's last tab", close_and_focus)
+        check("Panes: the split layout, tabs, assistant and focus come back after a relaunch", relaunch)
+    finally:
+        z.quit()
+
+
 def bookmark_checks(samples):
     """Bookmarks on a copy of ZKit, relaunched at the end to check they're kept."""
     project = os.path.join(WORK, "BookmarkKit")
@@ -2073,6 +2275,9 @@ def main():
 
     print("Editor extension points (a copy of samples/ZKit):")
     editor_extension_checks(samples)
+
+    print("Editor panes (a copy of samples/ZKit):")
+    pane_checks(samples)
 
     print("Package dependencies (offline, a local repository of the Tally fixture):")
     package_dependency_checks(samples)
