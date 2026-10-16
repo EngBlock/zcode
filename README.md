@@ -20,6 +20,9 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 |---|---|---|
 | **Projects** | Opens `.xcodeproj`, `.xcworkspace`, Swift packages and plain folders. Includes a welcome window with recent projects and per-project session restore (tabs, scheme, destination, breakpoints, layout). | ⌘O |
 | | Project settings: click the project in the navigator to edit the project and its targets (General fields such as bundle ID, version, deployment targets and team, plus every build setting per configuration). Edits are written straight to `project.pbxproj` and keep its formatting. The panel can also open `project.pbxproj` as text or open the project in Xcode. | — |
+| **Swift packages** | Package Dependencies at the bottom of the project navigator: every resolved package with its version (or branch, or commit), expandable to browse its sources, which open read-only (with a lock on the tab), as do package sources Jump to Definition reaches. | — |
+| | File ▸ Add Package Dependencies…: enter a repository URL or a GitHub `owner/repo`; its versions come from its tags (`git ls-remote`) for the dependency rule (Up to Next Major Version, Up to Next Minor Version, Range of Versions, Exact Version, Branch, Commit). Add Package fetches that version to read its products; then pick the target each product is added to. Add Local… adds a package folder. In an `.xcworkspace` you choose which project gets the package. | — |
+| | File ▸ Packages ▸ Reset Package Caches, Resolve Package Versions, Update to Latest Package Versions; Update Package and Remove Package on a package's context menu. Xcode projects are edited in `project.pbxproj` as Xcode writes it (package references, product dependencies, the targets' Frameworks phase) and resolved with `xcodebuild -resolvePackageDependencies` into the DerivedData folder builds use; Swift packages use `swift package add-dependency`, `add-target-dependency`, `resolve`, `update` and `reset`. Progress shows in the activity view, errors under Package Loading in the Issue navigator, and the index refreshes afterwards so new modules can be imported. | — |
 | **Editing** | Rope-based editor with tree-sitter highlighting (Swift, C/ObjC, C++, JSON, YAML, Markdown…), multiple cursors, folding, indent guides and find/replace. | ⌘F, ⌥⌘F |
 | | Comment selection, duplicate, move line, select next occurrence, soft wrap and font size. | ⌘/, ⌘D, ⌥⌘[ ⌥⌘], ⌥⌘E, ⌃⇧⌘L, ⌘+ ⌘- ⌃⌘0 |
 | | Xcode-style `<#placeholder#>` snippets from completions, with Tab or ⌃/ jumping to the next placeholder. | Tab, ⌃/, ⌃⇧/ |
@@ -136,12 +139,14 @@ src/
   lsp/              JSON-RPC client, document sync store, editor provider adapters
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner, log/issue/test
                     parsing, compilation-database extraction
+  packages/         Swift package dependencies: rules and versions, Package.resolved, checkouts,
+                    Package.swift edits, git queries, resolve/update/reset
   testing/          tests found in source, test plans, test selections per runner, results → tests
   scheme/           Edit Scheme options: .xcscheme read and edited in place, what launches get
   debugger/         DAP client, debugger model, breakpoints and their options, data tips (lldb-dap)
   project.rs        project detection and gitignore-aware scanning
   xcodeproj.rs      project.pbxproj parser and in-place editor (build settings)
-  xcodeproj/        structural edits: files, groups, build files, target membership
+  xcodeproj/        structural edits: files, groups, build files, target membership, packages
   search.rs         parallel find-in-workspace
   perf.rs           startup timing and memory sampling (proc_pid_rusage)
   debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR)
@@ -163,7 +168,8 @@ zcode doesn't use any GPL code from Zed.
 ```
 cargo test                          # unit tests
 cargo test -- --ignored             # needs Xcode: sourcekit-lsp, lldb-dap, and xcodebuild on an edited project
-cargo build --release && python3 scripts/e2e.py [--simulator] [--compare-apps]   # drives the real UI
+                                    # (network_* tests need network access)
+cargo build --release && python3 scripts/e2e.py [--simulator] [--network] [--compare-apps]   # drives the real UI
 ```
 
 `scripts/e2e.py` launches zcode with `ZCODE_DEBUG_DIR` set and checks against
@@ -182,6 +188,14 @@ saved breakpoints can't leak in. It covers:
   suite, and the Greeting test plan; in a Swift package a test and an XCTest
   class (`swift test --filter`) and Re-run Failed Tests after a fix
 * run, test and debug for a Swift package
+* package dependencies, offline against a local repository of the Tally
+  fixture (`tests/fixtures/packages`): Add Package Dependencies with its
+  tags, rule and products, Add Local…, a build against both packages,
+  browsing a package and Jump to Definition into it (read-only), Resolve
+  keeping the pin and Update Package moving to a new release, a resolve
+  error under Package Loading, and Remove Package; in a Swift package
+  (`Package.swift` through `swift package`) and an `.xcworkspace`.
+  `--network` also lists a public package's versions from GitHub
 * breakpoints in a Swift package: gutter clicks, line tracking through edits
   and undo, the editor popover; a condition, an ignore count, log and command
   actions with auto-continue; a symbolic breakpoint in and out of its module;
@@ -210,8 +224,20 @@ The control channel also takes window screenshots
 ## Known limitations
 
 * Project settings cover build settings and the General fields. Adding or
-  removing targets, configurations, packages or capabilities still needs
-  Xcode.
+  removing targets, configurations or capabilities still needs Xcode.
+* Packages: the search field takes a URL or a GitHub `owner/repo`; there's
+  no package collections search, registry packages can't be added (their
+  pins are shown), and a package's dependency rule can't be edited after
+  it's added (adding it again only adds products). Package plugins aren't
+  offered. `xcodebuild` has no update command, so Update Package and Update
+  to Latest Package Versions drop the pins and checkouts concerned and
+  resolve again (the repository caches stay). Remove Package leaves empty
+  `packageReferences` lists, as Xcode does; in a Swift package it removes
+  the `.package` entry and `.product(…, package:)` uses, but not uses by
+  product name alone. Local packages that pre-Xcode 15 projects reference
+  as folders in the group tree aren't listed, and packages a workspace
+  lists directly can't be removed from zcode. Private repositories work
+  through git's credential helpers; zcode never prompts for credentials.
 * In file-system-synchronized folders (the Xcode 16+ default) files belong to
   the folder's targets; zcode doesn't edit their per-file exceptions, so the
   File inspector shows that membership read-only. Trashing a whole

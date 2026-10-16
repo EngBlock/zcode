@@ -26,7 +26,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
    symbolic and Swift error/exception breakpoints. ✅
 4. Physical devices via `devicectl`: install, launch, console, debug attach. ✅
 5. SwiftPM management: Add Package, Resolve/Update/Reset, Package
-   Dependencies in the navigator.
+   Dependencies in the navigator. ✅
 6. Plist and entitlements editors (reuse the project-settings panel), basic
    Signing & Capabilities.
 7. Bookmarks navigator (Xcode 27 moved ⌘3 to Bookmarks).
