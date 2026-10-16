@@ -1387,7 +1387,7 @@ async fn stream_into(
     }
 }
 
-fn display_command(cmd: &Command) -> String {
+pub fn display_command(cmd: &Command) -> String {
     std::iter::once(cmd.get_program().to_string_lossy().to_string())
         .chain(cmd.get_args().map(|a| {
             let a = a.to_string_lossy();

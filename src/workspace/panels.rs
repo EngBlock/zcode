@@ -203,6 +203,10 @@ impl Workspace {
         let build = self.build.read(cx);
         let scheme = build.scheme.clone().unwrap_or_else(|| self.project.name.clone());
         let (status, busy): (String, bool) = match &build.phase {
+            // Package work, unless a build or run is under way.
+            phase if !phase.is_busy() && self.packages.activity.is_some() => {
+                (self.packages.activity.clone().unwrap_or_default(), true)
+            }
             Phase::Idle if build.indexing => ("Preparing editor functionality…".into(), true),
             Phase::Idle => ("Ready".into(), false),
             Phase::Preparing(action) => (format!("Preparing to {}…", action.verb().to_lowercase()), true),
@@ -401,6 +405,7 @@ impl Workspace {
                     .when(!active, |el| el.text_color(theme.tab_foreground).hover(|el| el.bg(theme.secondary_hover)))
                     .child(Icon::new(pickers::file_icon(&buffer.path)).small().text_color(theme.muted_foreground))
                     .child(div().flex_1().truncate().child(buffer.title()))
+                    .when(buffer.read_only, |el| el.child(Icon::new(IconName::Lock).xsmall().text_color(theme.muted_foreground)))
                     .child(
                         div()
                             .id(("close-tab", ix))
@@ -447,8 +452,19 @@ impl Workspace {
             .outline
             .iter().rfind(|e| e.selection_range.start.line <= cursor_line)
             .map(|e| e.name.clone());
-        let mut crumbs = vec![self.project.name.clone()];
-        crumbs.extend(rel.iter().map(|c| c.to_string_lossy().to_string()));
+        // A package's sources show under the package, as in Xcode.
+        let package = self.package_path(&buffer.path);
+        let mut crumbs = vec![];
+        match package {
+            Some((name, rel)) => {
+                crumbs.push(name);
+                crumbs.extend(rel.iter().map(|c| c.to_string_lossy().to_string()));
+            }
+            None => {
+                crumbs.push(self.project.name.clone());
+                crumbs.extend(rel.iter().map(|c| c.to_string_lossy().to_string()));
+            }
+        }
         let count = crumbs.len();
         h_flex()
             .h(px(24.))
@@ -511,6 +527,7 @@ impl Workspace {
                 .into_any_element();
         };
         let editor = buffer.editor.clone();
+        let read_only = buffer.read_only;
         let markers = self.render_breakpoint_gutter(&editor, cx);
         let diamonds = self.render_test_gutter(&editor, cx);
         v_flex()
@@ -524,6 +541,7 @@ impl Workspace {
                     .min_h_0()
                     .child(
                         Editor::new(&editor)
+                            .readonly(read_only)
                             .bordered(false)
                             .p_0()
                             .h_full()
@@ -1170,6 +1188,10 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(cx.listener(Self::add_files))
+            .on_action(cx.listener(Self::add_package_dependencies))
+            .on_action(cx.listener(Self::resolve_package_versions))
+            .on_action(cx.listener(Self::update_to_latest_package_versions))
+            .on_action(cx.listener(Self::reset_package_caches))
             .on_action(cx.listener(|this, _: &ShowFileInspector, _, cx| this.show_file_inspector(None, cx)))
             .on_action(cx.listener(|this, _: &ToggleInspector, _, cx| this.toggle_inspector(cx)))
             .on_action(cx.listener(|this, _: &ToggleDebugArea, _, cx| {

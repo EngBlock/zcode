@@ -53,10 +53,13 @@ fn run(mut cmd: Command, what: &str) -> Result<String> {
     let output = cmd.output().with_context(|| format!("couldn’t run {what}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let message = stderr
-            .lines()
-            .map(|l| l.trim().trim_start_matches("fatal: ").trim_start_matches("error: "))
-            .rfind(|l| !l.is_empty())
+        // git's first `fatal:` says what went wrong; advice follows it.
+        let lines: Vec<&str> = stderr.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let message = lines
+            .iter()
+            .find(|l| l.starts_with("fatal: ") || l.starts_with("error: "))
+            .or(lines.last())
+            .map(|l| l.trim_start_matches("fatal: ").trim_start_matches("error: "))
             .unwrap_or("failed")
             .to_string();
         bail!("{message}");

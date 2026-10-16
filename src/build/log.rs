@@ -39,6 +39,8 @@ pub struct Issue {
 pub enum IssueSource {
     Build,
     Live,
+    /// Package resolution (shown under Package Loading).
+    Package,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

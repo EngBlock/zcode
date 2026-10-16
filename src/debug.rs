@@ -23,6 +23,10 @@
 //!   edit-scheme <field> [<value>]  edit the open scheme editor (see `EditSchemeDialog::set_field`)
 //!   breakpoint <field> [<value>]   edit the open breakpoint editor (see `BreakpointEditor::set_field`)
 //!   console <command>          run a command at the LLDB console's prompt
+//!   package <field> [<value>]  Add Package Dependencies: `open [query]`, `local <path>` (after Add
+//!                              Local…'s panel), or a field of the open sheet (see `AddPackageDialog::set_field`)
+//!   package-menu update|remove <identity>  a package's Update Package / Remove Package
+//!   reveal <path>              reveal a file in the project navigator, package sources included
 //!   variable <name> copy|describe  the Variables view's Copy Value / Print Description
 //!   hover                      log the editor's hover (Quick Help or a data tip) at the cursor
 //!   dump                       log workspace state as JSON
@@ -261,6 +265,39 @@ fn run_command(
                 })
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
+        }
+        "package" => {
+            let (field, value) = arg.split_once(' ').unwrap_or((arg, ""));
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.add_package_field(field, value, window, cx)))
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
+        }
+        "package-menu" => {
+            let (command, identity) = arg.split_once(' ').ok_or("usage: package-menu update|remove <identity>")?;
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| {
+                    workspace.update(cx, |ws, cx| match command {
+                        "update" => {
+                            ws.update_package(identity, window, cx);
+                            Ok(())
+                        }
+                        "remove" => ws.remove_package(identity, window, cx),
+                        other => Err(format!("unknown package command {other}")),
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
+        }
+        "reveal" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            let path = PathBuf::from(arg);
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.reveal_in_navigator(&path, window, cx)))
+                .map_err(|e| e.to_string())?;
+            Ok(String::new())
         }
         "run-test" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;

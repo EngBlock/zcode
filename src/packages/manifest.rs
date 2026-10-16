@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use anyhow::{Result, bail};
 
-use super::rule::Rule;
+use super::rule::{Rule, Version};
 use super::resolved;
 
 /// A `.package(…)` entry.
@@ -161,7 +161,13 @@ fn rule_of(args: &str) -> Option<Rule> {
     if let Some(at) = args.find("..<").or_else(|| args.find("...")) {
         let lower = strings(&args[..at]).pop()?;
         let upper = strings(&args[at..]).into_iter().next()?;
-        return Some(Rule::Range(lower, upper));
+        // `add-dependency --up-to-next-minor-from` writes a range.
+        let next = |v: &str| Version::parse(v);
+        return Some(match (next(&lower), next(&upper)) {
+            (Some(l), Some(u)) if u == l.next_major() => Rule::UpToNextMajor(lower),
+            (Some(l), Some(u)) if u == l.next_minor() => Rule::UpToNextMinor(lower),
+            _ => Rule::Range(lower, upper),
+        });
     }
     None
 }
@@ -264,6 +270,7 @@ let package = Package(
         .package(path: "../LocalKit"),
         .package(url: "https://example.com/pinned.git", exact: "2.0.0"),
         .package(url: "https://example.com/edge.git", branch: "main"),
+        .package(url: "https://example.com/minor.git", "1.1.0" ..< "1.2.0"),
     ],
     targets: [
         .target(name: "ZKit", dependencies: [
@@ -290,6 +297,7 @@ let package = Package(
                 ("localkit".to_string(), None),
                 ("pinned".to_string(), Some(Rule::Exact("2.0.0".into()))),
                 ("edge".to_string(), Some(Rule::Branch("main".into()))),
+                ("minor".to_string(), Some(Rule::UpToNextMinor("1.1.0".into()))),
             ]
         );
         assert_eq!(deps[3].path.as_deref(), Some("../LocalKit"));
@@ -308,7 +316,7 @@ let package = Package(
         for line in MANIFEST.lines().filter(|l| !l.contains("Tally") && !l.contains("tally")) {
             assert!(out.contains(line), "{line}");
         }
-        assert_eq!(declared(&out).len(), 5);
+        assert_eq!(declared(&out).len(), 6);
         assert!(remove_dependency(MANIFEST, "missing").is_err());
     }
 

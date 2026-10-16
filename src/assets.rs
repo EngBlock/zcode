@@ -43,6 +43,7 @@ gpui_kit::assets::icon_assets!(
         Library,
         ListOrdered,
         Loader,
+        Lock,
         MemoryStick,
         MessageSquareText,
         Package,

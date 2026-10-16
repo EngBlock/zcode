@@ -255,8 +255,9 @@ pub fn prepare(project: &ProjectInfo, operation: &Operation, dependencies: &Depe
     Ok(())
 }
 
-/// The commands that carry out `operation`, in order.
-pub fn commands(project: &ProjectInfo, operation: &Operation) -> Vec<Command> {
+/// The commands that carry out `operation`, in order. `xcodebuild` wants
+/// a scheme to resolve a workspace's packages.
+pub fn commands(project: &ProjectInfo, operation: &Operation, scheme: Option<&str>) -> Vec<Command> {
     let swift = |args: &[&str]| {
         let mut cmd = Command::new("/usr/bin/swift");
         cmd.arg("package").args(args).current_dir(&project.root);
@@ -272,6 +273,9 @@ pub fn commands(project: &ProjectInfo, operation: &Operation) -> Vec<Command> {
         kind if kind.is_xcode() => {
             let mut cmd = Command::new("/usr/bin/xcrun");
             cmd.arg("xcodebuild").arg("-resolvePackageDependencies").args(kind.xcodebuild_args()).current_dir(&project.root);
+            if let (ProjectKind::XcodeWorkspace(_), Some(scheme)) = (kind, scheme) {
+                cmd.args(["-scheme", scheme]);
+            }
             vec![cmd]
         }
         _ => vec![],
@@ -368,7 +372,7 @@ mod tests {
     fn swiftpm_commands() {
         let project = ProjectInfo { root: PathBuf::from("/p"), name: "P".into(), kind: ProjectKind::SwiftPackage };
         let args = |op: Operation| -> Vec<Vec<String>> {
-            commands(&project, &op)
+            commands(&project, &op, None)
                 .iter()
                 .map(|c| c.get_args().map(|a| a.to_string_lossy().to_string()).collect())
                 .collect()
@@ -376,9 +380,13 @@ mod tests {
         assert_eq!(args(Operation::Update("tally".into())), [["package", "update", "tally"]]);
         assert_eq!(args(Operation::Reset), [["package", "reset"], ["package", "resolve"]]);
         let xcode = ProjectInfo { root: PathBuf::from("/p"), name: "A".into(), kind: ProjectKind::XcodeProject(PathBuf::from("/p/A.xcodeproj")) };
-        let cmd = &commands(&xcode, &Operation::UpdateAll)[0];
+        let cmd = &commands(&xcode, &Operation::UpdateAll, Some("A"))[0];
         let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
         assert_eq!(args, ["xcodebuild", "-resolvePackageDependencies", "-project", "/p/A.xcodeproj"]);
+        let workspace = ProjectInfo { kind: ProjectKind::XcodeWorkspace(PathBuf::from("/p/A.xcworkspace")), ..xcode };
+        let cmd = &commands(&workspace, &Operation::Resolve, Some("App"))[0];
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+        assert_eq!(args, ["xcodebuild", "-resolvePackageDependencies", "-workspace", "/p/A.xcworkspace", "-scheme", "App"]);
     }
 
     #[test]

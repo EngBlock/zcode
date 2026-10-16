@@ -1,6 +1,7 @@
 //! The project window: navigator, editor tabs, debug area, toolbar, status.
 
 mod add_files;
+mod add_package;
 mod breakpoint_editor;
 mod breakpoints;
 mod console;
@@ -8,6 +9,7 @@ mod edit_scheme;
 mod editing;
 mod inspector;
 mod navigator;
+mod packages;
 mod panels;
 mod pickers;
 mod project_files;
@@ -23,7 +25,7 @@ use std::time::{Duration, SystemTime};
 
 use gpui_kit::component::highlighter::{Diagnostic as EditorDiagnostic, DiagnosticSeverity};
 use gpui_kit::component::input::{EditorState, InputEvent, InputState, Position, RopeExt as _, TabSize};
-use gpui_kit::component::tree::TreeState;
+use gpui_kit::component::tree::{TreeItem, TreeState};
 use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
 
@@ -63,6 +65,8 @@ pub struct Buffer {
     pub path: PathBuf,
     pub editor: Entity<EditorState>,
     pub dirty: bool,
+    /// A package's checked-out source: shown, never edited or saved.
+    pub read_only: bool,
     /// Text as last loaded/saved, so undoing back to it clears `dirty`.
     saved_text: gpui_kit::component::input::Rope,
     pub language: SharedString,
@@ -102,8 +106,13 @@ pub struct FindState {
 pub struct Workspace {
     focus_handle: FocusHandle,
     pub project: ProjectInfo,
+    /// zcode's cache folder for the project (index, logs).
+    cache_dir: PathBuf,
     pub files: Arc<Vec<PathBuf>>,
     pub tree: Entity<TreeState>,
+    /// The navigator's file items; Package Dependencies follow them.
+    file_items: Vec<TreeItem>,
+    packages: packages::PackagesState,
     pub lsp: Entity<LspStore>,
     pub build: Entity<BuildController>,
     pub debugger: Entity<Debugger>,
@@ -215,8 +224,11 @@ impl Workspace {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             project: project.clone(),
+            cache_dir: cache_dir.clone(),
             files: Arc::new(vec![]),
             tree,
+            file_items: vec![],
+            packages: Default::default(),
             lsp,
             build,
             debugger,
@@ -350,7 +362,7 @@ impl Workspace {
                 .await;
             this.update(cx, |this, cx| {
                 // Tree items are !Send, so they are built here (fast).
-                let items = project::build_tree(&root, &files);
+                this.file_items = project::build_tree(&root, &files);
                 this.files = Arc::new(files);
                 if this.xcode_projects != xcode_projects {
                     this.xcode_projects = xcode_projects;
@@ -358,8 +370,8 @@ impl Workspace {
                         this.refresh_project_index(cx);
                     }
                 }
-                this.tree.update(cx, |tree, cx| tree.set_items(items, cx));
-                this.reveal_active_in_tree(cx);
+                this.update_tree(cx);
+                this.refresh_packages(cx);
                 this.refresh_tests(cx);
                 cx.notify();
             })
@@ -715,6 +727,7 @@ impl Workspace {
         };
         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         let language = Self::language_for(&path);
+        let read_only = crate::packages::location::is_package_checkout(&path);
         let soft_wrap = self.soft_wrap;
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
@@ -800,6 +813,7 @@ impl Workspace {
             saved_text,
             editor,
             dirty: false,
+            read_only,
             language: language.into(),
             mtime,
             breakpoint_anchors: vec![],
@@ -948,7 +962,7 @@ impl Workspace {
     }
 
     pub fn save_buffer(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(buffer) = self.buffers.get_mut(ix) else { return };
+        let Some(buffer) = self.buffers.get_mut(ix).filter(|b| !b.read_only) else { return };
         let mut text = buffer.editor.read(cx).text().to_string();
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
@@ -1187,6 +1201,10 @@ impl Workspace {
                     }
                     _ => {}
                 }
+                // Builds resolve packages too.
+                if matches!(phase, crate::build::Phase::Finished { .. }) {
+                    self.refresh_packages(cx);
+                }
                 let _ = window;
             }
             BuildEvent::AttachDebugger { pid } => {
@@ -1344,6 +1362,7 @@ impl Workspace {
                 });
             }
         }
+        issues.extend(self.packages.issues.iter().cloned());
         for issue in &self.build.read(cx).issues {
             if issue.severity == Severity::Note {
                 continue;
@@ -1361,6 +1380,7 @@ impl Workspace {
         issues.sort_by(|a, b| {
             a.severity
                 .cmp(&b.severity)
+                .then((a.source == IssueSource::Package).cmp(&(b.source == IssueSource::Package)).reverse())
                 .then(a.path.cmp(&b.path))
                 .then(a.line.cmp(&b.line))
         });
@@ -1498,6 +1518,10 @@ impl Workspace {
         let previously_active = self.active_buffer().map(|b| b.path.clone());
         for (path, mut edits) in per_file {
             let path = path.canonicalize().unwrap_or(path);
+            // Package checkouts are read-only.
+            if crate::packages::location::is_package_checkout(&path) {
+                continue;
+            }
             // Apply back to front so earlier offsets stay valid.
             edits.sort_by_key(|e| std::cmp::Reverse(e.range.start));
             // Edits land in (possibly newly opened) tabs rather than straight
@@ -1699,6 +1723,7 @@ impl Workspace {
             serde_json::json!({
                 "path": b.path,
                 "dirty": b.dirty,
+                "read_only": b.read_only,
                 "line": pos.line + 1,
                 "column": pos.character + 1,
                 "selection": state.selected_text().to_string(),
@@ -1768,6 +1793,7 @@ impl Workspace {
         });
         // Added separately: one `json!` this size reaches the macro recursion limit.
         state["breakpoints"] = self.breakpoints_summary(cx);
+        state["packages"] = self.packages_summary(cx);
         state["console"] = self.console_summary(cx);
         state["last_log"] = serde_json::json!(build.reports.first().map(|r| r.log_path.clone()));
         state["scheme_options"] = serde_json::json!(build.scheme_options.as_ref().map(edit_scheme::options_summary));

@@ -61,10 +61,80 @@ fn read_derived_data_root() -> PathBuf {
     }
 }
 
+/// MD5, for DerivedData folder names.
+fn md5(input: &[u8]) -> [u8; 16] {
+    const S: [u32; 64] = [
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4,
+        11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+    let k: Vec<u32> = (0..64).map(|i| ((i as f64 + 1.).sin().abs() * 4294967296.) as u32).collect();
+    let mut message = input.to_vec();
+    message.push(0x80);
+    while message.len() % 64 != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&((input.len() as u64).wrapping_mul(8)).to_le_bytes());
+    let (mut a0, mut b0, mut c0, mut d0) = (0x67452301u32, 0xefcdab89u32, 0x98badcfeu32, 0x10325476u32);
+    for chunk in message.chunks(64) {
+        let m: Vec<u32> = chunk.chunks(4).map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]])).collect();
+        let (mut a, mut b, mut c, mut d) = (a0, b0, c0, d0);
+        for i in 0..64 {
+            let (f, g) = match i {
+                0..=15 => ((b & c) | (!b & d), i),
+                16..=31 => ((d & b) | (!d & c), (5 * i + 1) % 16),
+                32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
+                _ => (c ^ (b | !d), (7 * i) % 16),
+            };
+            let rotated = a.wrapping_add(f).wrapping_add(k[i]).wrapping_add(m[g]).rotate_left(S[i]);
+            (a, d, c, b) = (d, c, b, b.wrapping_add(rotated));
+        }
+        a0 = a0.wrapping_add(a);
+        b0 = b0.wrapping_add(b);
+        c0 = c0.wrapping_add(c);
+        d0 = d0.wrapping_add(d);
+    }
+    let mut out = [0u8; 16];
+    for (i, word) in [a0, b0, c0, d0].iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    out
+}
+
+/// Xcode's DerivedData folder name for a workspace path: `<Name>-` and 28
+/// letters from the path's MD5 (each half of the digest in base 26).
+pub fn derived_data_name(workspace: &Path) -> String {
+    let digest = md5(workspace.to_string_lossy().as_bytes());
+    let mut letters = [b'a'; 28];
+    let mut start = u64::from_be_bytes(digest[..8].try_into().unwrap_or_default());
+    for letter in letters[..14].iter_mut().rev() {
+        *letter = b'a' + (start % 26) as u8;
+        start /= 26;
+    }
+    let mut end = u64::from_be_bytes(digest[8..].try_into().unwrap_or_default());
+    for letter in letters[14..].iter_mut().rev() {
+        *letter = b'a' + (end % 26) as u8;
+        end /= 26;
+    }
+    let name = workspace.file_stem().map(|s| s.to_string_lossy().replace(' ', "_")).unwrap_or_default();
+    format!("{name}-{}", String::from_utf8_lossy(&letters))
+}
+
 /// The DerivedData folder Xcode and `xcodebuild` use for `workspace` (an
-/// `.xcodeproj` or `.xcworkspace`). Folders are named `<Name>-<hash>`;
-/// the one whose `info.plist` records this workspace path is it.
+/// `.xcodeproj` or `.xcworkspace`) in `root`: the folder named for its
+/// path (as Foundation standardizes it, without `/private` before `/tmp`
+/// and `/var`), else the one whose `info.plist` records the path.
 pub fn derived_data_for(root: &Path, workspace: &Path) -> Option<PathBuf> {
+    let standardized = ["/private/tmp/", "/private/var/", "/private/etc/"]
+        .iter()
+        .find(|prefix| workspace.starts_with(prefix.trim_end_matches('/')))
+        .and_then(|_| workspace.strip_prefix("/private").ok())
+        .map(|rest| Path::new("/").join(rest));
+    for path in standardized.iter().map(PathBuf::as_path).chain([workspace]) {
+        let dir = root.join(derived_data_name(path));
+        if dir.exists() {
+            return Some(dir);
+        }
+    }
     let name = workspace.file_stem()?.to_string_lossy().replace(' ', "_");
     let prefix = format!("{name}-");
     let needle = workspace.to_string_lossy().to_string();
@@ -194,6 +264,18 @@ mod tests {
             Path::new("/p/App.xcworkspace/xcshareddata/swiftpm/Package.resolved")
         );
         assert_eq!(resolved_file(&ProjectKind::SwiftPackage, Path::new("/p")).unwrap(), Path::new("/p/Package.resolved"));
+    }
+
+    #[test]
+    fn hashes_like_xcode() {
+        let hex = |d: [u8; 16]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert_eq!(hex(md5(b"")), "d41d8cd98f00b204e9800998ecf8427e");
+        assert_eq!(hex(md5(b"The quick brown fox jumps over the lazy dog")), "9e107d9d372bb6826bd81d3542a419d6");
+        assert_eq!(hex(md5(&[b'a'; 200])), "887f30b43b2867f4a9accceee7d16e6c");
+        assert_eq!(
+            derived_data_name(Path::new("/Users/nathan/Programming/OpenConverter/CoinConverter.xcodeproj")),
+            "CoinConverter-gymihpfrpceafketxxltntmnkyhw"
+        );
     }
 
     #[test]

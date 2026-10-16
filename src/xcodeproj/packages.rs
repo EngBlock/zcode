@@ -148,6 +148,7 @@ impl ProjectPackages {
                 out.push((product.product.clone(), name));
             }
         }
+        out.sort();
         out
     }
 }

@@ -14,6 +14,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::assets::IconName;
 
+use super::packages::{PACKAGES_ID, package_of_item};
 use super::pickers::{file_icon, symbol_icon};
 use super::{Target, Workspace};
 use crate::build::log::{IssueSource, Severity};
@@ -191,6 +192,7 @@ impl Workspace {
             .filter_map(|i| i.path)
             .collect();
         let is_xcode = self.project.kind.is_xcode();
+        let package_rows = self.packages.rows.clone();
         let header = h_flex()
             .id("project-header")
             .mx_1()
@@ -260,6 +262,10 @@ impl Workspace {
                 div().flex_1().min_h_0().child(
                     tree(&self.tree, move |ix, entry, selected, _window, cx| {
                         let item = entry.item();
+                        // Package Dependencies and its packages.
+                        if item.id.as_ref() == PACKAGES_ID || package_rows.contains_key(&item.id) {
+                            return package_list_item(ix, entry, package_rows.get(&item.id), selected, cx);
+                        }
                         let path = PathBuf::from(item.id.as_str());
                         let is_folder = entry.is_folder();
                         let icon = if is_folder {
@@ -317,8 +323,19 @@ impl Workspace {
                     .context_menu({
                         let workspace = cx.weak_entity();
                         let add_files_label: SharedString = format!("Add Files to “{}”…", self.project.name).into();
-                        move |_, entry, menu, _, _| {
+                        move |_, entry, menu, _, cx| {
+                            let id = entry.item().id.clone();
+                            if id.as_ref() == PACKAGES_ID {
+                                return packages_menu(menu, workspace.clone());
+                            }
+                            if let Some(identity) = package_of_item(&id) {
+                                return package_menu(menu, identity.to_string(), workspace.clone(), cx);
+                            }
                             let path = PathBuf::from(entry.item().id.as_str());
+                            // A package's sources are read-only.
+                            if crate::packages::location::is_package_checkout(&path) {
+                                return menu.item(PopupMenuItem::new("Show in Finder").on_click(move |_, _, cx| cx.reveal_path(&path)));
+                            }
                             let folder = if entry.is_folder() {
                                 path.clone()
                             } else {
@@ -579,15 +596,17 @@ impl Workspace {
         if issues.is_empty() {
             return list.child(empty("No issues", cx));
         }
-        let mut current_file: Option<Option<PathBuf>> = None;
+        let mut current_file: Option<(Option<PathBuf>, bool)> = None;
         for (ix, issue) in issues.into_iter().enumerate() {
-            if current_file.as_ref() != Some(&issue.path) {
-                current_file = Some(issue.path.clone());
-                let label = issue
-                    .path
-                    .as_ref()
-                    .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Build".into());
+            let package = issue.source == IssueSource::Package;
+            if current_file.as_ref() != Some(&(issue.path.clone(), package)) {
+                current_file = Some((issue.path.clone(), package));
+                let label = match &issue.path {
+                    Some(path) => path.file_name().unwrap_or_default().to_string_lossy().to_string(),
+                    // Xcode's heading for package resolution errors.
+                    None if package => "Package Loading".into(),
+                    None => "Build".into(),
+                };
                 list = list.child(section_header(label, cx));
             }
             let (icon, color) = match issue.severity {
@@ -596,7 +615,11 @@ impl Workspace {
                 Severity::Note => (IconName::Info, theme.muted_foreground),
             };
             let location = issue.line.map(|l| format!(":{l}")).unwrap_or_default();
-            let live = issue.source == IssueSource::Live;
+            let source = match issue.source {
+                IssueSource::Live => "Live",
+                IssueSource::Build => "Build",
+                IssueSource::Package => "Package",
+            };
             let open = issue.clone();
             list = list.child(
                 h_flex()
@@ -612,11 +635,12 @@ impl Workspace {
                     .child(
                         v_flex()
                             .flex_1()
+                            .min_w_0()
                             .child(div().child(issue.message.clone()))
                             .child(
                                 div()
                                     .text_color(theme.muted_foreground)
-                                    .child(format!("{}{location}", if live { "Live" } else { "Build" })),
+                                    .child(format!("{source}{location}")),
                             ),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| this.open_issue(&open, window, cx))),
@@ -746,4 +770,86 @@ impl Workspace {
         }
         list
     }
+}
+
+/// A row of the Package Dependencies section: its header, or a package
+/// with its version (or branch, or commit) beside its name.
+fn package_list_item(ix: usize, entry: &gpui_kit::component::tree::TreeEntry, row: Option<&super::packages::PackageRow>, selected: bool, cx: &App) -> ListItem {
+    let theme = cx.theme();
+    let content = match row {
+        None => h_flex()
+            .gap_1p5()
+            .text_sm()
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(Icon::new(IconName::Library).small().text_color(theme.muted_foreground))
+            .child(entry.item().label.clone()),
+        Some(row) => h_flex()
+            .gap_1p5()
+            .text_sm()
+            .child(Icon::new(if row.local { IconName::FolderCode } else { IconName::Package }).small().text_color(theme.primary))
+            .child(div().truncate().child(row.name.clone()))
+            .child(div().flex_1().truncate().text_xs().text_color(theme.muted_foreground).child(row.state.clone())),
+    };
+    ListItem::new(ix)
+        .w_full()
+        .rounded(theme.radius)
+        .py(px(2.))
+        .px_2()
+        .pl(px(12.) * entry.depth() + px(8.))
+        .selected(selected)
+        .child(content)
+}
+
+/// The Package Dependencies header's menu.
+fn packages_menu(menu: gpui_kit::component::menu::PopupMenu, workspace: WeakEntity<Workspace>) -> gpui_kit::component::menu::PopupMenu {
+    use crate::packages::Operation;
+    let (ws1, ws2, ws3, ws4, ws5) = (workspace.clone(), workspace.clone(), workspace.clone(), workspace.clone(), workspace);
+    menu.item(PopupMenuItem::new("Add Package Dependencies…").on_click(move |_, window, cx| {
+        ws1.update(cx, |ws, cx| ws.show_add_package(None, window, cx)).ok();
+    }))
+    .item(PopupMenuItem::new("Add Local Package…").on_click(move |_, window, cx| {
+        ws2.update(cx, |ws, cx| ws.prompt_add_local_package(window, cx)).ok();
+    }))
+    .separator()
+    .item(PopupMenuItem::new("Reset Package Caches").on_click(move |_, window, cx| {
+        ws3.update(cx, |ws, cx| ws.package_operation(Operation::Reset, window, cx)).ok();
+    }))
+    .item(PopupMenuItem::new("Resolve Package Versions").on_click(move |_, window, cx| {
+        ws4.update(cx, |ws, cx| ws.package_operation(Operation::Resolve, window, cx)).ok();
+    }))
+    .item(PopupMenuItem::new("Update to Latest Package Versions").on_click(move |_, window, cx| {
+        ws5.update(cx, |ws, cx| ws.package_operation(Operation::UpdateAll, window, cx)).ok();
+    }))
+}
+
+/// A package's menu: Update Package and Remove Package (for packages the
+/// project declares), Show in Finder.
+fn package_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    identity: String,
+    workspace: WeakEntity<Workspace>,
+    cx: &App,
+) -> gpui_kit::component::menu::PopupMenu {
+    let Some(ws) = workspace.upgrade() else { return menu };
+    let ws = ws.read(cx);
+    let Some(package) = ws.packages.dependencies.package(&identity).cloned() else { return menu };
+    // Packages a workspace lists directly aren't in any project to remove
+    // them from.
+    let removable = package.direct && (package.reference.is_some() || ws.project.kind == crate::project::ProjectKind::SwiftPackage);
+    let (ws1, ws2) = (workspace.clone(), workspace);
+    let (id1, id2) = (identity.clone(), identity);
+    menu.item(PopupMenuItem::new("Update Package").disabled(package.local).on_click(move |_, window, cx| {
+        ws1.update(cx, |ws, cx| ws.update_package(&id1, window, cx)).ok();
+    }))
+    .item(PopupMenuItem::new("Remove Package").disabled(!removable).on_click(move |_, window, cx| {
+        ws2.update(cx, |ws, cx| {
+            if let Err(err) = ws.remove_package(&id2, window, cx) {
+                ws.notify_error(err, window, cx);
+            }
+        })
+        .ok();
+    }))
+    .when_some(package.checkout, |menu, checkout| {
+        menu.separator().item(PopupMenuItem::new("Show in Finder").on_click(move |_, _, cx| cx.reveal_path(&checkout)))
+    })
 }
