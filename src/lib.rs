@@ -3,6 +3,7 @@
 pub mod actions;
 pub mod assets;
 pub mod app;
+pub mod bookmarks;
 pub mod build;
 pub mod debug;
 pub mod debugger;
