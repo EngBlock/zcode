@@ -37,7 +37,11 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | **Navigation** | Open Quickly (fuzzy file and symbol search, `file:line`), Quick Actions command palette, back/forward history, jump to line, counterpart (.h ↔ .m), reveal in navigator and tab switching. | ⇧⌘O, ⇧⌘A, ⌃⌘← ⌃⌘→, ⌘L, ⌃⌘↑, ⇧⌘J, ⇧⌘[ ⇧⌘] |
 | | Group-based projects (no file-system-synchronized folders) stay consistent as Xcode keeps them: New File, Rename (a name with `/` moves the item), Move to Trash and Add Files… add, update and remove file references, groups and build files in `project.pbxproj` (Sources for code, Resources for resources), with Xcode-style IDs and the rest of the file left byte for byte. New files join the targets that build their neighbors. | ⌥⌘A |
 | | File inspector: name, type, location, full path and Target Membership checkboxes for the selected file. | ⌥⌘1 |
-| **Navigators** | Xcode 27's set and order: Project (file tree with New File / Add Files / Rename / Move to Trash / Bookmark File / Show File Inspector / Show in Finder), Source Control (git status), Bookmarks, Find (find in workspace with case, word and regex options), Issues (live + build), Tests, Debug (threads and frames), Breakpoints and Reports (build/run/test history with full logs). Xcode 27 dropped the Symbol navigator: the file's symbols are in Document Items (⌃6), the workspace's in Open Quickly. | ⌘1 … ⌘9 |
+| **Navigators** | Xcode 27's set and order: Project (file tree with New File / Add Files / Rename / Move to Trash / Bookmark File / Show File Inspector / Show in Finder), Source Control (the branch and how far it is from its upstream, staged and unstaged changes with Show Changes / Stage / Unstage / Discard Changes, branches), Bookmarks, Find (find in workspace with case, word and regex options), Issues (live + build), Tests, Debug (threads and frames), Breakpoints and Reports (build/run/test history with full logs). Xcode 27 dropped the Symbol navigator: the file's symbols are in Document Items (⌃6), the workspace's in Open Quickly. | ⌘1 … ⌘9 |
+| **Source control** (git) | Change bars beside the line numbers for lines added (green), modified (blue) and deleted (a red wedge) against `HEAD`, drawn hollow once staged. They follow typing: the editor's text is compared with git's versions in the background, not the saved file. Click a bar for the change's old and new lines with Discard Change (one ⌘Z undoes it), Stage Change / Unstage Change and the next and previous change; Navigate ▸ Jump to Next / Previous Change. | ⌃\\ ⌃⇧\\ |
+| | Inline blame (Zed's): the author, how long ago and the commit's summary after the cursor's line, a moment after the cursor rests (Editor ▸ Inline Blame turns it off). Editor ▸ Authors: each run of lines' author and date in a column of the gutter, with lines not committed yet marked; click for the commit's message and id. | ⌃⇧⌘A |
+| | Editor ▸ Code Review: the file against `HEAD` in a tab, side by side (aligned, scrolling together) or inline (Editor ▸ Side by Side / Inline Comparison), its local side editable like the file's own tab. | ⌥⇧⌘↩ |
+| | Integrate ▸ Commit…: the changed files with a checkbox for staged, the selected file's staged and unstaged changes with Stage / Unstage on each, the message (kept while the sheet is closed) and Amend. Push… (to the upstream or a new remote branch, Include tags) and Pull… (Rebase local changes onto upstream changes), Fetch Changes, Stage / Unstage / Discard All Changes, Switch Branch… and New Branch… (also from the status bar's branch). Open files without edits reload after a checkout or pull. git runs off the main thread and never prompts: credentials come from git's helpers or an SSH agent. | ⌥⌘C, ⌥⌘X |
 | **Bookmarks** | Edit ▸ Bookmark Line and Bookmark File (⌥ adds a dialog for the description); a bookmark's description starts as the selection or the line's text. Bookmarked lines get an orange ribbon left of the line numbers (right-click for its menu) and follow edits, undo, renames and Move to Trash, as breakpoints do (undoing the deletion of a bookmarked line brings its bookmark back, in its place). Jump to Next / Previous Bookmark in the file, or In Workspace in the navigator's order. | ⌃⌘' ⌃⇧⌘' ⌃⌥⌘' ⌃⌥⇧⌘', ⌃; ⌃: ⌃⌥; ⌃⌥: |
 | | The Bookmarks navigator lists them grouped by file: click to open, double-click (or Edit Description) to edit the description in place, Mark as Complete, drag to reorder bookmarks within a file or whole files, delete, Sort By Name / Type / Completion Status, Delete All Completed Items, a filter and Show only incomplete items. From the Find navigator, Bookmark Line on a result, Bookmark File on a file, and the whole query with its results (its bookmark button, or Bookmark Line while the Find navigator has focus) as a group that Find Again refreshes. Saved per project. | ⌘3 |
 | **Build & run** | Scheme, configuration and run destination pickers. Destinations are grouped as in Xcode: My Mac, connected iOS, iPadOS, watchOS, tvOS and visionOS devices (from `devicectl`, with how they're connected or why they can't be used: not paired, Developer Mode disabled, unavailable), Any iOS Device (arm64) for building, then every available simulator, filtered by the scheme's `SUPPORTED_PLATFORMS`. Devices appear and disappear as they connect, without a refresh. | ⌃0, ⌃⇧0 |
@@ -122,7 +126,12 @@ if zcode is not faster.
   startup begins.
 * sourcekit-lsp, scheme listing, simulator and device discovery, file
   scanning and git status all start after the window appears, on background
-  threads. Devices are listed again every 5 s, only while the project's
+  threads. git status is read again after saves (debounced), git
+  operations, window activation and changes in the git directory (a cheap
+  poll of a few files' times); change bars come from a diff of the editor's
+  text run in the background 30 ms after the last keystroke, so typing
+  latency doesn't change (median keystroke to frame in a 6,000-line file:
+  5.3 ms on this branch, 5.4 ms on `master`). Devices are listed again every 5 s, only while the project's
   window is active and its scheme builds for a device platform.
 * Swift highlighting uses a compact tree-sitter query
   (`src/languages/swift-highlights.scm`) that compiles in ~11 ms. The upstream
@@ -144,7 +153,8 @@ src/
   app.rs            startup, windows, global commands, --startup-bench
   actions.rs        commands, Xcode key bindings, menu bar
   workspace/        project window: buffers (one per open file, a linked editor per pane), panes of tabs in
-                    a split tree with the assistant, navigators, inspector, debug area, pickers, commands
+                    a split tree with the assistant, navigators, inspector, debug area, pickers, commands;
+                    source control (change bars, blame, Code Review, the commit and push/pull sheets)
   lsp/              JSON-RPC client, document sync store, editor provider adapters
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner, log/issue/test
                     parsing, compilation-database extraction
@@ -160,6 +170,8 @@ src/
   xcodeproj.rs      project.pbxproj parser and in-place editor (build settings)
   xcodeproj/        structural edits: files, groups, build files, target membership, packages,
                     a target's Info.plist and entitlements
+  git/              git through its command line: status, index and HEAD versions, hunks (line diffs)
+                    and staging a hunk through the index, commits, blame, branches, fetch, pull, push
   search.rs         parallel find-in-workspace
   bookmarks.rs      bookmarks: lines, files and saved find queries, kept in the session
   perf.rs           startup timing and memory sampling (proc_pid_rusage)
@@ -185,6 +197,9 @@ from scratch. The rest of `gpui-component` (widgets, theme,
 tree-sitter highlighter) is vendored with a startup patch and a visibility
 patch for the highlighter, both described in
 `vendor/gpui-component/ZCODE-PATCH.md`.
+Source control runs the `git` command line; line diffs come from the
+`similar` crate (Apache-2.0). Inline blame and hollow staged change bars
+follow Zed's public behavior, implemented from scratch.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -244,6 +259,15 @@ saved breakpoints can't leak in. It covers:
   error under Package Loading, and Remove Package; in a Swift package
   (`Package.swift` through `swift package`) and an `.xcworkspace`.
   `--network` also lists a public package's versions from GitHub
+* source control on a copy of ZKit made a new repository, with a local
+  bare repository as `origin` (git runs with the global configuration out
+  of the way): change bars for typed edits before a save, a bar's popover
+  with Discard Change, ⌘Z and Stage / Unstage Change (checked in the index),
+  ⌃\\ and ⌃⇧\\, inline blame and Authors with its commit popover, Code
+  Review side by side and inline with an edit on its local side, Commit…
+  with one hunk staged and then Amend, New Branch, Push… to a new remote
+  branch, Switch Branch, Fetch Changes and Pull… from another clone's
+  push, a commit made in a terminal, and Discard Changes
 * bookmarks on a copy of ZKit: Bookmark Line and File, ribbons, edits and
   undo (a deleted line's bookmark back with ⌘Z), next and previous in the file and the workspace, descriptions
   edited in place, completion, the filter, drag and drop (real mouse
@@ -323,6 +347,19 @@ The control channel also takes window screenshots
   zcode don't move bookmarks. They live in zcode's session, so Xcode doesn't see them.
   A bookmarked search keeps one bookmark per matching line, and Find Again
   searches the files of the last project scan.
+* Source control: change bars compare with `HEAD` (staged changes drawn
+  hollow), not with a chosen commit or branch. Code Review compares the
+  file with `HEAD` only (no staged-only view, no other revisions or
+  history), highlights whole lines rather than the words changed, and
+  lines deleted before a file's first line show under that line (blocks
+  can't go above the first row yet). The commit sheet has no file
+  filter, no per-line staging (per change only) and no author override;
+  Push… pushes the current branch; Pull… merges or rebases, and conflicts
+  are left for a terminal or Xcode (marked `!` in the navigator). No
+  stash, cherry-pick, tags, history inspector, clone, or merge conflict
+  editor. git never prompts, so a remote that wants a password fails unless
+  a credential helper or SSH agent has it. A package checkout (its own
+  repository) gets no change bars.
 * Editor panes: the assistant has Counterparts and Manual modes only (no
   Callers, Superclasses, Preview or other Xcode modes), and Swift files have
   no counterparts (Xcode shows generated interfaces). Move Focus to Editor

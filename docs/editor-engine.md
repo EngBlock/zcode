@@ -213,8 +213,12 @@ one), bookmark ribbons (order 1, right-click menu, left clicks fall through
 to the breakpoint lane) and test diamonds (order 2, hover shows the play
 glyph, click runs). The three canvases layered over the editor, their
 `gutter_width` arithmetic with gpui-base's private constants, and their
-own hit-testing are gone. Git change bars (2.3) will be a
-`BeforeNumbers(px(3.))` lane over the hunks' anchors.
+own hit-testing are gone. Git change bars (2.3) are an
+`AfterNumbers(px(6.))` lane (where Xcode draws them) whose items come from
+hunks diffed again in the background after each edit, and Editor ▸ Authors
+a `BeforeNumbers` lane that writes each commit's author and date with
+`GutterPaint::paint_label` (text in the editor's font, aligned in an x range
+and cut short with an ellipsis).
 
 ### Highlight layers (`highlights.rs`)
 
@@ -386,9 +390,9 @@ undoes on its own), and excerpts that grow when context is expanded
 
 | Feature (roadmap) | Hooks |
 |---|---|
-| Git change bars (2.3) | a gutter lane `BeforeNumbers(px(3.))` whose items come from the hunks, kept on line anchors between diffs |
-| Inline blame (2.3) | an inlay group at the end of the cursor's line, replaced when the cursor moves |
-| Diff view (2.3) | blocks for deleted lines under their row, a highlight layer for added ones; side by side is two editors |
+| Git change bars (2.3, done) | a gutter lane `AfterNumbers(px(6.))` whose items come from hunks diffed again 30 ms after each edit, in the background (re-diffing turned out simpler than keeping hunks on anchors, and fast enough) |
+| Inline blame (2.3, done) | an inlay group at the end of the cursor's line, replaced when the cursor moves, cleared while typing |
+| Diff view (2.3, done) | side by side: two editors, blank blocks padding the shorter side of each change, fill decorations on changed lines, scroll offsets synced; inline: blocks for deleted lines under the row before them. A block above row 0 would place deletions at a file's top exactly |
 | Inlay hints (2.4) | an inlay group per response (`before_text` for parameter names), on anchors so they survive typing until the next response |
 | Semantic tokens (2.4) | a highlight layer at `HighlightPriority::SEMANTIC_TOKENS`, or the engine's `DocumentRangeSemanticTokensProvider` |
 | Signature help, call/type hierarchy (2.4) | the existing popovers and pickers; nothing new in the engine |

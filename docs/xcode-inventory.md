@@ -125,6 +125,7 @@ Source: `/Users/nathan/Downloads/Xcode-beta.app` (Xcode 27.0, build 27A5228h). `
 | Font Size Increase / Decrease / Reset | ⌘+ / ⌘- / ⌃⌘0 |
 | Minimap / Authors (blame) / Wrap Lines | ⌃⇧⌘M / ⌃⇧⌘A / ⌃⇧⌘L |
 | Toggles: Vim Mode, Relative Line Numbers, Invisibles, Code Coverage, Inline/Side-by-Side Comparison | — |
+| Code Review (not listed in 27's definitions; ⌥⌘↩ is Canvas now, ⌥⇧⌘↩ in Xcodes that have it) | — |
 
 ### Product
 | Command | Key |
