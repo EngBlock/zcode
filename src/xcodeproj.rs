@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 
+mod edit;
+pub mod files;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     String(String),
