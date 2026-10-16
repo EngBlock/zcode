@@ -136,6 +136,11 @@ impl Anchors {
         }
     }
 
+    pub(crate) fn offset(&self, anchor: Anchor) -> Option<usize> {
+        let entry = self.entries.get(&anchor.0)?;
+        (!entry.deleted).then_some(entry.start)
+    }
+
     pub(crate) fn row(&self, anchor: Anchor, text: &Rope) -> Option<u32> {
         let entry = self.entries.get(&anchor.0)?;
         (!entry.deleted).then(|| text.offset_to_point(entry.start.min(text.len())).row as u32)

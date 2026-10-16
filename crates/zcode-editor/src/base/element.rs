@@ -534,6 +534,173 @@ impl<M: InputModeKind> TextElement<M> {
         });
     }
 
+    /// Feeds the inlays' widths to the soft wrapper, so a row with an inlay
+    /// wraps where its text plus the inlay reach the edge. Inline tokens do
+    /// the same for themselves; an editor uses one or the other.
+    fn measure_inlays(&self, font: gpui::Font, font_size: Pixels, window: &mut Window, cx: &mut App) {
+        let state = self.state.read(cx);
+        if state.tokens_visible() || (!state.annotations.has_inlays() && !state.annotations.had_inlay_metrics) {
+            return;
+        }
+        let inlays: Vec<(usize, SharedString)> = state
+            .annotations
+            .inlays(&state.anchors)
+            .into_iter()
+            .map(|(offset, inlay)| (offset, inlay.text.clone()))
+            .collect();
+        let metrics: Vec<(Range<usize>, Pixels)> = inlays
+            .into_iter()
+            .map(|(offset, text)| {
+                let width = window
+                    .text_system()
+                    .shape_line(text.clone(), font_size, &[TextRun {
+                        len: text.len(),
+                        font: font.clone(),
+                        color: gpui::black(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }], None)
+                    .width;
+                (offset..offset, width)
+            })
+            .collect();
+        self.state.update(cx, |state, cx| {
+            state.annotations.had_inlay_metrics = !metrics.is_empty();
+            state.display_map.set_inline_metrics(Rc::from(metrics), cx);
+        });
+    }
+
+    /// The visible inlays, shaped, and the visible blocks' lines.
+    fn layout_annotations(
+        state: &InputBaseState<M>,
+        last_layout: &LastLayout,
+        font: gpui::Font,
+        font_size: Pixels,
+        window: &mut Window,
+    ) -> AnnotationLayout {
+        let mut layout = AnnotationLayout::default();
+        let muted = state.editor_style.muted_foreground;
+        let shape = |text: &SharedString, color: Option<Hsla>, background: Option<Hsla>, window: &mut Window| {
+            window.text_system().shape_line(
+                text.clone(),
+                font_size,
+                &[TextRun {
+                    len: text.len(),
+                    font: font.clone(),
+                    color: color.unwrap_or(muted),
+                    background_color: background,
+                    underline: None,
+                    strikethrough: None,
+                }],
+                None,
+            )
+        };
+        if state.annotations.has_inlays() {
+            let visible = &last_layout.visible_range_offset;
+            for (offset, inlay) in state.annotations.inlays(&state.anchors) {
+                if offset < visible.start || offset > visible.end {
+                    continue;
+                }
+                layout.inlays.push(LaidOutInlay {
+                    offset,
+                    shaped: shape(&inlay.text, inlay.color, inlay.background, window),
+                    before_text: inlay.before_text,
+                    background: inlay.background.is_some(),
+                });
+            }
+        }
+        if state.annotations.has_blocks() {
+            let blocks = state.annotations.blocks_by_row(&state.anchors, &state.text);
+            for &line in &last_layout.visible_buffer_lines {
+                let Some(blocks) = blocks.get(&line) else { continue };
+                let rows = blocks
+                    .iter()
+                    .flat_map(|block| block.lines.iter().map(move |text| (text, block.color, block.background)))
+                    .map(|(text, color, background)| (shape(text, color, None, window), background))
+                    .collect();
+                layout.blocks.insert(line, rows);
+            }
+        }
+        layout
+    }
+
+    /// A line's rows with its inlays as zero-length fragments between the
+    /// text's: the caret positions and offsets stay the text's.
+    #[allow(clippy::too_many_arguments)]
+    fn layout_inlay_rows(
+        line_text: &str,
+        line_start: usize,
+        rows: &[Range<usize>],
+        inlays: &[LaidOutInlay],
+        runs: &[TextRun],
+        run_offset: usize,
+        bg_segments: &[(Range<usize>, Hsla)],
+        display_line_start: usize,
+        font_size: Pixels,
+        window: &mut Window,
+    ) -> (SmallVec<[crate::display_map::InputLine; 1]>, bool) {
+        use crate::display_map::{InlineFragment, InputLine};
+        let mut has_background = inlays.iter().any(|inlay| inlay.background);
+        let mut lines = SmallVec::new();
+        for (ix, row) in rows.iter().enumerate() {
+            let is_last = ix + 1 == rows.len();
+            // An inlay on a wrap boundary starts the next row.
+            let row_inlays = inlays.iter().filter(|inlay| {
+                let local = inlay.offset - line_start;
+                local >= row.start && (local < row.end || (is_last && local == row.end))
+            });
+            let mut fragments = Vec::new();
+            let mut offset = row.start;
+            let mut x = px(0.);
+            let mut text_fragment = |part: Range<usize>, x: &mut Pixels, window: &mut Window| {
+                let piece_runs = runs_for_range(runs, run_offset, &part);
+                let piece_runs = if bg_segments.is_empty() {
+                    piece_runs
+                } else {
+                    split_runs_by_bg_segments(display_line_start + part.start, &piece_runs, bg_segments)
+                };
+                let text = &line_text[part.clone()];
+                let piece_runs = align_runs_to_char_boundaries(text, &piece_runs).unwrap_or(piece_runs);
+                has_background |= has_background_runs(&piece_runs);
+                let shaped = window
+                    .text_system()
+                    .shape_line(text.to_owned().into(), font_size, &piece_runs, None);
+                let width = shaped.width;
+                let fragment = InlineFragment {
+                    range: part.start - row.start..part.end - row.start,
+                    x: *x,
+                    width,
+                    text: Some(shaped),
+                    inlay: None,
+                };
+                *x += width;
+                fragment
+            };
+            for inlay in row_inlays {
+                let at = inlay.offset - line_start;
+                if offset < at {
+                    fragments.push(text_fragment(offset..at, &mut x, window));
+                    offset = at;
+                }
+                let width = inlay.shaped.width;
+                fragments.push(InlineFragment {
+                    range: at - row.start..at - row.start,
+                    x,
+                    width,
+                    text: Some(inlay.shaped.clone()),
+                    inlay: Some(inlay.before_text),
+                });
+                x += width;
+            }
+            if offset < row.end {
+                fragments.push(text_fragment(offset..row.end, &mut x, window));
+            }
+            lines.push(InputLine::inline(line_text[row.clone()].to_owned().into(), fragments));
+        }
+        (lines, has_background)
+    }
+
     /// Clicks on gutter items and lanes, and the hovered item.
     fn paint_gutter_listeners(&self, gutter: Rc<GutterLayout>, hitbox: Hitbox, window: &mut Window) {
         if hitbox.is_hovered(window)
@@ -619,7 +786,8 @@ impl<M: InputModeKind> TextElement<M> {
         let visible_buffer_lines = &last_layout.visible_buffer_lines;
         let caret_for = |row: usize, offset: usize, affinity: bool| -> Point<Pixels> {
             // y of the top of buffer line `row` in content space.
-            let top = line_height * state.display_map.buffer_line_to_display_row(row);
+            let top = line_height
+                * (state.display_map.buffer_line_to_display_row(row) + state.block_rows_before(row));
             let line_origin = point(px(0.), top);
 
             if let Some(vi) = visible_buffer_lines.iter().position(|&bl| bl == row) {
@@ -854,6 +1022,7 @@ impl<M: InputModeKind> TextElement<M> {
                 offset = end;
                 y += last_layout.line_height;
             }
+            y += line.extra_height;
         }
         (!corners.is_empty()).then_some(corners)
     }
@@ -1093,7 +1262,9 @@ impl<M: InputModeKind> TextElement<M> {
             return (0..1, vec![0], px(0.));
         }
 
-        let total_lines = state.display_map.wrap_row_count();
+        // Blocks add rows of their own below their lines.
+        let block_rows = state.block_rows_total();
+        let total_lines = state.display_map.wrap_row_count() + block_rows;
         let display_count = state.display_map.display_row_count();
         let buffer_line_count = state.display_map.buffer_line_count();
         if display_count == 0 || buffer_line_count == 0 {
@@ -1117,10 +1288,12 @@ impl<M: InputModeKind> TextElement<M> {
         let viewport_top = (-scroll_top).max(px(0.));
         let viewport_bottom = viewport_top + input_height;
         let line_height_f = f32::from(line_height);
-        let first_display =
-            ((f32::from(viewport_top) / line_height_f).floor() as usize).min(display_count - 1);
-        let last_display =
-            ((f32::from(viewport_bottom) / line_height_f).ceil() as usize).min(display_count - 1);
+        let first_display = state
+            .visual_row_to_display_row((f32::from(viewport_top) / line_height_f).floor() as usize)
+            .min(display_count - 1);
+        let last_display = state
+            .visual_row_to_display_row((f32::from(viewport_bottom) / line_height_f).ceil() as usize)
+            .min(display_count - 1);
 
         let start_line = state.display_map.display_row_to_buffer_line(first_display);
         let end_line = state.display_map.display_row_to_buffer_line(last_display);
@@ -1130,8 +1303,8 @@ impl<M: InputModeKind> TextElement<M> {
             .display_map
             .buffer_line_to_display_row_range(start_line)
         {
-            Some(range) => line_height * range.start,
-            None => line_height * first_display,
+            Some(range) => line_height * (range.start + state.block_rows_before(start_line)),
+            None => line_height * (first_display + state.block_rows_before(start_line)),
         };
 
         let visible_range = start_line..(end_line + 1 + extra_rows).min(buffer_line_count);
@@ -1395,7 +1568,7 @@ impl<M: InputModeKind> TextElement<M> {
                     });
                 }
 
-                offset_y += line.wrapped_lines.len() * last_layout.line_height;
+                offset_y += line.size(last_layout.line_height).height;
             }
 
             infos
@@ -1932,6 +2105,7 @@ impl<M: InputModeKind> TextElement<M> {
                                 x,
                                 width,
                                 text: Some(shaped),
+                                inlay: None,
                             });
                             x += width;
                         }
@@ -1941,6 +2115,7 @@ impl<M: InputModeKind> TextElement<M> {
                             x,
                             width,
                             text: None,
+                            inlay: None,
                         });
                         x += width;
                         offset = local.end;
@@ -1959,6 +2134,7 @@ impl<M: InputModeKind> TextElement<M> {
                             x,
                             width,
                             text: Some(shaped),
+                            inlay: None,
                         });
                     }
                     lines.push(InputLine::inline(text[range].to_owned().into(), fragments));
@@ -2071,6 +2247,7 @@ impl<M: InputModeKind> TextElement<M> {
         runs: &[TextRun],
         bg_segments: &[(Range<usize>, Hsla)],
         whitespace_indicators: Option<WhitespaceIndicators>,
+        annotations: &AnnotationLayout,
         window: &mut Window,
     ) -> Vec<LineLayout> {
         let is_single_line = state.is_single_line();
@@ -2133,6 +2310,50 @@ impl<M: InputModeKind> TextElement<M> {
 
             debug_assert_eq!(line_item.len(), line_text.len());
 
+            let block_height = annotations
+                .blocks
+                .get(&buffer_line)
+                .map_or(px(0.), |lines| lines.len() * last_layout.line_height);
+            let line_start = state.text.line_start_offset(buffer_line);
+            let first_inlay = annotations.inlays.partition_point(|inlay| inlay.offset < line_start);
+            let line_inlays = &annotations.inlays[first_inlay..];
+            let line_inlays = &line_inlays[..line_inlays
+                .partition_point(|inlay| inlay.offset <= line_start + line_text.len())];
+            if !line_inlays.is_empty() {
+                let (layout, has_background) = Self::layout_inlay_rows(
+                    &line_text,
+                    line_start,
+                    &line_item.wrapped_lines,
+                    line_inlays,
+                    runs,
+                    run_offset,
+                    bg_segments,
+                    last_layout.visible_line_byte_offsets[vi],
+                    font_size,
+                    window,
+                );
+                let wrap_indent = if line_item.indent > 0 && layout.len() > 1 {
+                    let indent_byte_len = line_text
+                        .char_indices()
+                        .nth(line_item.indent as usize)
+                        .map(|(ix, _)| ix)
+                        .unwrap_or(line_text.len());
+                    layout[0].x_for_index(indent_byte_len)
+                } else {
+                    px(0.)
+                };
+                lines.push(
+                    LineLayout::new()
+                        .inline_lines(layout)
+                        .wrap_indent(wrap_indent)
+                        .with_background(has_background)
+                        .with_whitespaces(whitespace_indicators.clone())
+                        .extra_height(block_height),
+                );
+                run_offset += line_text.len() + 1;
+                continue;
+            }
+
             let mut wrapped_lines: SmallVec<[ShapedLine; 1]> = SmallVec::with_capacity(1);
             let mut line_has_background = false;
 
@@ -2175,7 +2396,8 @@ impl<M: InputModeKind> TextElement<M> {
                 .lines(wrapped_lines)
                 .wrap_indent(wrap_indent)
                 .with_background(line_has_background)
-                .with_whitespaces(whitespace_indicators.clone());
+                .with_whitespaces(whitespace_indicators.clone())
+                .extra_height(block_height);
             lines.push(line_layout);
 
             // +1 for the `\n`
@@ -2347,6 +2569,21 @@ struct CursorRenderInfo {
     is_active: bool,
 }
 
+/// An inlay shaped for this frame.
+struct LaidOutInlay {
+    offset: usize,
+    shaped: ShapedLine,
+    before_text: bool,
+    background: bool,
+}
+
+/// The visible inlays (sorted by offset) and blocks (by buffer line).
+#[derive(Default)]
+pub(super) struct AnnotationLayout {
+    inlays: Vec<LaidOutInlay>,
+    blocks: std::collections::BTreeMap<usize, Vec<(ShapedLine, Option<Hsla>)>>,
+}
+
 pub(super) struct PrepaintState {
     /// The lines of entire lines.
     last_layout: LastLayout,
@@ -2386,6 +2623,8 @@ pub(super) struct PrepaintState {
     gutter: Option<Rc<GutterLayout>>,
     gutter_hitbox: Option<Hitbox>,
     gutter_geometry: GutterGeometry,
+    /// Each visible line's block rows, shaped, with their backgrounds.
+    blocks: std::collections::BTreeMap<usize, Vec<(ShapedLine, Option<Hsla>)>>,
 }
 
 impl PrepaintState {
@@ -2668,6 +2907,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             window,
             cx,
         );
+        self.measure_inlays(style.font(), text_size, window, cx);
         let state = self.state.read(cx);
 
         let (visible_range, visible_buffer_lines, visible_top) =
@@ -2787,6 +3027,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let whitespace_indicators =
             Self::layout_whitespace_indicators(&state, text_size, &text_style, window, cx);
 
+        let mut annotations = Self::layout_annotations(&state, &last_layout, style.font(), text_size, window);
         let lines = Self::layout_lines(
             &state,
             &display_text,
@@ -2795,9 +3036,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
             &runs,
             &document_colors,
             whitespace_indicators,
+            &annotations,
             window,
         );
 
+        let blocks = std::mem::take(&mut annotations.blocks);
         let mut longest_line_width = wrap_width.unwrap_or(px(0.));
         // 1. Single line
         // 2. Multi-line with soft wrap disabled.
@@ -2864,7 +3107,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let ghost_line_count = ghost_lines.len();
         let ghost_lines_height = ghost_line_count as f32 * line_height;
 
-        let total_wrapped_lines = state.display_map.wrap_row_count();
+        let total_wrapped_lines = state.display_map.wrap_row_count() + state.block_rows_total();
         let empty_bottom_height = empty_bottom_height(
             state.is_code_editor(),
             state.scroll_beyond_last_line,
@@ -3055,9 +3298,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
         let mut gutter_rows = Vec::with_capacity(last_layout.visible_buffer_lines.len());
         let mut row_y = bounds.origin.y + last_layout.visible_top;
         for (line, &buffer_line) in last_layout.lines.iter().zip(last_layout.visible_buffer_lines.iter()) {
-            let height = line.size(line_height).height;
-            gutter_rows.push((buffer_line as u32, row_y, height));
-            row_y += height;
+            gutter_rows.push((buffer_line as u32, row_y, line.text_height(line_height)));
+            row_y += line.size(line_height).height;
             if current_row == Some(buffer_line) {
                 row_y += ghost_lines_height;
             }
@@ -3119,6 +3361,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             gutter,
             gutter_hitbox,
             gutter_geometry,
+            blocks,
         }
     }
 
@@ -3173,9 +3416,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
             offset_y += invisible_top_padding;
 
             // Each item is the normal lines.
-            for (lines, &buffer_line) in line_numbers
+            for (ix, (lines, &buffer_line)) in line_numbers
                 .iter()
                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
+                .enumerate()
             {
                 let is_active = prepaint.current_row == Some(buffer_line);
                 let p = point(input_bounds.origin.x, origin.y + offset_y);
@@ -3189,7 +3433,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                         ));
                     }
                 }
-                offset_y += height;
+                offset_y += height + prepaint.last_layout.lines[ix].extra_height;
             }
         }
 
@@ -3311,6 +3555,23 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 window,
                 cx,
             );
+            // Its blocks, in the rows reserved below it.
+            if let Some(block) = prepaint.blocks.get(&buffer_line) {
+                let mut y = line_y + line.text_height(line_height);
+                for (shaped, background) in block {
+                    if let Some(background) = background {
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                point(origin.x + prepaint.last_layout.line_number_width, y),
+                                size(bounds.size.width - prepaint.last_layout.line_number_width, line_height),
+                            ),
+                            *background,
+                        ));
+                    }
+                    _ = shaped.paint(point(p.x, y), line_height, TextAlign::Left, None, window, cx);
+                    y += line_height;
+                }
+            }
             offset_y += line.size(line_height).height;
 
             if Some(row) == prepaint.current_row {
@@ -3380,9 +3641,10 @@ impl<M: InputModeKind> Element for TextElement<M> {
             window.paint_quad(fill(gutter_bounds, gutter_bg));
 
             // Each item is the normal lines.
-            for (lines, &buffer_line) in line_numbers
+            for (ix, (lines, &buffer_line)) in line_numbers
                 .iter()
                 .zip(prepaint.last_layout.visible_buffer_lines.iter())
+                .enumerate()
             {
                 let p = point(input_bounds.origin.x + prepaint.numbers_x, origin.y + offset_y);
                 let is_active = prepaint.current_row == Some(buffer_line);
@@ -3405,6 +3667,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     _ = line.paint(p, line_height, TextAlign::Left, None, window, cx);
                     offset_y += line_height;
                 }
+                offset_y += prepaint.last_layout.lines[ix].extra_height;
 
                 // Add ghost line height after cursor row for line numbers alignment
                 if !prepaint.ghost_lines.is_empty() && prepaint.current_row == Some(buffer_line) {
@@ -3656,6 +3919,10 @@ fn split_run_for_ime_underline(
 
 /// Whether any of these runs paints a glyph background, used to skip the background
 /// paint pass for lines without highlights.
+fn has_background_runs(runs: &[TextRun]) -> bool {
+    has_background(runs)
+}
+
 fn has_background(runs: &[TextRun]) -> bool {
     runs.iter().any(|run| run.background_color.is_some())
 }

@@ -749,6 +749,9 @@ pub(crate) struct LineLayout {
     /// Whether any run of this line carries a background color, so [`Self::paint_background`]
     /// can skip the glyph walk for the common case of a line without highlights.
     has_background: bool,
+    /// The height of the blocks below this line (`annotations.rs`), which
+    /// the line's size includes so that the lines after it move down.
+    pub(crate) extra_height: Pixels,
 }
 
 impl LineLayout {
@@ -761,7 +764,19 @@ impl LineLayout {
             whitespace_chars: Vec::new(),
             whitespace_indicators: None,
             has_background: false,
+            extra_height: px(0.),
         }
+    }
+
+    /// Reserves `height` below the line, for blocks.
+    pub(crate) fn extra_height(mut self, height: Pixels) -> Self {
+        self.extra_height = height;
+        self
+    }
+
+    /// The height of the line's own rows, without the blocks below it.
+    pub(crate) fn text_height(&self, line_height: Pixels) -> Pixels {
+        self.wrapped_lines.len() * line_height
     }
 
     /// Record whether any run of this line carries a background color.
@@ -1013,7 +1028,7 @@ impl LineLayout {
             .map(|(ix, line)| line.width + self.line_indent(ix))
             .max()
             .unwrap_or(self.longest_width);
-        size(width, self.wrapped_lines.len() * line_height)
+        size(width, self.wrapped_lines.len() * line_height + self.extra_height)
     }
 
     /// Paint only the glyph background quads of this line.

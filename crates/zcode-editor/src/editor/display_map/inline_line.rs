@@ -7,6 +7,10 @@ pub(crate) struct InlineFragment {
     pub(crate) x: Pixels,
     pub(crate) width: Pixels,
     pub(crate) text: Option<ShapedLine>,
+    /// An inlay: an empty range with a width. `Some(before_text)`: whether
+    /// the caret at its offset is drawn after it (it belongs to the text
+    /// after it) or before it.
+    pub(crate) inlay: Option<bool>,
 }
 
 pub(crate) struct InputLine {
@@ -47,6 +51,12 @@ impl InputLine {
             Content::Text(line) => line.x_for_index(ix),
             Content::Inline(fragments) => {
                 for f in fragments {
+                    if let Some(before_text) = f.inlay {
+                        if ix == f.range.start && !before_text {
+                            return f.x;
+                        }
+                        continue;
+                    }
                     if ix < f.range.end {
                         return f.x
                             + f.text.as_ref().map_or(
@@ -65,6 +75,9 @@ impl InputLine {
             Content::Inline(fragments) => {
                 for f in fragments {
                     if x <= f.x + f.width {
+                        if f.inlay.is_some() {
+                            return f.range.start;
+                        }
                         return f.text.as_ref().map_or(
                             if x - f.x < f.width / 2. {
                                 f.range.start

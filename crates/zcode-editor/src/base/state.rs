@@ -179,6 +179,8 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) gutter: crate::gutter::Gutter,
     /// Styled ranges over syntax highlighting (`highlights.rs`).
     pub(crate) highlight_layers: crate::highlights::HighlightLayers,
+    /// Inlays and blocks (`annotations.rs`).
+    pub(crate) annotations: crate::annotations::Annotations,
     pub(super) inline_tokens: Option<Box<super::inline_tokens::InlineTokenStore>>,
     pub(super) pending_token: Option<super::InlineToken>,
     pub(super) replaying_history: bool,
@@ -588,6 +590,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             anchors: Default::default(),
             gutter: Default::default(),
             highlight_layers: Default::default(),
+            annotations: Default::default(),
             inline_tokens: None,
             pending_token: None,
             replaying_history: false,
@@ -2450,7 +2453,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         let display_pos = self
             .display_map
             .buffer_pos_to_display_pos(crate::BufferPoint::new(row, point.column));
-        let row_offset_y = line_height * display_pos.row;
+        let row_offset_y = line_height * (display_pos.row + self.block_rows_before(row));
 
         // For Right alignment use 0 margin: the cursor indicator is clamped inside bounds
         // in layout_cursors, so shifting the text here would cause a first-click visual jump.
@@ -3089,7 +3092,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             .zip(last_line_pos)
             .zip(last_layout.visible_line_byte_offsets.last())
             .map(|((line_layout, pos), line_start)| {
-                let last_row_top = (line_layout.size(line_height).height - line_height).max(px(0.));
+                let last_row_top = (line_layout.text_height(line_height) - line_height).max(px(0.));
                 let pos = point(pos.x, last_row_top);
                 (
                     self.resolve_index(line_start + line_layout.len()),

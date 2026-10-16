@@ -235,3 +235,39 @@ ranges follow edits like decorations. The composition is deterministic
 (`compose_in_order`): GPUI's `combine_highlights` folds overlapping styles
 in hash-set order, which can't express a priority, so decorations use the
 new composition too.
+
+### Inlays and blocks (`annotations.rs`)
+
+```rust
+editor.set_inlays("inlay-hints", vec![
+    Inlay::new(offset, ": Int"),                     // belongs to the text before
+    Inlay::new(arg_start, "name: ").before_text(),   // belongs to the text after
+    Inlay::new(line_end, "  Jane, 2 days ago").color(muted),   // inline blame
+], cx);
+editor.set_blocks("edit-prediction", vec![Block::new(row, ["line 2", "line 3"])], cx);
+editor.clear_inlays(key, cx); editor.clear_blocks(key, cx);
+editor.inlays(key); editor.blocks(key);   // where they are after edits
+```
+
+Neither is in the buffer: offsets, selections, copy, search and the
+language server never see them. Both sit on anchors, so they follow edits,
+undo and redo; an inlay that belongs to the text before it moves with text
+typed at its offset, one that belongs to the text after it stays in front.
+
+An inlay is a zero-length fragment of its row (`InputLine::inline`, the
+machinery inline tokens already used), shaped in the editor's font with its
+own color and background. The caret at its offset is drawn before or after
+it according to which text it belongs to; the caret steps over it in one
+move because it has no offset; a click on it lands at its offset. The soft
+wrapper gets every inlay's width (`set_inline_metrics`), so rows wrap where
+their text plus their inlays reach the edge.
+
+A block adds rows below its line: the line's layout gets the extra height,
+so everything that stacks lines (text, backgrounds, selections, search
+matches, decorations, line numbers, gutter lanes, fold chevrons, mouse
+hit-testing) moves the rows below it down, and the few places that compute
+a row's position from the display map (carets, the visible range, scroll
+height, reveal) add the block rows above it. The caret moves past a block
+in one step. The engine's LSP inline-completion ghost text predates this
+and still paints over the text after the caret; edit predictions (3.3)
+should use an inlay for the first line and a block for the rest instead.
