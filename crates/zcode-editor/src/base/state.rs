@@ -181,6 +181,11 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) highlight_layers: crate::highlights::HighlightLayers,
     /// Inlays and blocks (`annotations.rs`).
     pub(crate) annotations: crate::annotations::Annotations,
+    /// How the caret is drawn, and a modal layer's keystroke hook and key
+    /// context (`modal.rs`).
+    pub(crate) cursor_shape: crate::modal::CursorShape,
+    pub(crate) keystroke_interception: Option<Subscription>,
+    pub(crate) extra_key_context: Option<SharedString>,
     pub(super) inline_tokens: Option<Box<super::inline_tokens::InlineTokenStore>>,
     pub(super) pending_token: Option<super::InlineToken>,
     pub(super) replaying_history: bool,
@@ -591,6 +596,9 @@ impl<M: InputModeKind> InputBaseState<M> {
             gutter: Default::default(),
             highlight_layers: Default::default(),
             annotations: Default::default(),
+            cursor_shape: Default::default(),
+            keystroke_interception: None,
+            extra_key_context: None,
             inline_tokens: None,
             pending_token: None,
             replaying_history: false,
@@ -4545,7 +4553,11 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
 
         // Actions only one mode handles are registered by that mode, where
         // `Self` is concrete enough to name its own entity type.
-        M::register_actions(element, &entity, window)
+        let element = M::register_actions(element, &entity, window);
+        match (&self.extra_key_context, M::CODE_EDITOR) {
+            (Some(extra), true) => element.key_context(format!("Input mode=editor {extra}").as_str()),
+            _ => element,
+        }
     }
 }
 

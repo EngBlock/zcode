@@ -9,13 +9,15 @@ use gpui::{
     HighlightStyle, Hitbox, HitboxBehavior, Hsla, InteractiveElement, IntoElement, LayoutId,
     LongPressEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Path, Pixels,
     Point, Position, ShapedLine, SharedString, Size, Style, Styled as _, TextAlign, TextRun,
-    TextStyle, TouchDragEvent, TouchPhase, UnderlineStyle, Window, fill, point, px, relative, size,
+    TextStyle, TouchDragEvent, TouchPhase, UnderlineStyle, Window, fill, outline, point, px, relative,
+    size,
 };
 use ropey::Rope;
 use smallvec::SmallVec;
 use std::{ops::Range, rc::Rc};
 
 use crate::gutter::{GutterGeometry, GutterLayout};
+use crate::modal::CursorShape;
 use crate::{RopeExt as _, blink_cursor::CURSOR_WIDTH, display_map::LineLayout};
 use gpui_base::Scrollbar;
 
@@ -758,7 +760,7 @@ impl<M: InputModeKind> TextElement<M> {
         last_layout: &LastLayout,
         bounds: &mut Bounds<Pixels>,
         scroll_size: Size<Pixels>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut App,
     ) -> (Vec<CursorRenderInfo>, Point<Pixels>, Option<usize>) {
         let state = self.state.read(cx);
@@ -914,15 +916,58 @@ impl<M: InputModeKind> TextElement<M> {
             // Apply the final horizontal offset to every caret after cursor-follow and
             // deferred scrolling have been resolved, regardless of selection order.
             let cursor_x = bounds.left() + cursor_pos.x + line_number_width;
-            cursor_infos.push(CursorRenderInfo {
-                bounds: Bounds::new(
-                    point(
-                        cursor_x,
-                        bounds.top() + cursor_pos.y + ((line_height - cursor_height) / 2.),
+            let shape = state.cursor_shape;
+            let (bounds_for_shape, glyph) = if shape == CursorShape::Bar {
+                (
+                    Bounds::new(
+                        point(cursor_x, bounds.top() + cursor_pos.y + ((line_height - cursor_height) / 2.)),
+                        size(CURSOR_WIDTH, cursor_height),
                     ),
-                    size(CURSOR_WIDTH, cursor_height),
-                ),
+                    None,
+                )
+            } else {
+                // The character after the caret, when it's on the caret's row.
+                let next = state.next_boundary(cursor);
+                let character = state.text.char_at(cursor).filter(|c| *c != '\n' && *c != '\r');
+                let next_pos = caret_for(cursor_row, next, false);
+                let width = match character {
+                    Some(_) if next > cursor && next_pos.y == cursor_pos.y && next_pos.x > cursor_pos.x => {
+                        next_pos.x - cursor_pos.x
+                    }
+                    _ => last_layout.space_width,
+                };
+                let top = bounds.top() + cursor_pos.y;
+                let glyph = (shape == CursorShape::Block)
+                    .then(|| character.map(|_| state.text.slice(cursor..next).to_string()))
+                    .flatten()
+                    .map(|text| {
+                        let style = window.text_style();
+                        let text: SharedString = text.into();
+                        window.text_system().shape_line(
+                            text.clone(),
+                            style.font_size.to_pixels(window.rem_size()),
+                            &[TextRun {
+                                len: text.len(),
+                                font: style.font(),
+                                color: state.editor_style.background,
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            }],
+                            None,
+                        )
+                    });
+                let bounds = match shape {
+                    CursorShape::Underline => Bounds::new(point(cursor_x, top + line_height - px(2.)), size(width, px(2.))),
+                    _ => Bounds::new(point(cursor_x, top), size(width, line_height)),
+                };
+                (bounds, glyph)
+            };
+            cursor_infos.push(CursorRenderInfo {
+                bounds: bounds_for_shape,
                 is_active,
+                shape,
+                glyph,
             });
         }
 
@@ -2567,6 +2612,9 @@ impl<M: InputModeKind> TextElement<M> {
 struct CursorRenderInfo {
     bounds: Bounds<Pixels>,
     is_active: bool,
+    shape: CursorShape,
+    /// The character under a block caret, in the background color.
+    glyph: Option<ShapedLine>,
 }
 
 /// An inlay shaped for this frame.
@@ -2638,6 +2686,8 @@ impl PrepaintState {
                 CursorRenderInfo {
                     bounds,
                     is_active: info.is_active,
+                    shape: info.shape,
+                    glyph: info.glyph.clone(),
                 }
             })
             .collect()
@@ -3616,7 +3666,15 @@ impl<M: InputModeKind> Element for TextElement<M> {
         // Paint blinking cursors (shared blink state for all carets)
         if focused && show_cursor {
             for cursor_info in prepaint.cursor_infos_with_scroll() {
-                window.paint_quad(fill(cursor_info.bounds, editor_style.caret));
+                match cursor_info.shape {
+                    CursorShape::Hollow => {
+                        window.paint_quad(outline(cursor_info.bounds, editor_style.caret, gpui::BorderStyle::Solid))
+                    }
+                    _ => window.paint_quad(fill(cursor_info.bounds, editor_style.caret)),
+                }
+                if let Some(glyph) = &cursor_info.glyph {
+                    _ = glyph.paint(cursor_info.bounds.origin, line_height, TextAlign::Left, None, window, cx);
+                }
             }
         }
 

@@ -271,3 +271,24 @@ height, reveal) add the block rows above it. The caret moves past a block
 in one step. The engine's LSP inline-completion ghost text predates this
 and still paints over the text after the caret; edit predictions (3.3)
 should use an inlay for the first line and a block for the rest instead.
+
+### Keystroke interception, cursor shape, key context (`modal.rs`)
+
+```rust
+editor.set_keystroke_interceptor(Some(Rc::new(|editor, keystroke, window, cx| {
+    // before key bindings and text input; true consumes the keystroke
+    vim.handle(editor, keystroke, window, cx)
+})), cx);
+editor.set_cursor_shape(CursorShape::Block, cx);   // Bar, Block, Underline, Hollow
+editor.set_extra_key_context(Some("vim_mode=normal".into()), cx);  // for "Input && vim_mode == normal" bindings
+```
+
+The interceptor is a GPUI keystroke interceptor scoped to the editor's
+focus, so it runs before the keymap and before text input; a consumed
+keystroke neither dispatches an action nor types. A block caret covers the
+character after the caret and repaints that character in the background
+color; underline and hollow use the same width. With the selection and
+editing APIs (`set_selected_range`, `add_selection` for visual block,
+`edit`, `transact` for one-step undo of `dw`, `undo`), this is what Vim mode
+(2.7) needs: normal, insert, visual (character, line, block) and replace
+modes are states of the layer, not of the engine.

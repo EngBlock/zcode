@@ -89,6 +89,7 @@ mod annotations;
 mod gutter;
 mod highlights;
 mod history;
+mod modal;
 #[cfg(test)]
 mod test_support;
 mod ui;
@@ -118,6 +119,7 @@ pub use gutter::{
 };
 pub use cursor::Selection;
 pub use highlights::HighlightPriority;
+pub use modal::{CursorShape, KeystrokeInterceptor};
 pub use decorations::{
     RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, TextDecoration,
     TextDecorationCollection,
