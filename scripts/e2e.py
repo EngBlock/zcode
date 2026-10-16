@@ -45,6 +45,10 @@ XCODE_SHORTCUTS = [
     ("cmd-w", "zcode::CloseTab", "File ▸ Close Tab"),
     ("ctrl-alt-cmd-w", "zcode::CloseProject", "File ▸ Close Workspace"),
     ("cmd-d", "zcode::DuplicateLine", "Edit ▸ Duplicate"),
+    ("ctrl-cmd-'", "zcode::BookmarkLine", "Edit ▸ Bookmark Line"),
+    ("ctrl-alt-cmd-'", "zcode::BookmarkLineWithDialog", "Edit ▸ Bookmark Line With Dialog"),
+    ("ctrl-shift-cmd-'", "zcode::BookmarkFile", "Edit ▸ Bookmark File"),
+    ("ctrl-alt-shift-cmd-'", "zcode::BookmarkFileWithDialog", "Edit ▸ Bookmark File With Dialog"),
     ("cmd-/", "zcode::ToggleComment", "Editor ▸ Comment Selection"),
     ("cmd-alt-[", "zcode::MoveLineUp", "Editor ▸ Move Line Up"),
     ("cmd-alt-]", "zcode::MoveLineDown", "Editor ▸ Move Line Down"),
@@ -71,10 +75,15 @@ XCODE_SHORTCUTS = [
     ("cmd-shift-'", "zcode::PreviousIssue", "Navigate ▸ Jump to Previous Issue"),
     ("ctrl-/", "zcode::NextPlaceholder", "Navigate ▸ Jump to Next Placeholder"),
     ("cmd-shift-j", "zcode::RevealInNavigator", "Navigate ▸ Reveal in Project Navigator"),
+    ("ctrl-;", "zcode::NextBookmark", "Navigate ▸ Jump to Next Bookmark"),
+    ("ctrl-shift-;", "zcode::PreviousBookmark", "Navigate ▸ Jump to Previous Bookmark"),
+    ("ctrl-alt-;", "zcode::NextBookmarkInWorkspace", "Navigate ▸ Jump to Next Bookmark In Workspace"),
+    ("ctrl-alt-shift-;", "zcode::PreviousBookmarkInWorkspace", "Navigate ▸ Jump to Previous Bookmark In Workspace"),
     ("cmd-shift-[", "zcode::PreviousTab", "Navigate ▸ Show Previous Tab"),
     ("cmd-shift-]", "zcode::NextTab", "Navigate ▸ Show Next Tab"),
     ("cmd-1", "zcode::ShowProjectNavigator", "View ▸ Navigators ▸ Project"),
     ("cmd-2", "zcode::ShowSourceControlNavigator", "View ▸ Navigators ▸ Source Control"),
+    ("cmd-3", "zcode::ShowBookmarksNavigator", "View ▸ Navigators ▸ Bookmarks"),
     ("cmd-4", "zcode::ShowFindNavigator", "View ▸ Navigators ▸ Find"),
     ("cmd-5", "zcode::ShowIssueNavigator", "View ▸ Navigators ▸ Issues"),
     ("cmd-6", "zcode::ShowTestNavigator", "View ▸ Navigators ▸ Tests"),
@@ -1361,6 +1370,203 @@ def package_checks(z, samples):
     check("Swift package: Test… (⌥⌘U) with the Test action's own environment", package_test_with_options)
 
 
+def bookmark_rows(z):
+    """The Bookmarks navigator's rows as painted: (kind, title) → (x, y)."""
+    return {(r["kind"], r["title"]): (r["x"], r["y"]) for r in z.dump()["bookmarks"]["rows"]}
+
+
+def bookmark_list(s):
+    """Every bookmark in the navigator's order as (file, line, title)."""
+    return [(b["file"], b["line"], b["title"]) for sec in s["bookmarks"]["sections"] for b in sec["bookmarks"]]
+
+
+def bookmark_checks(samples):
+    """Bookmarks on a copy of ZKit, relaunched at the end to check they're kept."""
+    project = os.path.join(WORK, "BookmarkKit")
+    shutil.copytree(os.path.join(samples, "ZKit"), project)
+    main = os.path.join(project, "Sources", "zhello", "main.swift")
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    tests = os.path.join(project, "Tests", "ZKitTests", "GreeterTests.swift")
+    name_line, loop_line, tick_line = line_of(main, "let name ="), line_of(main, "for i in"), line_of(main, 'print("tick')
+    greeting_line = line_of(greeter, "func greeting")
+    z = Zcode(project)
+
+    def lines_and_files():
+        z.run(f"open {main}:{name_line}", "wait 300", "keys ctrl-cmd-'", f"open {main}:{loop_line}", "wait 300", "keys ctrl-cmd-'",
+              "keys ctrl-shift-cmd-'", f"open {greeter}:{greeting_line}", "wait 300", "keys ctrl-cmd-'", "keys cmd-3", "wait 300")
+        s = z.dump()
+        assert s["navigator"] == "Bookmarks", s["navigator"]
+        assert bookmark_list(s) == [
+            ("main.swift", name_line, 'let name = ProcessInfo.processInfo.environment["ZHELLO_NAME"] ?? "zcode"'),
+            ("main.swift", loop_line, "for i in 1...3 {"),
+            ("main.swift", None, "main.swift"),
+            ("Greeter.swift", greeting_line, "public func greeting(excited: Bool = false) -> String {"),
+        ], bookmark_list(s)
+        assert [sec["title"] for sec in s["bookmarks"]["sections"]] == ["main.swift", "Greeter.swift"], s["bookmarks"]["sections"]
+        assert [g["line"] for g in s["bookmarks"]["gutter"]] == [greeting_line], s["bookmarks"]["gutter"]
+        # Bookmarking a line again reveals its bookmark instead of adding one.
+        z.run(f"open {main}:{name_line}", "wait 300", "keys cmd-1", "keys ctrl-cmd-'", "wait 200")
+        s = z.dump()
+        assert len(bookmark_list(s)) == 4 and s["navigator"] == "Bookmarks", bookmark_list(s)
+        assert s["bookmarks"]["selected"].startswith("let name"), s["bookmarks"]["selected"]
+        assert [g["line"] for g in s["bookmarks"]["gutter"]] == [name_line, loop_line], s["bookmarks"]["gutter"]
+        z.run("screenshot " + os.path.join(WORK, "bookmarks.png"))
+
+    def follow_edits():
+        z.run(f"open {main}:1", "keys enter enter", "wait 200")
+        lines = [b[1] for b in bookmark_list(z.dump())]
+        assert lines == [name_line + 2, loop_line + 2, None, greeting_line], lines
+        for _ in range(3):
+            if not z.dump()["active"]["dirty"]:
+                break
+            z.run("keys cmd-z", "wait 200")
+        lines = [b[1] for b in bookmark_list(z.dump())]
+        assert lines == [name_line, loop_line, None, greeting_line], lines
+
+    def next_and_previous():
+        z.run(f"open {main}:1", "wait 300", "keys ctrl-;")
+        assert z.dump()["active"]["line"] == name_line
+        z.run("keys ctrl-;")
+        assert z.dump()["active"]["line"] == loop_line
+        z.run("keys ctrl-;")
+        assert z.dump()["active"]["line"] == name_line, "wraps around the file"
+        z.run("keys ctrl-shift-;")
+        assert z.dump()["active"]["line"] == loop_line
+        # In Workspace, in the navigator's order: main.swift's file bookmark,
+        # then Greeter.swift, and back.
+        z.run("keys ctrl-alt-;", "wait 300")
+        assert z.dump()["active"]["path"].endswith("main.swift")
+        z.run("keys ctrl-alt-;", "wait 300")
+        s = z.dump()["active"]
+        assert s["path"].endswith("Greeter.swift") and s["line"] == greeting_line, s
+        z.run("keys ctrl-alt-shift-;", "keys ctrl-alt-shift-;", "wait 300")
+        s = z.dump()["active"]
+        assert s["path"].endswith("main.swift") and s["line"] == loop_line, s
+
+    def edit_complete_filter():
+        z.run("keys cmd-3", "wait 300")
+        x, y = bookmark_rows(z)[("bookmark", "for i in 1...3 {")]
+        z.run(f"double-click {x} {y}", "wait 300")
+        assert z.dump()["bookmarks"]["editing"] == "for i in 1...3 {"
+        z.run("keys cmd-a", "type Ticks", "keys enter", "wait 200")
+        s = z.dump()
+        assert s["bookmarks"]["editing"] is None and bookmark_list(s)[1][2] == "Ticks", bookmark_list(s)
+        # Escape leaves the description as it was.
+        x, y = bookmark_rows(z)[("bookmark", "Ticks")]
+        z.run(f"double-click {x} {y}", "wait 300", "keys cmd-a", "type nope", "keys escape", "wait 200")
+        assert bookmark_list(z.dump())[1][2] == "Ticks", bookmark_list(z.dump())
+        z.run("bookmark complete 1 on", "bookmark filter tick", "wait 200")
+        assert [r[1] for r in bookmark_rows(z)] == ["main.swift", "Ticks"], bookmark_rows(z)
+        z.run("bookmark incomplete on", "bookmark filter greet", "wait 200")
+        assert [r[1] for r in bookmark_rows(z)] == ["Greeter.swift", "public func greeting(excited: Bool = false) -> String {"], bookmark_rows(z)
+        z.run("bookmark filter", "wait 200")
+        assert ("bookmark", "Ticks") not in bookmark_rows(z), "completed items hidden"
+        z.run("bookmark incomplete off", "wait 200")
+        assert len([r for r in bookmark_rows(z) if r[0] == "bookmark"]) == 4
+
+    def drag_and_drop():
+        rows = bookmark_rows(z)
+        (x1, y1), (x2, y2) = rows[("bookmark", "Ticks")], rows[("bookmark", "main.swift")]
+        z.run(f"drag {x1} {y1} {x2} {y2}", "wait 300")
+        assert [b[2] for b in bookmark_list(z.dump())][:3] == [bookmark_list(z.dump())[0][2], "main.swift", "Ticks"], bookmark_list(z.dump())
+        rows = bookmark_rows(z)
+        (x1, y1), (x2, y2) = rows[("section", "Greeter.swift")], rows[("section", "main.swift")]
+        z.run(f"drag {x1} {y1} {x2} {y2}", "wait 300")
+        s = z.dump()
+        assert [sec["title"] for sec in s["bookmarks"]["sections"]] == ["Greeter.swift", "main.swift"], s["bookmarks"]["sections"]
+        # Not into another file's bookmarks.
+        rows = bookmark_rows(z)
+        (x1, y1), (x2, y2) = rows[("bookmark", "Ticks")], rows[("section", "Greeter.swift")]
+        z.run(f"drag {x1} {y1} {x2} {y2}", "wait 300")
+        assert [sec["title"] for sec in z.dump()["bookmarks"]["sections"]] == ["Greeter.swift", "main.swift"]
+        # A click opens the bookmark at its line.
+        x, y = bookmark_rows(z)[("bookmark", "Ticks")]
+        z.run(f"click {x} {y}", "wait 300")
+        s = z.dump()["active"]
+        assert s["path"].endswith("main.swift") and s["line"] == loop_line, s
+
+    def dialogs_and_gutter_menu():
+        z.run(f"open {main}:{tick_line}", "wait 300", "keys ctrl-alt-cmd-'", "wait 300")
+        assert z.dump()["bookmarks"]["dialog"] == {"heading": "Add Line Bookmark", "title": 'print("tick \\(i)")'}, z.dump()["bookmarks"]["dialog"]
+        z.run("bookmark title Each tick", "keys enter", "wait 200")
+        s = z.dump()
+        assert ("main.swift", tick_line, "Each tick") in bookmark_list(s) and not s["modal_open"], bookmark_list(s)
+        z.run(f"open {tests}", "wait 300", "keys ctrl-alt-shift-cmd-'", "wait 300")
+        assert z.dump()["bookmarks"]["dialog"]["heading"] == "Add File Bookmark"
+        z.run("keys escape", "wait 200")
+        assert not any(b[0] == "GreeterTests.swift" for b in bookmark_list(z.dump())), "Escape cancels"
+        z.run(f"open {main}:{tick_line}", "wait 300")
+        ribbon = next(g for g in z.dump()["bookmarks"]["gutter"] if g["line"] == tick_line)
+        z.run(f"right-click {ribbon['x']} {ribbon['y']}", "wait 300")
+        assert z.dump()["breakpoints"]["menu_open"], "the ribbon's menu"
+        assert not z.dump()["breakpoints"]["list"], "a right-click on a ribbon isn't a breakpoint's"
+        z.run("keys escape", "wait 200")
+
+    def find_results():
+        z.run("keys cmd-shift-f", "wait 200", "keys cmd-a", "type greeting", "keys enter", "wait 1000")
+        s = z.dump()
+        found = s["find_results"]
+        assert found >= 4, (found, s["navigator"], s["files"], s["modal_open"], s["breakpoints"]["menu_open"])
+        # With the Find navigator focused, Bookmark Line bookmarks the search.
+        z.run("keys ctrl-cmd-'", "wait 300")
+        s = z.dump()
+        search = next(sec for sec in s["bookmarks"]["sections"] if sec["kind"] == "search")
+        assert search["query"] == "greeting" and search["title"] == "“greeting”" and len(search["bookmarks"]) == found, search
+        # One result on its own (its context menu's Bookmark Line).
+        z.run("bookmark find-result 0 0", "wait 200")
+        s = z.dump()
+        assert sum(1 for sec in s["bookmarks"]["sections"] for b in sec["bookmarks"]) == 5 + found + 1, bookmark_list(s)
+        # Find Again picks up a new match.
+        with open(tests, "a") as f:
+            f.write("// greeting again\n")
+        z.run("bookmark find-again 0")
+        z.wait_for(lambda s: len(next(sec for sec in s["bookmarks"]["sections"] if sec["kind"] == "search")["bookmarks"]) == found + 1,
+                   timeout=15, interval=0.5)
+
+    def rename_and_trash():
+        z.run(f"rename {greeter} -> Greeting.swift", "wait 500")
+        s = z.dump()
+        assert "Greeting.swift" in [sec["title"] for sec in s["bookmarks"]["sections"]], s["bookmarks"]["sections"]
+        assert "Greeter.swift" not in [b[0] for b in bookmark_list(s)], bookmark_list(s)
+        renamed = os.path.join(os.path.dirname(greeter), "Greeting.swift")
+        z.run(f"trash {renamed}", "wait 500")
+        empty_trash_item("Greeting.swift")
+        s = z.dump()
+        assert "Greeting.swift" not in [b[0] for b in bookmark_list(s)], bookmark_list(s)
+
+    def kept_after_relaunch():
+        nonlocal z
+        before = bookmark_list(z.dump())
+        z.quit()
+        z = Zcode(project)
+        z.run(f"open {main}", "keys cmd-3", "wait 500")
+        s = z.dump()
+        assert bookmark_list(s) == before, (bookmark_list(s), before)
+        ticks = next(b for sec in s["bookmarks"]["sections"] for b in sec["bookmarks"] if b["title"] == "Ticks")
+        assert ticks["completed"], ticks
+        # With the Find result's on `greeter.greeting`.
+        expected = sorted([name_line, loop_line, tick_line, line_of(main, "greeter.greeting")])
+        assert sorted(g["line"] for g in s["bookmarks"]["gutter"]) == expected, s["bookmarks"]["gutter"]
+        z.run("bookmark sort name", "wait 200")
+        titles = [sec["title"] for sec in z.dump()["bookmarks"]["sections"]]
+        assert titles == sorted(titles, key=str.lower), titles
+        z.run("bookmark delete-completed", "wait 200")
+        assert "Ticks" not in [b[2] for b in bookmark_list(z.dump())]
+
+    try:
+        check("Bookmarks: Bookmark Line (⌃⌘') and Bookmark File (⌃⇧⌘'), ribbons, ⌘3, no duplicates", lines_and_files)
+        check("Bookmarks: follow inserted lines and undo", follow_edits)
+        check("Bookmarks: Jump to Next / Previous Bookmark (⌃; ⌃:), In Workspace (⌃⌥; ⌃⌥:)", next_and_previous)
+        check("Bookmarks: edit descriptions in place, Mark as Complete, filter, incomplete only", edit_complete_filter)
+        check("Bookmarks: drag to reorder bookmarks and files; click to open", drag_and_drop)
+        check("Bookmarks: With Dialog variants (⌃⌥⌘', ⌃⌥⇧⌘'); the ribbon's menu", dialogs_and_gutter_menu)
+        check("Bookmarks: a Find navigator query and a result; Find Again", find_results)
+        check("Bookmarks: follow renames, removed with Move to Trash", rename_and_trash)
+        check("Bookmarks: kept after a relaunch; Sort By Name; Delete All Completed Items", kept_after_relaunch)
+    finally:
+        z.quit()
+
+
 def tally_repo():
     """The Tally fixture package as a bare git repository with release tags."""
     out = subprocess.run(["sh", os.path.join(ROOT, "tests", "fixtures", "packages", "make_repo.sh"), os.path.join(WORK, "repos")],
@@ -1752,6 +1958,9 @@ def main():
         package_checks(z, samples)
     finally:
         z.quit()
+
+    print("Bookmarks (a copy of samples/ZKit):")
+    bookmark_checks(samples)
 
     print("Package dependencies (offline, a local repository of the Tally fixture):")
     package_dependency_checks(samples)
