@@ -72,6 +72,8 @@ gpui_kit::actions!(
         PreviousBookmark,
         NextBookmarkInWorkspace,
         PreviousBookmarkInWorkspace,
+        NextChange,
+        PreviousChange,
         // View
         ShowProjectNavigator,
         ShowSourceControlNavigator,
@@ -100,6 +102,11 @@ gpui_kit::actions!(
         Rename,
         EditAllInScope,
         FixIssue,
+        CodeReview,
+        SideBySideComparison,
+        InlineComparison,
+        ShowAuthors,
+        ToggleInlineBlame,
         // Editor (property lists)
         AddPlistItem,
         DeletePlistItem,
@@ -149,6 +156,17 @@ gpui_kit::actions!(
         StepOut,
         ShowDebugNavigator,
         ShowBreakpointNavigator,
+        // Integrate
+        Commit,
+        Push,
+        Pull,
+        FetchChanges,
+        RefreshFileStatus,
+        StageAllChanges,
+        UnstageAllChanges,
+        DiscardAllChanges,
+        SwitchBranch,
+        NewBranch,
         // Pickers
         PickerSelectNext,
         PickerSelectPrevious,
@@ -249,6 +267,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-alt-;", NextBookmarkInWorkspace, None),
         KeyBinding::new("ctrl-alt-shift-;", PreviousBookmarkInWorkspace, None),
         KeyBinding::new("ctrl-alt-:", PreviousBookmarkInWorkspace, None),
+        // Next / Previous Change; with ⇧ the key may arrive as `|`.
+        KeyBinding::new("ctrl-\\", NextChange, None),
+        KeyBinding::new("ctrl-shift-\\", PreviousChange, None),
+        KeyBinding::new("ctrl-|", PreviousChange, None),
         // View
         KeyBinding::new("cmd-1", ShowProjectNavigator, None),
         KeyBinding::new("cmd-2", ShowSourceControlNavigator, None),
@@ -280,6 +302,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-cmd-e", EditAllInScope, Some(EDITOR)),
         KeyBinding::new("ctrl-alt-cmd-f", FixIssue, Some(EDITOR)),
         KeyBinding::new("alt-enter", ToggleCodeActions, Some(EDITOR)),
+        // Code Review isn't in Xcode 27's inventory (⌥⌘↩ is Canvas now);
+        // ⌥⇧⌘↩ is its key in the Xcodes that have it.
+        KeyBinding::new("alt-shift-cmd-enter", CodeReview, None),
+        KeyBinding::new("ctrl-shift-cmd-a", ShowAuthors, None),
         // Product
         KeyBinding::new("cmd-b", Build, None),
         KeyBinding::new("cmd-r", Run, None),
@@ -309,6 +335,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("f8", StepOut, None),
         KeyBinding::new("cmd-7", ShowDebugNavigator, None),
         KeyBinding::new("cmd-8", ShowBreakpointNavigator, None),
+        // Integrate
+        KeyBinding::new("cmd-alt-c", Commit, None),
+        KeyBinding::new("cmd-alt-x", Pull, None),
         // Pickers
         KeyBinding::new("down", PickerSelectNext, Some(PICKER_INPUT)),
         KeyBinding::new("ctrl-n", PickerSelectNext, Some(PICKER_INPUT)),
@@ -327,6 +356,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", PickerConfirm, Some("BookmarkDialog")),
         KeyBinding::new("escape", PickerDismiss, Some("BookmarkDialog")),
         KeyBinding::new("escape", PickerDismiss, Some("BookmarkTitle > Input")),
+        KeyBinding::new("escape", PickerDismiss, Some("HunkPopover")),
+        KeyBinding::new("escape", PickerDismiss, Some("CommitPopover")),
+        KeyBinding::new("escape", PickerDismiss, Some("CommitSheet")),
+        KeyBinding::new("enter", PickerConfirm, Some("RemoteSheet")),
+        KeyBinding::new("escape", PickerDismiss, Some("RemoteSheet")),
         // The property list editor: rows, and the key or value being typed.
         KeyBinding::new("cmd-z", Undo, Some(PLIST)),
         KeyBinding::new("cmd-shift-z", Redo, Some(PLIST)),
@@ -434,6 +468,9 @@ pub fn commands() -> Vec<Command> {
         cmd!("Navigate", "Jump to Previous Bookmark", PreviousBookmark),
         cmd!("Navigate", "Jump to Previous Bookmark In Workspace", PreviousBookmarkInWorkspace),
         cmd!("Navigate", "-", Quit),
+        cmd!("Navigate", "Jump to Next Change", NextChange),
+        cmd!("Navigate", "Jump to Previous Change", PreviousChange),
+        cmd!("Navigate", "-", Quit),
         cmd!("Navigate", "Reveal in Project Navigator", RevealInNavigator),
         cmd!("Navigate", "Show Next Tab", NextTab),
         cmd!("Navigate", "Show Previous Tab", PreviousTab),
@@ -441,6 +478,12 @@ pub fn commands() -> Vec<Command> {
         cmd!("Navigate", "Move Focus to Previous Editor Pane", FocusPreviousEditorPane),
         cmd!("Editor", "Show Editor Only", ShowEditorOnly),
         cmd!("Editor", "Assistant", ShowAssistant),
+        cmd!("Editor", "Code Review", CodeReview),
+        cmd!("Editor", "-", Quit),
+        cmd!("Editor", "Authors", ShowAuthors),
+        cmd!("Editor", "Inline Blame", ToggleInlineBlame),
+        cmd!("Editor", "Side by Side Comparison", SideBySideComparison),
+        cmd!("Editor", "Inline Comparison", InlineComparison),
         cmd!("Editor", "-", Quit),
         cmd!("Editor", "Show Completions", ShowCompletions),
         cmd!("Editor", "Show Code Actions", ToggleCodeActions),
@@ -531,6 +574,19 @@ pub fn commands() -> Vec<Command> {
         cmd!("Debug ▸ Breakpoints", "Delete All Breakpoints", DeleteAllBreakpoints),
         cmd!("Debug", "-", Quit),
         cmd!("Debug", "Clear Console", ClearConsole),
+        // Xcode's Integrate menu, plus branches.
+        cmd!("Integrate", "Commit…", Commit),
+        cmd!("Integrate", "Push…", Push),
+        cmd!("Integrate", "Pull…", Pull),
+        cmd!("Integrate", "Fetch Changes", FetchChanges),
+        cmd!("Integrate", "Refresh File Status", RefreshFileStatus),
+        cmd!("Integrate", "-", Quit),
+        cmd!("Integrate", "Stage All Changes", StageAllChanges),
+        cmd!("Integrate", "Unstage All Changes", UnstageAllChanges),
+        cmd!("Integrate", "Discard All Changes…", DiscardAllChanges),
+        cmd!("Integrate", "-", Quit),
+        cmd!("Integrate", "Switch Branch…", SwitchBranch),
+        cmd!("Integrate", "New Branch…", NewBranch),
     ]
 }
 
@@ -562,7 +618,7 @@ pub fn set_menus(cx: &mut App) {
         MenuItem::action("Quit zcode", Quit),
     ])];
     let commands = commands();
-    for menu_name in ["File", "Edit", "Find", "Navigate", "Editor", "View", "Product", "Debug"] {
+    for menu_name in ["File", "Edit", "Find", "Navigate", "Editor", "View", "Product", "Debug", "Integrate"] {
         let mut items: Vec<MenuItem> = Vec::new();
         if menu_name == "Edit" {
             // Native items keep the system text services (cut/copy/paste in

@@ -75,6 +75,10 @@ impl Workspace {
                     .into_any_element()
             }
             Some(Item::ProjectSettings(settings)) => div().flex_1().min_h_0().child(settings.clone()).into_any_element(),
+            Some(Item::Diff(diff)) => {
+                diff.view.update(cx, |view, cx| view.set_font_size(self.font_size, cx));
+                div().flex_1().min_h_0().child(diff.view.clone()).into_any_element()
+            }
             Some(Item::Editor(item)) => {
                 let body = match item.shown_plist() {
                     Some(plist) => div().flex_1().min_h_0().child(plist.clone()).into_any_element(),
@@ -121,6 +125,16 @@ impl Workspace {
                         SharedString::from(format!("tab-{}", item.path.display())),
                         Icon::new(pickers::file_icon(&item.path)).small().text_color(theme.muted_foreground),
                         item.title(),
+                        buffer.is_some_and(|b| b.read_only),
+                        buffer.is_some_and(|b| b.dirty),
+                    )
+                }
+                Item::Diff(diff) => {
+                    let buffer = self.buffer(&diff.path);
+                    (
+                        SharedString::from(format!("tab-diff-{}", diff.path.display())),
+                        Icon::new(IconName::GitCompare).small().text_color(theme.muted_foreground),
+                        diff.title(),
                         buffer.is_some_and(|b| b.read_only),
                         buffer.is_some_and(|b| b.dirty),
                     )

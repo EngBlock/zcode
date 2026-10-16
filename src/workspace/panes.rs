@@ -28,6 +28,19 @@ impl Workspace {
         self.pane(self.active_pane)?.active_editor_item()
     }
 
+    /// The focused pane's comparison, when it shows one.
+    pub fn active_diff(&self) -> Option<&Entity<super::diff_view::DiffView>> {
+        match self.pane(self.active_pane)?.active_item()? {
+            Item::Diff(diff) => Some(&diff.view),
+            _ => None,
+        }
+    }
+
+    /// The file the focused tab edits: a file tab's, or a comparison's.
+    pub fn active_file_path(&self) -> Option<PathBuf> {
+        self.pane(self.active_pane)?.active_item()?.buffer_path().map(Path::to_path_buf)
+    }
+
     /// Whether the focused pane shows the project editor.
     pub fn showing_project_settings(&self) -> bool {
         matches!(self.pane(self.active_pane).and_then(Pane::active_item), Some(Item::ProjectSettings(_)))
@@ -41,7 +54,7 @@ impl Workspace {
                 Item::Editor(item) => {
                     item.editor.entity_id() == view || item.plist.as_ref().is_some_and(|p| p.editor.entity_id() == view)
                 }
-                Item::ProjectSettings(settings) => settings.entity_id() == view,
+                other => other.view_id() == view,
             })?;
             Some((pane.id, ix))
         })
@@ -161,7 +174,7 @@ impl Workspace {
         let focus = p.items[ix].focus_handle(cx);
         let settings = match &p.items[ix] {
             Item::ProjectSettings(settings) => Some(settings.clone()),
-            Item::Editor(_) => None,
+            Item::Editor(_) | Item::Diff(_) => None,
         };
         self.active_pane = pane;
         self.inspected = None;
@@ -223,10 +236,7 @@ impl Workspace {
     /// first; a pane left without tabs closes too, unless it's the only one.
     pub fn close_item(&mut self, pane: PaneId, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(item) = self.pane(pane).and_then(|p| p.items.get(ix)) else { return };
-        let view = match item {
-            Item::Editor(item) => item.editor.entity_id(),
-            Item::ProjectSettings(settings) => settings.entity_id(),
-        };
+        let view = item.view_id();
         let unsaved = self.unsaved_if_closed([item]);
         self.confirm_close(unsaved, window, cx, move |this, window, cx| {
             if let Some((pane, ix)) = this.find_view(view) {
@@ -238,13 +248,15 @@ impl Workspace {
     /// The files whose last tabs are among `items` and that have unsaved
     /// changes.
     fn unsaved_if_closed<'a>(&self, items: impl IntoIterator<Item = &'a Item>) -> Vec<PathBuf> {
-        let closing: Vec<&Path> = items.into_iter().filter_map(Item::path).collect();
+        // A comparison's local side is a view of the file too.
+        let closing: Vec<&Path> = items.into_iter().filter_map(Item::buffer_path).collect();
         let mut paths: Vec<PathBuf> = closing.iter().map(|path| path.to_path_buf()).collect();
         paths.sort();
         paths.dedup();
         paths.retain(|path| {
             let count = closing.iter().filter(|closed| **closed == path).count();
-            self.buffer(path).is_some_and(|b| b.dirty) && self.views_of(path).len() == count
+            let open = self.views_of(path).len() + self.diff_views_of(path).len();
+            self.buffer(path).is_some_and(|b| b.dirty) && open == count
         });
         paths
     }
@@ -315,6 +327,12 @@ impl Workspace {
                     drop(item);
                     self.view_closed(&path, view, cx);
                 }
+                Item::Diff(diff) => {
+                    let path = diff.path.clone();
+                    let view = diff.view.read(cx).current.entity_id();
+                    drop(diff);
+                    self.view_closed(&path, view, cx);
+                }
                 Item::ProjectSettings(_) => {
                     self.project_settings = None;
                     self.project_settings_subscriptions.clear();
@@ -353,10 +371,7 @@ impl Workspace {
             .iter()
             .enumerate()
             .filter(|(ix, _)| *ix != keep)
-            .map(|(_, item)| match item {
-                Item::Editor(item) => item.editor.entity_id(),
-                Item::ProjectSettings(settings) => settings.entity_id(),
-            })
+            .map(|(_, item)| item.view_id())
             .collect();
         let unsaved = self.unsaved_if_closed(p.items.iter().enumerate().filter(|(ix, _)| *ix != keep).map(|(_, item)| item));
         self.confirm_close(unsaved, window, cx, move |this, window, cx| {
@@ -815,14 +830,8 @@ impl Workspace {
                     })
                 });
                 serde_json::json!({
-                    "tabs": pane.items.iter().map(|item| match item {
-                        Item::Editor(item) => item.title(),
-                        Item::ProjectSettings(_) => "Project Settings".into(),
-                    }).collect::<Vec<_>>(),
-                    "active": pane.active_item().map(|item| match item {
-                        Item::Editor(item) => item.title(),
-                        Item::ProjectSettings(_) => "Project Settings".into(),
-                    }),
+                    "tabs": pane.items.iter().map(Item::title).collect::<Vec<_>>(),
+                    "active": pane.active_item().map(Item::title),
                     "focused": pane.id == self.active_pane,
                     "assistant": pane.assistant.map(|a| format!("{:?}", a.mode)),
                     "assists": pane.assistant.and_then(|a| order.iter().position(|p| *p == a.of)),

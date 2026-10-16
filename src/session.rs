@@ -100,6 +100,11 @@ pub struct Session {
     pub recent: Vec<PathBuf>,
     pub projects: HashMap<String, ProjectSession>,
     pub font_size: Option<f32>,
+    /// Inline blame on the cursor's line, Editor ▸ Authors, and Code
+    /// Review side by side (rather than inline).
+    pub inline_blame: Option<bool>,
+    pub show_authors: Option<bool>,
+    pub side_by_side_comparison: Option<bool>,
 }
 
 fn session_path() -> PathBuf {

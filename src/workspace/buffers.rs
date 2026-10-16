@@ -42,6 +42,8 @@ pub struct Buffer {
     /// Property lists: saved back in the format they were read in (each
     /// pane shows them in a property list editor of its own).
     pub plist_format: Option<crate::plist::Format>,
+    /// The file against git: its versions, change hunks, blame.
+    pub git: super::change_bars::BufferGit,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -96,9 +98,14 @@ impl Workspace {
     }
 
     /// The gutter's lanes: breakpoint markers, bookmark ribbons over them,
-    /// test diamonds over both, each taking its clicks first.
+    /// test diamonds over both, each taking its clicks first; change bars
+    /// after the numbers, and the authors column when it's shown.
     fn install_gutter_lanes(&self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
-        let lanes = [self.breakpoint_lane(editor, cx), self.bookmark_lane(editor, cx), self.test_lane(editor, cx)];
+        let mut lanes =
+            vec![self.breakpoint_lane(editor, cx), self.bookmark_lane(editor, cx), self.test_lane(editor, cx), self.changes_lane(editor, cx)];
+        if self.git.show_authors {
+            lanes.push(self.authors_lane(editor, cx));
+        }
         editor.update(cx, |state, cx| {
             for lane in lanes {
                 state.set_gutter_lane(lane, cx);
@@ -106,7 +113,7 @@ impl Workspace {
         });
     }
 
-    fn language_for(path: &Path) -> &'static str {
+    pub(super) fn language_for(path: &Path) -> &'static str {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         match (name, ext) {
@@ -130,7 +137,7 @@ impl Workspace {
         }
     }
 
-    fn new_editor(soft_wrap: bool, language: &'static str, window: &mut Window, cx: &mut Context<EditorState>) -> EditorState {
+    pub(super) fn new_editor(soft_wrap: bool, language: &'static str, window: &mut Window, cx: &mut Context<EditorState>) -> EditorState {
         EditorState::new(window, cx)
             .language(language)
             .line_number(true)
@@ -204,10 +211,14 @@ impl Workspace {
             breakpoint_anchors: Default::default(),
             bookmark_anchors: Default::default(),
             plist_format,
+            git: Default::default(),
             _subscriptions: vec![subscription],
         });
         self.anchor_breakpoints(path, false, cx);
         self.anchor_bookmarks(path, false, cx);
+        if !read_only {
+            self.load_git_bases(vec![path.to_path_buf()], cx);
+        }
         true
     }
 
@@ -233,6 +244,7 @@ impl Workspace {
                 this.schedule_test_reparse(&path, cx);
                 this.track_breakpoints(&path, cx);
                 this.track_bookmarks(&path, cx);
+                this.buffer_edited_for_git(&path, cx);
             }
         })
     }
@@ -288,7 +300,11 @@ impl Workspace {
         let view = editor.entity_id();
         let focus = editor.read(cx).focus_handle(cx);
         let mut subscriptions = vec![
-            cx.observe(&editor, |_, _, cx| cx.notify()),
+            cx.observe(&editor, |this, _, cx| {
+                // Inline blame follows the focused editor's cursor.
+                this.refresh_inline_blame(cx);
+                cx.notify();
+            }),
             // Clicking into a pane, or tabbing into it, focuses the pane.
             cx.on_focus_in(&focus, window, move |this, window, cx| this.view_focused(view, window, cx)),
         ];
@@ -313,7 +329,11 @@ impl Workspace {
     /// After a tab closed: the buffer closes with its last view, or hands
     /// its events to a view still open.
     pub(super) fn view_closed(&mut self, path: &Path, view: EntityId, cx: &mut Context<Self>) {
-        let remaining = self.views_of(path).first().map(|item| item.editor.clone());
+        let remaining = self
+            .views_of(path)
+            .first()
+            .map(|item| item.editor.clone())
+            .or_else(|| self.diff_views_of(path).first().map(|diff| diff.read(cx).current.clone()));
         let Some(ix) = self.buffers.iter().position(|b| b.path == path) else { return };
         match remaining {
             None => {
@@ -381,6 +401,9 @@ impl Workspace {
         // keep their lines.
         self.anchor_breakpoints(path, true, cx);
         self.anchor_bookmarks(path, true, cx);
+        // A reload isn't an edit event: the change bars and blame follow here.
+        self.buffer_edited_for_git(path, cx);
+        self.file_changed_on_disk(cx);
     }
 
     pub fn save_buffer(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -408,6 +431,7 @@ impl Workspace {
                 if lsp::language_id_for(&path).is_some() {
                     self.schedule_index_refresh(cx);
                 }
+                self.file_changed_on_disk(cx);
             }
             Err(err) => {
                 let message = format!("Couldn’t save {}: {err}", buffer.path.display());

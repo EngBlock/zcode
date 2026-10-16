@@ -1,5 +1,6 @@
 //! Panes: tabs of items in the editor area. An item is a file's editor (or
-//! its property list editor) or the project settings; the workspace keeps
+//! its property list editor), a file's comparison with `HEAD` (Code
+//! Review), or the project settings; the workspace keeps
 //! its panes in a split tree (`pane_group.rs`) and one of them focused.
 //!
 //! A file shown in two panes is one buffer (`Buffer`, in `buffers.rs`) with
@@ -11,6 +12,7 @@ use std::path::{Path, PathBuf};
 use gpui_kit::*;
 use zcode_editor::{EditorState, RangeDecorationCollection};
 
+use super::diff_view::DiffView;
 use super::{PlistEditor, ProjectSettings};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -49,8 +51,22 @@ pub fn file_title(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
 }
 
+/// A file compared with `HEAD`, its local side a view of the file's buffer.
+pub struct DiffItem {
+    pub path: PathBuf,
+    pub view: Entity<DiffView>,
+    pub(super) _subscriptions: Vec<Subscription>,
+}
+
+impl DiffItem {
+    pub fn title(&self) -> String {
+        format!("{} (Changes)", file_title(&self.path))
+    }
+}
+
 pub enum Item {
     Editor(EditorItem),
+    Diff(DiffItem),
     ProjectSettings(Entity<ProjectSettings>),
 }
 
@@ -58,12 +74,39 @@ impl Item {
     pub fn editor(&self) -> Option<&EditorItem> {
         match self {
             Item::Editor(item) => Some(item),
+            Item::Diff(_) | Item::ProjectSettings(_) => None,
+        }
+    }
+
+    /// The file a file tab shows (not a comparison's: that tab isn't the file's).
+    pub fn path(&self) -> Option<&Path> {
+        self.editor().map(|item| item.path.as_path())
+    }
+
+    /// The file whose buffer the tab edits: a file tab's or a comparison's.
+    pub fn buffer_path(&self) -> Option<&Path> {
+        match self {
+            Item::Editor(item) => Some(&item.path),
+            Item::Diff(diff) => Some(&diff.path),
             Item::ProjectSettings(_) => None,
         }
     }
 
-    pub fn path(&self) -> Option<&Path> {
-        self.editor().map(|item| item.path.as_path())
+    /// The entity the tab is found by (`Workspace::find_view`).
+    pub fn view_id(&self) -> EntityId {
+        match self {
+            Item::Editor(item) => item.editor.entity_id(),
+            Item::Diff(diff) => diff.view.entity_id(),
+            Item::ProjectSettings(settings) => settings.entity_id(),
+        }
+    }
+
+    pub fn title(&self) -> String {
+        match self {
+            Item::Editor(item) => item.title(),
+            Item::Diff(diff) => diff.title(),
+            Item::ProjectSettings(_) => "Project Settings".into(),
+        }
     }
 
     /// What gets focus when the item is shown.
@@ -73,6 +116,7 @@ impl Item {
                 Some(plist) => plist.read(cx).focus_handle(cx),
                 None => item.editor.read(cx).focus_handle(cx),
             },
+            Item::Diff(diff) => diff.view.read(cx).focus_handle(cx),
             Item::ProjectSettings(settings) => settings.read(cx).focus_handle(cx),
         }
     }

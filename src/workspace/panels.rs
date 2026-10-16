@@ -13,6 +13,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::assets::IconName;
 
+use super::RemoteAction;
+
 use super::edit_scheme::SchemeAction;
 use super::pickers::{self, destination_icon};
 use super::{NavigatorTab, SplitAxis, Workspace};
@@ -641,14 +643,20 @@ impl Workspace {
                     .child(Icon::new(lsp_icon).xsmall().text_color(lsp_color))
                     .child(div().truncate().max_w(px(360.)).child(lsp_text)),
             )
-            .when_some(self.scm_branch.clone(), |el, branch| {
+            .when_some(self.git.status.branch.clone(), |el, branch| {
                 el.child(
                     h_flex()
+                        .id("status-branch")
                         .gap_1()
+                        .px_1()
+                        .rounded(theme.radius)
+                        .hover(|el| el.bg(theme.secondary_hover))
                         .child(Icon::new(IconName::GitBranch).xsmall())
-                        .child(branch),
+                        .child(branch)
+                        .on_click(cx.listener(|this, _, window, cx| this.show_branch_picker(false, window, cx))),
                 )
             })
+            .when_some(self.git.busy.clone(), |el, busy| el.child(format!("{busy}…")))
             .child(div().flex_1())
             .when_some(cursor, |el, (line, col, selected, language)| {
                 el.child(if selected > 0 {
@@ -824,7 +832,7 @@ impl Render for Workspace {
             .text_color(theme.foreground)
             .on_action(cx.listener(|this, _: &Save, window, cx| {
                 // Project settings are written as they are edited.
-                if let Some(path) = this.active_item().map(|item| item.path.clone()) {
+                if let Some(path) = this.active_file_path() {
                     this.save_path(&path, window, cx);
                 }
             }))
@@ -1034,6 +1042,23 @@ impl Render for Workspace {
                 this.show_navigator_tab(NavigatorTab::Breakpoints, window, cx)
             }))
             .on_action(cx.listener(|this, _: &RefreshDestinations, _, cx| this.build.update(cx, |b, cx| b.reload(cx))))
+            .on_action(cx.listener(|this, _: &NextChange, window, cx| this.jump_to_change_anywhere(true, window, cx)))
+            .on_action(cx.listener(|this, _: &PreviousChange, window, cx| this.jump_to_change_anywhere(false, window, cx)))
+            .on_action(cx.listener(|this, _: &CodeReview, window, cx| this.toggle_code_review(window, cx)))
+            .on_action(cx.listener(|this, _: &SideBySideComparison, _, cx| this.set_comparison(true, cx)))
+            .on_action(cx.listener(|this, _: &InlineComparison, _, cx| this.set_comparison(false, cx)))
+            .on_action(cx.listener(|this, _: &ShowAuthors, _, cx| this.toggle_authors(cx)))
+            .on_action(cx.listener(|this, _: &ToggleInlineBlame, _, cx| this.toggle_inline_blame(cx)))
+            .on_action(cx.listener(|this, _: &Commit, window, cx| this.show_commit_sheet(window, cx)))
+            .on_action(cx.listener(|this, _: &Push, window, cx| this.show_remote_sheet(RemoteAction::Push, window, cx)))
+            .on_action(cx.listener(|this, _: &Pull, window, cx| this.show_remote_sheet(RemoteAction::Pull, window, cx)))
+            .on_action(cx.listener(|this, _: &FetchChanges, window, cx| this.fetch_changes(window, cx)))
+            .on_action(cx.listener(|this, _: &RefreshFileStatus, _, cx| this.refresh_scm(cx)))
+            .on_action(cx.listener(|this, _: &StageAllChanges, window, cx| this.stage_all(true, window, cx)))
+            .on_action(cx.listener(|this, _: &UnstageAllChanges, window, cx| this.stage_all(false, window, cx)))
+            .on_action(cx.listener(|this, _: &DiscardAllChanges, window, cx| this.discard_all(window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchBranch, window, cx| this.show_branch_picker(false, window, cx)))
+            .on_action(cx.listener(|this, _: &NewBranch, window, cx| this.show_branch_picker(true, window, cx)))
             .on_action(cx.listener(|this, _: &ClearConsole, _, cx| this.build.update(cx, |b, cx| b.clear_console(cx))))
             .child(self.render_toolbar(cx))
             .child(div().flex_1().min_h_0().child(main))

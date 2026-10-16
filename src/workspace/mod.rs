@@ -3,18 +3,24 @@
 
 mod add_files;
 mod add_package;
+mod blame;
 mod bookmark_dialog;
 mod bookmarks;
 mod breakpoint_editor;
+mod branch_picker;
 mod breakpoints;
 mod buffers;
+mod change_bars;
+mod commit_sheet;
 mod console;
+mod diff_view;
 mod edit_scheme;
 mod editing;
 mod inspector;
 mod editor_probe;
 mod events;
 mod find;
+mod hunk_popover;
 mod issues;
 mod line_anchors;
 mod navigation;
@@ -29,6 +35,7 @@ mod pickers;
 mod plist_editor;
 mod project_files;
 mod project_settings;
+mod remote_sheet;
 mod source_control;
 mod test_gutter;
 mod testing;
@@ -55,7 +62,8 @@ use crate::session::{ProjectSession, Session};
 pub use buffers::Buffer;
 pub use find::FindState;
 pub use navigator::NavigatorTab;
-pub use pane::{AssistantMode, EditorItem, Item, Pane, PaneId};
+pub use pane::{AssistantMode, DiffItem, EditorItem, Item, Pane, PaneId};
+pub use remote_sheet::RemoteAction;
 pub use pane_group::SplitAxis;
 pub use panels::DebugTab;
 pub use plist_editor::{PlistEditor, PlistEditorEvent};
@@ -135,8 +143,8 @@ pub struct Workspace {
     pub find: FindState,
     pub outline: Vec<pickers::OutlineEntry>,
     outline_path: Option<PathBuf>,
-    pub scm_status: Vec<(String, PathBuf)>,
-    pub scm_branch: Option<String>,
+    /// The repository, its status, and git's state in the editors.
+    pub git: source_control::GitState,
     pub font_size: f32,
     pub soft_wrap: bool,
     memory_label: String,
@@ -197,6 +205,10 @@ impl Workspace {
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
             let active = window.is_window_active();
             this.build.update(cx, |build, cx| build.set_window_active(active, cx));
+            // A commit or checkout may have happened elsewhere meanwhile.
+            if active && this.git.root.is_some() {
+                this.refresh_scm(cx);
+            }
         }));
         // Only redraw when the displayed memory figure changes.
         subscriptions.push(cx.observe_global::<crate::perf::Perf>(|this, cx| {
@@ -260,8 +272,7 @@ impl Workspace {
             },
             outline: vec![],
             outline_path: None,
-            scm_status: vec![],
-            scm_branch: None,
+            git: source_control::GitState::new(&session),
             font_size: session.font_size.unwrap_or(DEFAULT_FONT_SIZE),
             soft_wrap: false,
             memory_label: String::new(),
@@ -598,6 +609,9 @@ impl Workspace {
         self.session = Session::load();
         self.session.set_project(&self.project.root, state);
         self.session.font_size = Some(self.font_size);
+        self.session.inline_blame = Some(self.git.inline_blame);
+        self.session.show_authors = Some(self.git.show_authors);
+        self.session.side_by_side_comparison = Some(self.git.side_by_side);
         self.session.save();
     }
 
@@ -655,6 +669,10 @@ impl Workspace {
             self.apply_breakpoint_edit(&editor, cx);
         }
         self.bookmarks_ui.dialog = None;
+        // The commit message waits for the next Commit….
+        if let Some(sheet) = self.git.commit_sheet.take().and_then(|s| s.upgrade()) {
+            self.git.commit_draft = sheet.read(cx).draft(cx);
+        }
         if self.modal.take().is_some() {
             match self.active_editor() {
                 Some(editor) => editor.update(cx, |state, cx| state.focus(window, cx)),
@@ -759,8 +777,8 @@ impl Workspace {
             "reports": build.reports.len(),
             "find_results": self.find.results.iter().map(|f| f.matches.len()).sum::<usize>(),
             "outline": self.outline.iter().map(|o| o.name.clone()).collect::<Vec<_>>(),
-            "scm_branch": self.scm_branch,
-            "scm_changes": self.scm_status.len(),
+            "scm_branch": self.git.status.branch,
+            "scm_changes": self.git.status.files.len(),
             "font_size": self.font_size,
             "memory": memory,
             "history": self.pane(self.active_pane).map(|p| serde_json::json!({ "back": p.back.len(), "forward": p.forward.len() })),
@@ -776,6 +794,7 @@ impl Workspace {
         state["packages"] = self.packages_summary(cx);
         state["console"] = self.console_summary(cx);
         state["panes"] = self.panes_summary(cx);
+        state["git"] = self.git_summary(cx);
         state["last_log"] = serde_json::json!(build.reports.first().map(|r| r.log_path.clone()));
         state["scheme_options"] = serde_json::json!(build.scheme_options.as_ref().map(edit_scheme::options_summary));
         state["edit_scheme"] =
