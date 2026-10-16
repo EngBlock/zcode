@@ -398,6 +398,6 @@ the next frame).
 * Blocks sit below a row; a header above the first excerpt (2.5) needs an
   `above` flag. Clicking a block puts the caret at the start of the next
   line.
-* Undo restores anchors that an edit moved into replaced text, but anchors
-  moved by text that typing coalesced into one undo step come back where
-  the coalesced step leaves them.
+* Anchors come back exactly when undo replays the history entry that moved
+  them; `set_value` (a reload) clears the history and keeps line anchors on
+  their rows instead, so a line deleted before a reload stays deleted.

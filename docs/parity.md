@@ -25,7 +25,7 @@ which was extracted from Xcode 27's own command definitions.
 
 | Item | Status | Notes |
 |---|---|---|
-| Debugging with lldb-dap: breakpoints (⌘\\, ⌘Y), pause/continue (⌃⌘Y), step (F6/F7/F8), Debug navigator, Variables view, Breakpoints navigator | ✅ | Attaches to simulator and device apps and launches Mac executables; breakpoints are persisted and follow edits |
+| Debugging with lldb-dap: breakpoints (⌘\\, ⌘Y), pause/continue (⌃⌘Y), step (F6/F7/F8), Debug navigator, Variables view, Breakpoints navigator | ✅ | Attaches to simulator and device apps and launches Mac executables; breakpoints are persisted and follow edits and undo (a breakpoint deleted with its line comes back with ⌘Z) |
 | Breakpoint editing (Edit Breakpoint…, double-click): condition, ignore count, actions (Log Message with `@expr@`/`%B`/`%H`, Debugger Command, Sound), auto-continue, enable/disable | ✅ | Gutter markers with click, double-click and right-click as in Xcode. Actions run in zcode when the breakpoint stops |
 | Symbolic (⌥⌘\\), Swift Error and Exception breakpoints (Breakpoint navigator + menu, Debug ▸ Breakpoints) | 🟡 | Symbol and module; Objective-C/C++ on throw or catch. No Swift error type filter, Test Failure, Runtime Issue or Constraint Error breakpoints, or watchpoints |
 | LLDB console (`po`, `p`, `v`, `expr`, any lldb command) | ✅ | `(lldb)` prompt while paused, ↑/↓ history, Return repeats; Variables view Copy Value and Print Description; values on hover while paused |
@@ -54,7 +54,7 @@ which was extracted from Xcode 27's own command definitions.
 |---|---|
 | Call/type hierarchy | ⬜ |
 | Folding, multi-cursor | ✅ (from the editor engine) |
-| Minimap, Vim mode | ⬜ |
+| Minimap, Vim mode | ⬜ (the editor's hooks for both exist: `docs/editor-engine.md`) |
 | Reports navigator (log history) | ✅ |
 | Profile (⌘I) with xctrace | ⬜ |
 | Archive/export | ⬜ |

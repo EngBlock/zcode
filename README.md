@@ -182,7 +182,7 @@ zcode doesn't use any GPL code from Zed.
 ## Testing
 
 ```
-cargo test                          # unit tests
+cargo test                          # unit tests (zcode and crates/zcode-editor)
 cargo test -- --ignored             # needs Xcode: sourcekit-lsp, lldb-dap, and xcodebuild on an edited project
                                     # (network_* tests need network access)
 cargo build --release && python3 scripts/e2e.py [--simulator] [--network] [--compare-apps]   # drives the real UI
@@ -214,6 +214,11 @@ saved breakpoints can't leak in. It covers:
   suite, and the Greeting test plan; in a Swift package a test and an XCTest
   class (`swift test --filter`) and Re-run Failed Tests after a fix
 * run, test and debug for a Swift package
+* the editor's extension points (`crates/zcode-editor`) on a copy of ZKit:
+  inlays the caret steps over and that follow typing and undo, blocks that
+  move the rows below them, a highlight layer following edits, and a
+  keystroke interceptor with a block caret; package sources refusing the
+  editing commands and undo
 * package dependencies, offline against a local repository of the Tally
   fixture (`tests/fixtures/packages`): Add Package Dependencies with its
   tags, rule and products, Add Local…, a build against both packages,
@@ -223,12 +228,12 @@ saved breakpoints can't leak in. It covers:
   (`Package.swift` through `swift package`) and an `.xcworkspace`.
   `--network` also lists a public package's versions from GitHub
 * bookmarks on a copy of ZKit: Bookmark Line and File, ribbons, edits and
-  undo, next and previous in the file and the workspace, descriptions
+  undo (a deleted line's bookmark back with ⌘Z), next and previous in the file and the workspace, descriptions
   edited in place, completion, the filter, drag and drop (real mouse
   events), the With Dialog variants, the ribbon's menu, a Find query and a
   result with Find Again, renames, Move to Trash and a relaunch
 * breakpoints in a Swift package: gutter clicks, line tracking through edits
-  and undo, the editor popover; a condition, an ignore count, log and command
+  and undo (deleted with their line, back with ⌘Z), the editor popover; a condition, an ignore count, log and command
   actions with auto-continue; a symbolic breakpoint in and out of its module;
   Swift Error and Objective-C exception breakpoints; `po`/`p`/`expr`/`v`/`bt`
   at the console's prompt with history, Print Description and data tips;

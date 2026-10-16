@@ -35,7 +35,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 
 1. Editor-engine decision: spike moving the gpui-component editor into a
    first-party crate (Apache-2.0) instead of accumulating vendor patches.
-   Zed's editor is GPL and off-limits.
+   Zed's editor is GPL and off-limits. ✅
 2. Break up `Workspace` into Pane/Item; split panes and Xcode's
    assistant/counterpart pane (⌃⌘T, ⌃⌥⌘J).
 3. Git: gutter hunks, inline blame, diff view, stage/commit/branch.
