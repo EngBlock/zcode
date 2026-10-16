@@ -15,6 +15,7 @@ pub mod paths;
 pub mod perf;
 pub mod perf_panel;
 pub mod picker;
+pub mod plist;
 pub mod project;
 pub mod scheme;
 pub mod search;
