@@ -18,6 +18,10 @@ fn copy_dir(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
     for entry in std::fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
+        // Build output (another test may be writing it) and user state.
+        if matches!(entry.file_name().to_str(), Some(".build" | ".swiftpm" | "xcuserdata")) {
+            continue;
+        }
         let target = to.join(entry.file_name());
         if entry.file_type().unwrap().is_dir() {
             copy_dir(&entry.path(), &target);
