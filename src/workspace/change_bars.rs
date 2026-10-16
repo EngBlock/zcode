@@ -326,7 +326,7 @@ fn paint_bar(window: &mut Window, cell: Bounds<Pixels>, kind: HunkKind, staging:
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{HunkKind, Staging, compare};
 
     #[test]
     fn hunks_with_their_staging() {

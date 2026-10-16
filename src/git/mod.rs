@@ -303,8 +303,19 @@ pub fn blob_ids(root: &Path, rels: &[String]) -> (HashMap<String, (String, Strin
     }
     let mut cmd = git(root);
     cmd.args(["ls-files", "-s", "-z", "--"]).args(rels);
+    let listed = run(cmd);
+    // One path git refuses (inside a nested repository) fails the batch:
+    // ask about each one instead.
+    if listed.is_err() && rels.len() > 1 {
+        for rel in rels {
+            let (one_index, one_head) = blob_ids(root, std::slice::from_ref(rel));
+            index.extend(one_index);
+            head.extend(one_head);
+        }
+        return (index, head);
+    }
     // "<mode> <oid> <stage>\t<path>"
-    for entry in run(cmd).unwrap_or_default().split('\0') {
+    for entry in listed.unwrap_or_default().split('\0') {
         let Some((meta, path)) = entry.split_once('\t') else { continue };
         let parts: Vec<&str> = meta.split(' ').collect();
         if let [mode, oid, "0"] = parts[..] {
@@ -761,6 +772,14 @@ mod tests {
         repo.write("a.txt", "scribble\n");
         discard_files(repo.path(), &["a.txt".into()]).unwrap();
         assert_eq!(std::fs::read_to_string(repo.root.join("a.txt")).unwrap(), "changed\n");
+
+        // A path git refuses doesn't hide the others' versions.
+        let nested = TestRepo::new("nested");
+        let inner = repo.root.join("inner");
+        std::fs::rename(&nested.root, &inner).unwrap();
+        std::fs::write(inner.join("x.txt"), "x\n").unwrap();
+        let mixed = super::bases(repo.path(), &["inner/x.txt".into(), "a.txt".into()], &HashMap::new());
+        assert_eq!(mixed[1].head.as_deref(), Some("changed\n"));
     }
 
     #[test]
