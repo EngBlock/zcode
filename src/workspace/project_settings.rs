@@ -1,6 +1,11 @@
 //! The project editor Xcode shows when you click the project in the
-//! navigator: the project and its targets on the left, and General and Build
-//! Settings on the right. Edits are written straight to `project.pbxproj`.
+//! navigator: the project and its targets on the left, and General, Signing
+//! & Capabilities (`signing.rs`), Info (`info.rs`) and Build Settings on the
+//! right. Edits are written straight to `project.pbxproj` (and the target's
+//! Info.plist and entitlements).
+
+mod info;
+mod signing;
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -24,6 +29,10 @@ pub enum ProjectSettingsEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
     General,
+    /// Signing & Capabilities (targets only).
+    Signing,
+    /// The target's Info.plist (targets only).
+    Info,
     BuildSettings,
 }
 
@@ -104,6 +113,8 @@ pub struct ProjectSettings {
     new_key: Entity<InputState>,
     new_value: Entity<InputState>,
     fields: Vec<Field>,
+    info: Option<info::InfoTab>,
+    signing: signing::SigningTab,
     error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
@@ -145,6 +156,8 @@ impl ProjectSettings {
             new_key,
             new_value,
             fields: vec![],
+            info: None,
+            signing: Default::default(),
             error: None,
             _subscriptions: subscriptions,
         };
@@ -196,7 +209,7 @@ impl ProjectSettings {
         }
     }
 
-    pub fn summary(&self) -> serde_json::Value {
+    pub fn summary(&self, cx: &App) -> serde_json::Value {
         let project = self.project();
         serde_json::json!({
             "project": project.map(|p| p.name.clone()),
@@ -204,6 +217,8 @@ impl ProjectSettings {
             "pane": format!("{:?}", self.pane),
             "configuration": self.selected_configurations().get(self.configuration).map(|c| c.name.clone()),
             "fields": self.fields.iter().map(|f| format!("{} = {}", f.key, f.original.clone().unwrap_or_default())).collect::<Vec<_>>(),
+            "info": self.info_summary(cx),
+            "signing": self.signing_summary(cx),
             "error": self.error,
         })
     }
@@ -214,12 +229,35 @@ impl ProjectSettings {
         }
         let config_name = self.selected_configurations().get(self.configuration).map(|c| c.name.clone());
         self.selection = selection;
+        if selection.target.is_none() && matches!(self.pane, Pane::Signing | Pane::Info) {
+            self.pane = Pane::General;
+        }
         self.configuration = config_name
             .and_then(|name| self.selected_configurations().iter().position(|c| c.name == name))
             .unwrap_or(0);
         self.error = None;
         self.rebuild_fields(window, cx);
         cx.notify();
+    }
+
+    /// Selects a target by name (or the project, for an empty name) and a
+    /// pane, as clicking them does (for the debug control channel).
+    pub fn show(&mut self, target: &str, pane: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        let project = self.selection.project;
+        let target = match target {
+            "" => None,
+            name => Some(self.project().and_then(|p| p.targets.iter().position(|t| t.name == name)).ok_or(format!("no target {name}"))?),
+        };
+        let pane = match pane {
+            "General" | "" => Pane::General,
+            "Signing" => Pane::Signing,
+            "Info" => Pane::Info,
+            "BuildSettings" => Pane::BuildSettings,
+            other => return Err(format!("no pane {other}")),
+        };
+        self.select(Selection { project, target }, window, cx);
+        self.set_pane(pane, window, cx);
+        Ok(())
     }
 
     fn set_pane(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
@@ -236,12 +274,15 @@ impl ProjectSettings {
 
     /// Recreates the inputs for the current selection and pane.
     fn rebuild_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.rebuild_info(window, cx);
+        self.rebuild_signing(window, cx);
         let configs = self.selected_configurations().to_vec();
         let is_target = self.selection.target.is_some();
         // (label, key, configuration ids, is a list, value, placeholder)
         type Spec = (SharedString, String, Vec<String>, bool, Option<String>, Option<String>);
         let mut specs: Vec<Spec> = vec![];
         match self.pane {
+            Pane::Signing | Pane::Info => {}
             Pane::General => {
                 let ids: Vec<String> = configs.iter().map(|c| c.id.clone()).collect();
                 for field in GENERAL {
@@ -342,14 +383,28 @@ impl ProjectSettings {
 
     /// Applies a setting to the given configurations and saves the file.
     fn write(&mut self, key: &str, value: Option<&str>, configs: &[String], is_list: bool, cx: &mut Context<Self>) -> bool {
+        self.edit_project(&format!("Couldn’t save {key}"), cx, |_, mut text| {
+            for id in configs {
+                text = xcodeproj::set_build_setting(&text, id, key, value, is_list)?;
+            }
+            Ok(text)
+        })
+    }
+
+    /// Rewrites the selected project's `project.pbxproj` through `edit`
+    /// (given the `.xcodeproj` and the file's text), then re-reads it.
+    fn edit_project(
+        &mut self,
+        what: &str,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&Path, String) -> anyhow::Result<String>,
+    ) -> bool {
         let Some(path) = self.paths.get(self.selection.project).cloned() else { return false };
         let file = XcodeProject::pbxproj_path(&path);
         let result = std::fs::read_to_string(&file)
             .map_err(anyhow::Error::from)
-            .and_then(|mut text| {
-                for id in configs {
-                    text = xcodeproj::set_build_setting(&text, id, key, value, is_list)?;
-                }
+            .and_then(|text| {
+                let text = edit(&path, text)?;
                 xcodeproj::write_project_file(&file, &text)?;
                 XcodeProject::from_text(&path, &text)
             });
@@ -363,11 +418,33 @@ impl ProjectSettings {
                 true
             }
             Err(err) => {
-                self.error = Some(format!("Couldn’t save {key}: {err:#}"));
+                self.error = Some(format!("{what}: {err:#}"));
                 cx.notify();
                 false
             }
         }
+    }
+
+    /// A target setting's value when every configuration has the same one.
+    fn target_value(&self, key: &str) -> Option<String> {
+        let configs = self.selected_configurations();
+        let first = configs.first()?.get(key).map(|s| s.value.clone());
+        configs.iter().all(|c| c.get(key).map(|s| s.value.clone()) == first).then_some(first).flatten()
+    }
+
+    /// The setting's value as the target builds with it: its own, or the
+    /// project's.
+    fn effective_value(&self, key: &str) -> Option<String> {
+        self.target_value(key).or_else(|| self.project_value(key))
+    }
+
+    fn configuration_ids(&self) -> Vec<String> {
+        self.selected_configurations().iter().map(|c| c.id.clone()).collect()
+    }
+
+    /// The selected `.xcodeproj`.
+    fn project_path(&self) -> Option<PathBuf> {
+        self.paths.get(self.selection.project).cloned()
     }
 
     fn remove_setting(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -550,6 +627,16 @@ impl ProjectSettings {
                         pane_button("ps-pane-general", if self.selection.target.is_some() { "General" } else { "Info" }, Pane::General, pane)
                             .on_click(cx.listener(|this, _, window, cx| this.set_pane(Pane::General, window, cx))),
                     )
+                    .when(self.selection.target.is_some(), |el| {
+                        el.child(
+                            pane_button("ps-pane-signing", "Signing & Capabilities", Pane::Signing, pane)
+                                .on_click(cx.listener(|this, _, window, cx| this.set_pane(Pane::Signing, window, cx))),
+                        )
+                        .child(
+                            pane_button("ps-pane-info", "Info", Pane::Info, pane)
+                                .on_click(cx.listener(|this, _, window, cx| this.set_pane(Pane::Info, window, cx))),
+                        )
+                    })
                     .child(
                         pane_button("ps-pane-build", "Build Settings", Pane::BuildSettings, pane)
                             .on_click(cx.listener(|this, _, window, cx| this.set_pane(Pane::BuildSettings, window, cx))),
@@ -799,6 +886,8 @@ impl Render for ProjectSettings {
         } else {
             match self.pane {
                 Pane::General => self.render_general(cx),
+                Pane::Signing => self.render_signing(cx),
+                Pane::Info => self.render_info(cx),
                 Pane::BuildSettings => self.render_build_settings(cx),
             }
         };

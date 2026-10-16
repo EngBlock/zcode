@@ -119,7 +119,8 @@ impl Workspace {
         cx: &mut Context<Self>,
         f: impl FnOnce(&mut EditorState, SharedString, &mut Window, &mut Context<EditorState>),
     ) {
-        let Some(buffer) = self.active_buffer() else { return };
+        // A property list's outline handles its own editing commands.
+        let Some(buffer) = self.active_buffer().filter(|b| b.shown_plist().is_none()) else { return };
         let language = buffer.language.clone();
         buffer
             .editor

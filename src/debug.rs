@@ -13,6 +13,10 @@
 //!   wait <ms>                  pause
 //!   rename <path> -> <name>    rename a file or folder (a name containing `/` moves it)
 //!   project-setting <KEY> <value>  edit a field of the open project settings
+//!   project-pane <target>|- <General|Signing|Info|BuildSettings>  select a target (`-`: the project) and pane
+//!   signing <command>          edit the Signing & Capabilities tab (see `ProjectSettings::signing_command`)
+//!   plist <command>            edit the property list editor on screen (see `PlistEditor::command`)
+//!   open-as <path> source|plist  Open As ▸ Source Code / Property List
 //!   new-file <path>            create a file as File ▸ New File does after its panel
 //!   trash <path>               Move to Trash from the project navigator
 //!   add-files <path>[;<path>…] -> <folder>  the Add Files sheet, after its open panel
@@ -214,6 +218,38 @@ fn run_command(
                 .update(cx, |_, window, cx| settings.update(cx, |s, cx| s.set_field(key, value, window, cx)))
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
+        }
+        "project-pane" | "signing" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            let settings = workspace.read(cx).project_settings.clone().ok_or("project settings not open")?;
+            window
+                .update(cx, |_, window, cx| {
+                    settings.update(cx, |s, cx| {
+                        if cmd == "signing" {
+                            return s.signing_command(arg, window, cx);
+                        }
+                        let (target, pane) = arg.rsplit_once(' ').ok_or("usage: project-pane <target>|- <pane>")?;
+                        s.show(if target == "-" { "" } else { target }, pane, window, cx)
+                    })
+                })
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
+        }
+        "plist" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.plist_command(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
+        }
+        "open-as" => {
+            let (path, mode) = arg.rsplit_once(' ').ok_or("usage: open-as <path> source|plist")?;
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            let path = PathBuf::from(path);
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.open_file_as(path, mode == "source", window, cx)))
+                .map_err(|e| e.to_string())?;
+            Ok(String::new())
         }
         "new-file" | "trash" | "inspect" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;

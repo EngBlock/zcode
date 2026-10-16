@@ -80,6 +80,21 @@ gpui_kit::actions!(
         Rename,
         EditAllInScope,
         FixIssue,
+        // Editor (property lists)
+        AddPlistItem,
+        DeletePlistItem,
+        PlistExpand,
+        PlistCollapse,
+        SetPlistTypeArray,
+        SetPlistTypeDictionary,
+        SetPlistTypeBoolean,
+        SetPlistTypeData,
+        SetPlistTypeDate,
+        SetPlistTypeNumber,
+        SetPlistTypeString,
+        ToggleRawKeysAndValues,
+        OpenAsSourceCode,
+        OpenAsPropertyList,
         // Product
         Build,
         Run,
@@ -128,6 +143,9 @@ const EDITOR: &str = "Input && mode == editor";
 /// same keystroke because they are registered later at the same depth.
 const INPUT: &str = "Input";
 const PICKER_INPUT: &str = "Picker > Input";
+/// The property list outline, and the key or value being typed in it.
+const PLIST: &str = "PlistEditor";
+const PLIST_INPUT: &str = "PlistEditor > Input";
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -250,6 +268,24 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", PickerDismiss, Some("AddPackageDialog")),
         KeyBinding::new("escape", PickerDismiss, Some("EditSchemeDialog")),
         KeyBinding::new("escape", PickerDismiss, Some("BreakpointEditor")),
+        // The property list editor: rows, and the key or value being typed.
+        KeyBinding::new("cmd-z", Undo, Some(PLIST)),
+        KeyBinding::new("cmd-shift-z", Redo, Some(PLIST)),
+        KeyBinding::new("down", PickerSelectNext, Some(PLIST)),
+        KeyBinding::new("up", PickerSelectPrevious, Some(PLIST)),
+        KeyBinding::new("right", PlistExpand, Some(PLIST)),
+        KeyBinding::new("left", PlistCollapse, Some(PLIST)),
+        KeyBinding::new("enter", PickerConfirm, Some(PLIST)),
+        KeyBinding::new("backspace", DeletePlistItem, Some(PLIST)),
+        KeyBinding::new("delete", DeletePlistItem, Some(PLIST)),
+        KeyBinding::new("cmd-alt-[", MoveLineUp, Some(PLIST)),
+        KeyBinding::new("cmd-alt-]", MoveLineDown, Some(PLIST)),
+        KeyBinding::new("alt-up", MoveLineUp, Some(PLIST)),
+        KeyBinding::new("alt-down", MoveLineDown, Some(PLIST)),
+        KeyBinding::new("down", PickerSelectNext, Some(PLIST_INPUT)),
+        KeyBinding::new("up", PickerSelectPrevious, Some(PLIST_INPUT)),
+        KeyBinding::new("enter", PickerConfirm, Some(PLIST_INPUT)),
+        KeyBinding::new("escape", PickerDismiss, Some(PLIST_INPUT)),
         // The LLDB console's history.
         KeyBinding::new("up", PickerSelectPrevious, Some("LldbConsole > Input")),
         KeyBinding::new("down", PickerSelectNext, Some("LldbConsole > Input")),
@@ -337,6 +373,21 @@ pub fn commands() -> Vec<Command> {
         cmd!("Editor", "Increase Font Size", IncreaseFontSize),
         cmd!("Editor", "Decrease Font Size", DecreaseFontSize),
         cmd!("Editor", "Reset Font Size", ResetFontSize),
+        cmd!("Editor", "-", Quit),
+        // Xcode's property list Editor menu.
+        cmd!("Editor", "Add Item", AddPlistItem),
+        cmd!("Editor ▸ Value Type", "Array", SetPlistTypeArray),
+        cmd!("Editor ▸ Value Type", "Dictionary", SetPlistTypeDictionary),
+        cmd!("Editor ▸ Value Type", "-", Quit),
+        cmd!("Editor ▸ Value Type", "Boolean", SetPlistTypeBoolean),
+        cmd!("Editor ▸ Value Type", "Data", SetPlistTypeData),
+        cmd!("Editor ▸ Value Type", "Date", SetPlistTypeDate),
+        cmd!("Editor ▸ Value Type", "Number", SetPlistTypeNumber),
+        cmd!("Editor ▸ Value Type", "String", SetPlistTypeString),
+        cmd!("Editor", "Raw Keys and Values", ToggleRawKeysAndValues),
+        // Xcode offers Open As on a file's context menu.
+        cmd!("Editor ▸ Open As", "Source Code", OpenAsSourceCode),
+        cmd!("Editor ▸ Open As", "Property List", OpenAsPropertyList),
         cmd!("View", "Show Project Navigator", ShowProjectNavigator),
         cmd!("View", "Show Source Control Navigator", ShowSourceControlNavigator),
         cmd!("View", "Show Symbol Navigator", ShowSymbolNavigator),

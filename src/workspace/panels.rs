@@ -526,6 +526,14 @@ impl Workspace {
                 .child(hint("Build / Run", "⌘B / ⌘R"))
                 .into_any_element();
         };
+        if let Some(plist) = buffer.shown_plist().cloned() {
+            return v_flex()
+                .size_full()
+                .child(self.render_tabs(cx))
+                .child(self.render_jump_bar(cx))
+                .child(div().flex_1().min_h_0().child(plist))
+                .into_any_element();
+        }
         let editor = buffer.editor.clone();
         let read_only = buffer.read_only;
         let markers = self.render_breakpoint_gutter(&editor, cx);
@@ -840,7 +848,8 @@ impl Workspace {
             LspStatus::Failed(err) => (IconName::CircleX, theme.danger, format!("sourcekit-lsp failed: {err}")),
             LspStatus::Exited => (IconName::CircleX, theme.danger, "sourcekit-lsp exited".to_string()),
         };
-        let cursor = self.active_buffer().map(|b| {
+        // A property list's outline has no text cursor to show.
+        let cursor = self.active_buffer().filter(|b| b.shown_plist().is_none()).map(|b| {
             let state = b.editor.read(cx);
             let pos = state.cursor_position();
             let selected = state.selected_range().len();
@@ -1084,6 +1093,16 @@ impl Render for Workspace {
                 cx.reveal_path(&path);
             }))
             .on_action(cx.listener(Self::new_file))
+            .on_action(cx.listener(|this, _: &OpenAsSourceCode, window, cx| {
+                if let Some(ix) = this.active.filter(|_| !this.show_project_settings) {
+                    this.open_as(ix, true, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|this, _: &OpenAsPropertyList, window, cx| {
+                if let Some(ix) = this.active.filter(|_| !this.show_project_settings) {
+                    this.open_as(ix, false, window, cx);
+                }
+            }))
             .on_action(cx.listener(|this, _: &ShowProjectSettings, window, cx| this.open_project_settings(window, cx)))
             .on_action(cx.listener(Self::open_quickly))
             .on_action(cx.listener(Self::quick_actions))

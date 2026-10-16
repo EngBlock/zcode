@@ -12,6 +12,7 @@ mod navigator;
 mod packages;
 mod panels;
 mod pickers;
+mod plist_editor;
 mod project_files;
 mod project_settings;
 mod test_gutter;
@@ -41,6 +42,7 @@ use crate::session::{ProjectSession, Session};
 
 pub use navigator::NavigatorTab;
 pub use panels::DebugTab;
+pub use plist_editor::{PlistEditor, PlistEditorEvent};
 pub use project_settings::{ProjectSettings, ProjectSettingsEvent};
 
 const DEFAULT_FONT_SIZE: f32 = 13.;
@@ -73,7 +75,17 @@ pub struct Buffer {
     mtime: Option<SystemTime>,
     breakpoint_anchors: Vec<breakpoints::Anchor>,
     exec_mark: Option<RangeDecorationCollection>,
+    /// Property lists: the structured editor over the same text.
+    pub plist: Option<PlistBuffer>,
     _subscriptions: Vec<Subscription>,
+}
+
+pub struct PlistBuffer {
+    /// Saved back in the format it was read in.
+    pub format: crate::plist::Format,
+    pub editor: Entity<PlistEditor>,
+    /// Open As ▸ Source Code.
+    pub as_source: bool,
 }
 
 impl Buffer {
@@ -82,6 +94,11 @@ impl Buffer {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default()
+    }
+
+    /// The property list editor, when the tab shows it instead of the text.
+    pub fn shown_plist(&self) -> Option<&Entity<PlistEditor>> {
+        self.plist.as_ref().filter(|p| !p.as_source).map(|p| &p.editor)
     }
 }
 
@@ -567,7 +584,22 @@ impl Workspace {
         let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) else {
             return;
         };
-        let Ok(text) = std::fs::read_to_string(path) else { return };
+        let text = match (&buffer.plist, std::fs::read(path)) {
+            (Some(_), Ok(bytes)) => match crate::plist::load(bytes) {
+                Ok((format, text)) => {
+                    if let Some(plist) = buffer.plist.as_mut() {
+                        plist.format = format;
+                    }
+                    text
+                }
+                Err(_) => return,
+            },
+            (None, Ok(bytes)) => match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(_) => return,
+            },
+            (_, Err(_)) => return,
+        };
         buffer.mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         buffer.saved_text = gpui_kit::component::input::Rope::from(text.as_str());
         let editor = buffer.editor.clone();
@@ -654,8 +686,9 @@ impl Workspace {
         self.active.and_then(|ix| self.buffers.get(ix))
     }
 
+    /// The active tab's text editor, unless the tab shows a property list.
     pub fn active_editor(&self) -> Option<Entity<EditorState>> {
-        self.active_buffer().map(|b| b.editor.clone())
+        self.active_buffer().filter(|b| b.shown_plist().is_none()).map(|b| b.editor.clone())
     }
 
     fn language_for(path: &Path) -> &'static str {
@@ -708,8 +741,30 @@ impl Workspace {
             self.notify_error(format!("{} is too large to open", path.display()), window, cx);
             return;
         }
-        let text = match std::fs::read(&path) {
-            Ok(bytes) => match String::from_utf8(bytes) {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                self.notify_error(format!("Couldn’t open {}: {err}", path.display()), window, cx);
+                return;
+            }
+        };
+        // Property lists open in the property list editor; binary ones are
+        // edited as XML and saved as binary again.
+        let plist_format = if crate::plist::is_property_list(&path) || crate::plist::is_binary(&bytes) {
+            match crate::plist::load(bytes.clone()) {
+                Ok((format, _)) => Some(format),
+                Err(err) if crate::plist::is_binary(&bytes) => {
+                    self.notify_error(format!("Couldn’t open {}: {err:#}", path.display()), window, cx);
+                    return;
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        let text = match plist_format {
+            Some(crate::plist::Format::Binary) => crate::plist::load(bytes).map(|(_, text)| text).unwrap_or_default(),
+            _ => match String::from_utf8(bytes) {
                 Ok(text) => text,
                 Err(_) => {
                     self.notify_error(
@@ -720,10 +775,6 @@ impl Workspace {
                     return;
                 }
             },
-            Err(err) => {
-                self.notify_error(format!("Couldn’t open {}: {err}", path.display()), window, cx);
-                return;
-            }
         };
         let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         let language = Self::language_for(&path);
@@ -807,6 +858,22 @@ impl Workspace {
         crate::debugger::hover::install(&editor, self.debugger.downgrade(), cx);
         let observe = cx.observe(&editor, |_, _, cx| cx.notify());
 
+        let mut subscriptions = vec![change, observe];
+        let plist = plist_format.map(|format| {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let schema = crate::plist::schema::Schema::for_file_name(&name);
+            let plist_editor = cx.new(|cx| PlistEditor::new(editor.clone(), schema, cx));
+            let path = path.clone();
+            subscriptions.push(cx.subscribe_in(&plist_editor, window, move |this, _, event: &PlistEditorEvent, window, cx| {
+                if let PlistEditorEvent::OpenAsSource = event
+                    && let Some(ix) = this.buffers.iter().position(|b| b.path == path)
+                {
+                    this.open_as(ix, true, window, cx);
+                }
+            }));
+            subscriptions.push(cx.observe(&plist_editor, |_, _, cx| cx.notify()));
+            PlistBuffer { format, editor: plist_editor, as_source: false }
+        });
         let saved_text = editor.read(cx).text().clone();
         self.buffers.push(Buffer {
             path: path.clone(),
@@ -818,7 +885,8 @@ impl Workspace {
             mtime,
             breakpoint_anchors: vec![],
             exec_mark: None,
-            _subscriptions: vec![change, observe],
+            plist,
+            _subscriptions: subscriptions,
         });
         let ix = self.buffers.len() - 1;
         self.refresh_diagnostics_for(&path, cx);
@@ -876,8 +944,13 @@ impl Workspace {
         self.active = Some(ix);
         self.show_project_settings = false;
         self.inspected = None;
-        let editor = self.buffers[ix].editor.clone();
-        editor.update(cx, |state, cx| state.focus(window, cx));
+        match self.buffers[ix].shown_plist().cloned() {
+            Some(plist) => plist.read(cx).focus_handle(cx).focus(window, cx),
+            None => {
+                let editor = self.buffers[ix].editor.clone();
+                editor.update(cx, |state, cx| state.focus(window, cx));
+            }
+        }
         window.set_window_title(&self.title());
         window.set_window_edited(self.buffers.iter().any(|b| b.dirty));
         self.reveal_active_in_tree(cx);
@@ -967,7 +1040,16 @@ impl Workspace {
         if !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
         }
-        match std::fs::write(&buffer.path, &text) {
+        let format = buffer.plist.as_ref().map_or(crate::plist::Format::Xml, |p| p.format);
+        let bytes = match crate::plist::encode(&text, format) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                let message = format!("Couldn’t save {}: {err:#}", buffer.path.display());
+                self.notify_error(message, window, cx);
+                return;
+            }
+        };
+        match std::fs::write(&buffer.path, &bytes) {
             Ok(()) => {
                 buffer.dirty = false;
                 buffer.saved_text = buffer.editor.read(cx).text().clone();
@@ -985,6 +1067,22 @@ impl Workspace {
         }
         window.set_window_edited(self.buffers.iter().any(|b| b.dirty));
         cx.notify();
+    }
+
+    /// Open As ▸ Source Code (`as_source`) or ▸ Property List for a tab.
+    pub fn open_as(&mut self, ix: usize, as_source: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(plist) = self.buffers.get_mut(ix).and_then(|b| b.plist.as_mut()) else { return };
+        plist.as_source = as_source;
+        self.activate(ix, window, cx);
+    }
+
+    /// Opens a file and shows it as source code or as a property list.
+    pub fn open_file_as(&mut self, path: PathBuf, as_source: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_file(path.clone(), None, true, window, cx);
+        let path = path.canonicalize().unwrap_or(path);
+        if let Some(ix) = self.buffers.iter().position(|b| b.path == path) {
+            self.open_as(ix, as_source, window, cx);
+        }
     }
 
     /// Refreshes the index a moment after the last save of a source file.
@@ -1714,6 +1812,17 @@ impl Workspace {
 
 impl Workspace {
     /// A JSON summary of UI state for the debug harness and tests.
+    /// A debug-channel command for the property list editor on screen: the
+    /// active tab's, or the project settings' Info tab.
+    pub fn plist_command(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        let editor = if self.show_project_settings {
+            self.project_settings.as_ref().and_then(|s| s.read(cx).info_editor()).ok_or("the Info tab isn’t shown")?
+        } else {
+            self.active_buffer().and_then(|b| b.shown_plist().cloned()).ok_or("no property list editor shown")?
+        };
+        editor.update(cx, |editor, cx| editor.command(command, window, cx))
+    }
+
     pub fn debug_state(&mut self, cx: &App) -> serde_json::Value {
         let testing = self.tests_summary(cx);
         let build = self.build.read(cx);
@@ -1732,6 +1841,12 @@ impl Workspace {
                 "diagnostics": state.diagnostics().map(|d| d.len()).unwrap_or(0),
                 "completion_menu_open": state.completion_menu_state().open,
                 "completion_items": state.completion_menu_state().items.iter().take(5).map(|i| i.label.clone()).collect::<Vec<_>>(),
+                "plist": b.plist.as_ref().map(|p| {
+                    let mut summary = p.editor.read(cx).summary(cx);
+                    summary["format"] = format!("{:?}", p.format).into();
+                    summary["as_source"] = p.as_source.into();
+                    summary
+                }),
             })
         });
         let issues = self.all_issues(cx);
@@ -1755,7 +1870,7 @@ impl Workspace {
             "inspector": self.inspector_summary(),
             "add_files": self.add_files_dialog.as_ref().and_then(|d| d.upgrade()).map(|d| d.read(cx).summary()),
             "project_settings": self.project_settings.as_ref().map(|s| {
-                let mut summary = s.read(cx).summary();
+                let mut summary = s.read(cx).summary(cx);
                 summary["shown"] = self.show_project_settings.into();
                 summary
             }),

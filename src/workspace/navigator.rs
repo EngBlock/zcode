@@ -366,6 +366,17 @@ impl Workspace {
                             .item(PopupMenuItem::new("Show in Finder").on_click(move |_, _, cx| {
                                 cx.reveal_path(&p2);
                             }))
+                            .when(!entry.is_folder() && crate::plist::is_property_list(&path), |menu| {
+                                // Xcode's Open As ▸ Source Code / Property List.
+                                let (ws1, ws2, p1, p2) = (workspace.clone(), workspace.clone(), path.clone(), path.clone());
+                                menu.separator()
+                                    .item(PopupMenuItem::new("Open As Source Code").on_click(move |_, window, cx| {
+                                        ws1.update(cx, |ws, cx| ws.open_file_as(p1.clone(), true, window, cx)).ok();
+                                    }))
+                                    .item(PopupMenuItem::new("Open As Property List").on_click(move |_, window, cx| {
+                                        ws2.update(cx, |ws, cx| ws.open_file_as(p2.clone(), false, window, cx)).ok();
+                                    }))
+                            })
                             .separator()
                             .item(PopupMenuItem::new("Move to Trash").on_click(move |_, window, cx| {
                                 let path = p3.clone();
