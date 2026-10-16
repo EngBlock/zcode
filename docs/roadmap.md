@@ -29,7 +29,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
    Dependencies in the navigator. ✅
 6. Plist and entitlements editors (reuse the project-settings panel), basic
    Signing & Capabilities. ✅
-7. Bookmarks navigator (Xcode 27 moved ⌘3 to Bookmarks).
+7. Bookmarks navigator (Xcode 27 moved ⌘3 to Bookmarks). ✅
 
 ## Phase 2: Zed-quality editing
 

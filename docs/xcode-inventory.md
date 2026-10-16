@@ -56,6 +56,7 @@ Source: `/Users/nathan/Downloads/Xcode-beta.app` (Xcode 27.0, build 27A5228h). `
 | Undo / Redo / Cut / Copy / Paste / Select All / Duplicate | ⌘Z / ⇧⌘Z / ⌘X / ⌘C / ⌘V / ⌘A / ⌘D |
 | Copy File and Line / Copy Symbol Name / Copy Qualified Symbol Name | ⌃⌥⌘C / ⌃⇧⌘C / ⌃⌥⇧⌘C |
 | Bookmark Line / Bookmark File | ⌃⌘' / ⌃⇧⌘' |
+| Bookmark Line With Dialog / Bookmark File With Dialog (⌥-alternates) | ⌃⌥⌘' / ⌃⌥⇧⌘' |
 
 ### View
 | Command | Key |
@@ -98,6 +99,7 @@ Source: `/Users/nathan/Downloads/Xcode-beta.app` (Xcode 27.0, build 27A5228h). `
 | Next / Previous Placeholder | ⌃/ / ⌃⇧/ |
 | Next / Previous Change (diff hunk) | ⌃\ / ⌃⇧\ |
 | Next / Previous Bookmark | ⌃; / ⌃⇧; |
+| Next / Previous Bookmark In Workspace | ⌃⌥; / ⌃⌥⇧; |
 | Previous / Next Tab | ⇧⌘[ / ⇧⌘] |
 | Move Focus to Next Area / Next Editor Pane / Editor Pane… | ⌥⌘\` / ⌃\` / ⌘J |
 | Jump to Instruction Pointer (debugging) | ⌃⌘P |
@@ -169,7 +171,7 @@ Source: `/Users/nathan/Downloads/Xcode-beta.app` (Xcode 27.0, build 27A5228h). `
 **Navigators** (`Xcode.IDEKit.NavigatorGroup`, listed by `preferredPosition`):
 1. **Project** ⌘1: workspace/project file tree (`IDEWorkspaceNavigator`)
 2. **Source Control** ⌘2: Changes and Repositories (branches, tags, remotes)
-3. **Bookmarks** ⌘3: replaces the old Symbol navigator. The Symbol navigator does not exist in 27.
+3. **Bookmarks** ⌘3: replaces the old Symbol navigator. The Symbol navigator does not exist in 27. Its context menu (IDETrayKit): Show in Finder, Reveal in Project Navigator, Edit Description, Mark as Complete, Open in Tabs, Cut/Copy/Paste/Delete/Duplicate Bookmark, Sort By Name / Type / Completion Status, New Group, New Group from Selection; a filter with "Show only incomplete items" and Delete All Completed Items. Find navigator queries become bookmark groups of their results.
 4. **Find** ⌘4: Find navigator, with a "Search" navigator as an alternate
 5. **Issues** ⌘5: build and live diagnostics (`IDENoticeNavigator`)
 6. **Tests** ⌘6: test explorer

@@ -33,6 +33,7 @@ which was extracted from Xcode 27's own command definitions.
 | Test diamonds, run one test or class (gutter, Test navigator), Test Selected Items (⌃⌥⌘U), Test Again (⌃⌥⌘G), Clear Test Results (⌃⌥⌘K), re-run failed | ✅ | Tests found in source (Swift and Objective-C); selections reach xcodebuild (`-only-testing`), `swift test` (`--filter`) and the in-simulator runner (XCTest scope). Re-run failed has no Xcode menu equivalent (Xcode offers it in test reports). No Test Without Building, Test Repeatedly or Profile Test |
 | Test plans | 🟡 | Choose a scheme's plan (Product ▸ Choose Test Plan…, Test navigator); runs honor it with every runner. No test plan editor (⌘>) |
 | Navigation history ⌃⌘← ⌃⌘→, counterpart ⌃⌘↑, reveal ⇧⌘J | ✅ | |
+| Bookmarks navigator (⌘3), Bookmark Line ⌃⌘' / Bookmark File ⌃⇧⌘' (and With Dialog), Jump to Next / Previous Bookmark ⌃; ⌃: (In Workspace ⌃⌥; ⌃⌥:) | ✅ | Gutter ribbons that follow edits; grouped by file with in-place descriptions, Mark as Complete, drag to reorder, Sort By, Delete All Completed Items, filter; Find navigator results and whole queries (Find Again). No free-form groups or cut/copy/paste of bookmarks. ⌘1…⌘9 follow Xcode 27 (no Symbol navigator: Document Items ⌃6) |
 | Rename, Edit All in Scope (⌃⌘E), fix-its (⌃⌥⌘F) | ✅ | Rename opens affected files as unsaved tabs for review; the index refreshes in the background after save |
 | Re-indent (⌃I), Format File (⌃⇧I) | ✅ | Via sourcekit-lsp (swift-format) |
 | Split panes / assistant | ⬜ | |

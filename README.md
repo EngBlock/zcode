@@ -35,7 +35,9 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | **Navigation** | Open Quickly (fuzzy file and symbol search, `file:line`), Quick Actions command palette, back/forward history, jump to line, counterpart (.h ↔ .m), reveal in navigator and tab switching. | ⇧⌘O, ⇧⌘A, ⌃⌘← ⌃⌘→, ⌘L, ⌃⌘↑, ⇧⌘J, ⇧⌘[ ⇧⌘] |
 | | Group-based projects (no file-system-synchronized folders) stay consistent as Xcode keeps them: New File, Rename (a name with `/` moves the item), Move to Trash and Add Files… add, update and remove file references, groups and build files in `project.pbxproj` (Sources for code, Resources for resources), with Xcode-style IDs and the rest of the file left byte for byte. New files join the targets that build their neighbors. | ⌥⌘A |
 | | File inspector: name, type, location, full path and Target Membership checkboxes for the selected file. | ⌥⌘1 |
-| **Navigators** | Project (file tree with New File / Add Files / Rename / Move to Trash / Show File Inspector / Show in Finder), Source Control (git status), Symbols, Find (find in workspace with case, word and regex options), Issues (live + build), Tests, Debug (threads and frames), Breakpoints and Reports (build/run/test history with full logs). | ⌘1 … ⌘9 |
+| **Navigators** | Xcode 27's set and order: Project (file tree with New File / Add Files / Rename / Move to Trash / Bookmark File / Show File Inspector / Show in Finder), Source Control (git status), Bookmarks, Find (find in workspace with case, word and regex options), Issues (live + build), Tests, Debug (threads and frames), Breakpoints and Reports (build/run/test history with full logs). Xcode 27 dropped the Symbol navigator: the file's symbols are in Document Items (⌃6), the workspace's in Open Quickly. | ⌘1 … ⌘9 |
+| **Bookmarks** | Edit ▸ Bookmark Line and Bookmark File (⌥ adds a dialog for the description); a bookmark's description starts as the selection or the line's text. Bookmarked lines get an orange ribbon left of the line numbers (right-click for its menu) and follow edits, undo, renames and Move to Trash, as breakpoints do. Jump to Next / Previous Bookmark in the file, or In Workspace in the navigator's order. | ⌃⌘' ⌃⇧⌘' ⌃⌥⌘' ⌃⌥⇧⌘', ⌃; ⌃: ⌃⌥; ⌃⌥: |
+| | The Bookmarks navigator lists them grouped by file: click to open, double-click (or Edit Description) to edit the description in place, Mark as Complete, drag to reorder bookmarks within a file or whole files, delete, Sort By Name / Type / Completion Status, Delete All Completed Items, a filter and Show only incomplete items. From the Find navigator, Bookmark Line on a result, Bookmark File on a file, and the whole query with its results (its bookmark button, or Bookmark Line while the Find navigator has focus) as a group that Find Again refreshes. Saved per project. | ⌘3 |
 | **Build & run** | Scheme, configuration and run destination pickers. Destinations are grouped as in Xcode: My Mac, connected iOS, iPadOS, watchOS, tvOS and visionOS devices (from `devicectl`, with how they're connected or why they can't be used: not paired, Developer Mode disabled, unavailable), Any iOS Device (arm64) for building, then every available simulator, filtered by the scheme's `SUPPORTED_PLATFORMS`. Devices appear and disappear as they connect, without a refresh. | ⌃0, ⌃⇧0 |
 | | Build, Run, Test, Stop and Clean. Files are saved first. | ⌘B, ⌘R, ⌘U, ⌘., ⇧⌘K |
 | | Edit Scheme for the Run and Test actions: build configuration, Debug executable, arguments passed on launch and environment variables (each with its checkbox; `$(BUILD_SETTING)`s expand), working directory, launching without state restoration, and the Address, Thread and Undefined Behavior Sanitizers, Main Thread Checker, Malloc Scribble, Guard Edges and Stack Logging, and Zombie Objects. Changes are written in place to the scheme's `.xcscheme` (shared or the user's), the rest of the file left byte for byte; Swift packages keep them in zcode's session. Run… and Test… open the editor with a button that starts the action. Product ▸ Scheme also has Next and Previous Scheme. | ⌘<, ⌥⌘R, ⌥⌘U, ⌃⌘] ⌃⌘[ |
@@ -155,6 +157,7 @@ src/
   xcodeproj/        structural edits: files, groups, build files, target membership, packages,
                     a target's Info.plist and entitlements
   search.rs         parallel find-in-workspace
+  bookmarks.rs      bookmarks: lines, files and saved find queries, kept in the session
   perf.rs           startup timing and memory sampling (proc_pid_rusage)
   debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR)
 vendor/
@@ -213,6 +216,11 @@ saved breakpoints can't leak in. It covers:
   error under Package Loading, and Remove Package; in a Swift package
   (`Package.swift` through `swift package`) and an `.xcworkspace`.
   `--network` also lists a public package's versions from GitHub
+* bookmarks on a copy of ZKit: Bookmark Line and File, ribbons, edits and
+  undo, next and previous in the file and the workspace, descriptions
+  edited in place, completion, the filter, drag and drop (real mouse
+  events), the With Dialog variants, the ribbon's menu, a Find query and a
+  result with Find Again, renames, Move to Trash and a relaunch
 * breakpoints in a Swift package: gutter clicks, line tracking through edits
   and undo, the editor popover; a condition, an ignore count, log and command
   actions with auto-continue; a symbolic breakpoint in and out of its module;
@@ -281,6 +289,13 @@ The control channel also takes window screenshots
   added as a plain file reference), and Headers-phase visibility (Public,
   Private) isn't editable. The navigator has no drag and drop: move items by
   renaming them to a path.
+* Bookmarks are grouped by file rather than in Xcode's free-form groups:
+  there's no New Group, Cut/Copy/Paste or Duplicate Bookmark, and a
+  bookmark can't be dragged into another file's section. Deleting a
+  bookmarked line deletes its bookmark, and edits made outside zcode don't
+  move bookmarks. They live in zcode's session, so Xcode doesn't see them.
+  A bookmarked search keeps one bookmark per matching line, and Find Again
+  searches the files of the last project scan.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas or Instruments.
 * Devices: there's no Devices and Simulators window (⇧⌘2), so pairing a new
   device, turning on Developer Mode and copying a device's system symbols
