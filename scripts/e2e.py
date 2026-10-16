@@ -92,6 +92,11 @@ XCODE_SHORTCUTS = [
     ("cmd-.", "zcode::Stop", "Product ▸ Stop"),
     ("cmd-shift-k", "zcode::Clean", "Product ▸ Clean Build Folder"),
     ("ctrl-0", "zcode::ChooseScheme", "Product ▸ Scheme ▸ Choose Scheme"),
+    ("ctrl-cmd-]", "zcode::NextScheme", "Product ▸ Scheme ▸ Next Scheme"),
+    ("ctrl-cmd-[", "zcode::PreviousScheme", "Product ▸ Scheme ▸ Previous Scheme"),
+    ("cmd-<", "zcode::EditScheme", "Product ▸ Scheme ▸ Edit Scheme…"),
+    ("cmd-alt-r", "zcode::RunWithOptions", "Product ▸ Run…"),
+    ("cmd-alt-u", "zcode::TestWithOptions", "Product ▸ Test…"),
     ("ctrl-shift-0", "zcode::ChooseDestination", "Product ▸ Destination ▸ Choose Destination"),
     ("ctrl-cmd-y", "zcode::DebugContinue", "Debug ▸ Pause / Continue"),
     ("f6", "zcode::StepOver", "Debug ▸ Step Over"),
@@ -238,6 +243,15 @@ def finished(s):
     return s["phase"].startswith("Finished")
 
 
+def console_has(z, text, timeout=300):
+    """Waits for a console line containing `text`."""
+    return z.wait_for(lambda s: any(text in l for l in s["console_tail"]), timeout=timeout)
+
+
+def scheme_editor(z):
+    return z.dump()["edit_scheme"]
+
+
 def run_tests(z, *commands, timeout=300):
     """Starts a test run with `commands` and waits for it to finish."""
     before = z.dump()["reports"]
@@ -266,6 +280,8 @@ def empty_trash_item(name):
 
 def xcode_project_checks(z, samples, sim):
     hello = os.path.join(samples, "HelloZ", "HelloZ")
+    hello_scheme = os.path.join(samples, "HelloZ", "HelloZ.xcodeproj", "xcshareddata", "xcschemes", "HelloZ.xcscheme")
+    hello_scheme_original = open(hello_scheme).read()
     content, counter = os.path.join(hello, "ContentView.swift"), os.path.join(hello, "Counter.swift")
     counter_line = line_of(content, "Counter()")
     tap_line = line_of(content, 'print("tap')
@@ -417,17 +433,28 @@ def xcode_project_checks(z, samples, sim):
         z.run("action zcode::ChooseTestPlan", "wait 300", "type HelloZ", "keys enter", "wait 300")
 
     def run_on_simulator():
+        # Edit Scheme's arguments and environment reach simctl launch
+        # (SIMCTL_CHILD_ variables).
+        z.run("keys cmd-<", "wait 300", "edit-scheme argument -sim \"two words\"",
+              "edit-scheme variable HELLOZ_MODE=scheme", "edit-scheme close")
         z.run("keys cmd-r")
-        z.wait_for(lambda s: any("HelloZ launched" in l for l in s["console_tail"]), timeout=300)
+        console_has(z, "HelloZ launched")
+        console_has(z, "arguments: -sim two words HELLOZ_MODE=scheme", timeout=20)
         z.run("keys cmd-.", "wait 1500")
         phase = z.dump()["phase"]
         assert phase == "Stopped" or phase.startswith("Finished"), phase
 
     def debug_on_simulator():
+        # Under the debugger, with Main Thread Checker inserted (the default).
         z.run(f"open {content}:{appear_line}", "wait 300", "keys cmd-\\", "keys cmd-r")
         s = z.wait_for(lambda s: s["debugger"]["state"].startswith("Stopped") and s["debugger"]["frames"], timeout=300)
         assert f"ContentView.swift:{appear_line}" in s["debugger"]["frames"][0], s["debugger"]
+        assert not any("Main Thread Checker not found" in l for l in s["console_tail"]), s["console_tail"]
         z.run(f"open {content}:{appear_line}", "keys cmd-\\", "keys cmd-.", "wait 1500")
+        # Restore the scheme the run check edited, byte for byte.
+        z.run("keys cmd-<", "wait 300", "edit-scheme remove-argument -sim \"two words\"",
+              "edit-scheme remove-variable HELLOZ_MODE", "edit-scheme close")
+        assert open(hello_scheme).read() == hello_scheme_original, "the scheme is as it was"
 
     def shortcut_parity():
         keymap = json.loads(z.run("keymap")[-1])
@@ -543,12 +570,57 @@ def classic_project_checks(z, samples):
         s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=300)
         assert "success: true" in s["phase"], (s["phase"], s["issues"][:5])
 
+    scheme = os.path.join(root, "HelloClassic.xcodeproj", "xcshareddata", "xcschemes", "HelloClassic.xcscheme")
+    scheme_original = open(scheme).read()
+
+    def edit_scheme_run_options():
+        z.wait_for(lambda s: s["scheme_options"], timeout=60, interval=0.5)
+        z.run("keys cmd-<", "wait 300")
+        s = scheme_editor(z)
+        assert s and s["action"] == "Run" and s["storage"] == "Shared scheme · HelloClassic.xcscheme", s
+        z.run("keys escape", "wait 200")
+        assert not z.dump()["modal_open"], "Escape closes the sheet"
+        z.run("keys cmd-<", "wait 300", "edit-scheme tab arguments", "edit-scheme argument -verbose \"two words\"",
+              "edit-scheme argument -skipped", "edit-scheme toggle-argument -skipped",
+              "edit-scheme variable GREETING=hi there", "edit-scheme variable OFF=1", "edit-scheme toggle-variable OFF",
+              "edit-scheme diagnostic zombie_objects on", "edit-scheme close")
+        text = wait_file(scheme, lambda t: "GREETING" in t)
+        assert lines_kept(scheme_original, text), "only inserted lines"
+        for expected in ['argument = "-verbose &quot;two words&quot;"', 'argument = "-skipped"\n            isEnabled = "NO"',
+                         'key = "GREETING"\n            value = "hi there"\n            isEnabled = "YES"',
+                         'key = "OFF"\n            value = "1"\n            isEnabled = "NO"', 'key = "NSZombieEnabled"']:
+            assert expected in text, expected
+        launch = text[text.index("<LaunchAction"):text.index("</LaunchAction>")]
+        assert "GREETING" in launch and "<EnvironmentVariables>" not in text[text.index("<TestAction"):text.index("</TestAction>")]
+        o = z.dump()["scheme_options"]["run"]
+        assert o["lists"]["environment"] == ["GREETING=hi there", "(off) OFF=1"] and "zombie_objects" in o["diagnostics"], o
+
+    def run_mac_app_with_options():
+        z.run("keys cmd-r")
+        # Split like a shell, the disabled ones left out; streamed live (a pseudo-terminal).
+        console_has(z, "arguments: -verbose two words GREETING=hi there")
+        z.run("keys cmd-.", "wait 1500")
+
+    def edit_scheme_restores_file():
+        z.run("keys cmd-<", "wait 300", "edit-scheme action test", "edit-scheme configuration Release", "edit-scheme close")
+        text = wait_file(scheme, lambda t: 'buildConfiguration = "Release"' in t[t.index("<TestAction"):])
+        assert 'buildConfiguration = "Debug"' in text[text.index("<LaunchAction"):], "the Run action keeps Debug"
+        assert z.dump()["configuration"] == "Debug"
+        z.run("keys cmd-<", "wait 300", "edit-scheme action test", "edit-scheme configuration Debug", "edit-scheme action run",
+              "edit-scheme remove-argument -verbose \"two words\"", "edit-scheme remove-argument -skipped",
+              "edit-scheme remove-variable GREETING", "edit-scheme remove-variable OFF",
+              "edit-scheme diagnostic zombie_objects off", "edit-scheme close")
+        assert wait_file(scheme, lambda t: t == scheme_original), "back byte for byte"
+
     check("New File in a new folder → file reference, group and Sources build file", new_file)
     check("File inspector (⌥⌘1): Target Membership on and off", target_membership)
     check("Rename and move (Rename to Views/…) update references and groups", rename_and_move)
     check("Move to Trash removes the reference and build file", trash)
     check("Add Files (⌥⌘A): copy a folder in as a group, Sources + Resources", add_files)
     check("xcodebuild builds the edited project (⌘B)", builds)
+    check("Edit Scheme (⌘<): arguments, environment, diagnostics written into the shared .xcscheme", edit_scheme_run_options)
+    check("Run on My Mac gets the scheme's arguments and environment", run_mac_app_with_options)
+    check("Edit Scheme: Test configuration, then everything undone restores the file byte for byte", edit_scheme_restores_file)
 
     suite = os.path.join(root, "HelloClassicTests", "GreeterSuite.swift")
     xctests = os.path.join(root, "HelloClassicTests", "GreeterTests.swift")
@@ -674,6 +746,35 @@ def package_checks(z, samples):
     check("Swift package: Run on My Mac (⌘R)", run_package)
     check("Swift package: Test (⌘U) → Test navigator", test_package)
     check("Swift package: breakpoint, variables, step over (F6)", debug_package)
+
+    def package_run_with_options():
+        z.wait_for(lambda s: s["scheme_options"], timeout=60, interval=0.5)
+        z.run("action zcode::RunWithOptions", "wait 300")
+        s = scheme_editor(z)
+        assert s["perform"] == "Run" and s["tab"] == "Arguments" and s["storage"].startswith("Swift package"), s
+        before = z.dump()["reports"]
+        z.run("edit-scheme argument --flag \"two words\"", "edit-scheme variable ZHELLO_NAME=Scheme", "edit-scheme perform")
+        s = z.wait_for(lambda s: s["reports"] > before and finished(s), timeout=300)
+        assert "Hello, Scheme!" in s["console_tail"] and "arguments: --flag two words" in s["console_tail"], s["console_tail"]
+
+    def package_debug_with_options():
+        z.run(f"open {main}:{loop_line}", "wait 300", "keys cmd-\\", "keys cmd-r")
+        s = z.wait_for(lambda s: s["debugger"]["state"].startswith("Stopped"), timeout=300, interval=0.5)
+        # lldb-dap launched it with the scheme's arguments and environment.
+        assert "Hello, Scheme!" in s["console_tail"] and "arguments: --flag two words" in s["console_tail"], s["console_tail"]
+        z.run(f"open {main}:{loop_line}", "keys cmd-\\", "keys ctrl-cmd-y")
+        z.wait_for(finished, timeout=60)
+
+    def package_test_with_options():
+        z.run("action zcode::TestWithOptions", "wait 300", "edit-scheme use-run-arguments off",
+              "edit-scheme variable ZKIT_TEST_ENV=from-scheme")
+        s = run_tests(z, "edit-scheme perform")
+        assert "success: true" in s["phase"], s["phase"]
+        assert "ZKIT_TEST_ENV=from-scheme" in open(s["last_log"]).read(), "swift test passes the Test action's environment"
+
+    check("Swift package: Run… (⌥⌘R) with arguments and environment kept in the session", package_run_with_options)
+    check("Swift package: the debugger (lldb-dap) launches with them too", package_debug_with_options)
+    check("Swift package: Test… (⌥⌘U) with the Test action's own environment", package_test_with_options)
 
 
 def warm_open(samples, background=False, limit_ms=150):
@@ -826,6 +927,39 @@ def main():
         package_checks(z, samples)
     finally:
         z.quit()
+
+    def package_options_persist():
+        z = Zcode(os.path.join(samples, "ZKit"))
+        try:
+            s = z.wait_for(lambda s: s["scheme_options"], timeout=60)
+            o = s["scheme_options"]
+            assert o["storage"] == "session" and o["run"]["lists"]["environment"] == ["ZHELLO_NAME=Scheme"], o
+            assert o["test"]["lists"]["environment"] == ["ZKIT_TEST_ENV=from-scheme"] and not o["test"]["uses_run_arguments"], o
+        finally:
+            z.quit()
+
+    check("Swift package: scheme options survive a relaunch (session)", package_options_persist)
+
+    print("Xcode project without scheme files:")
+
+    def schemeless_project():
+        project = os.path.join(WORK, "NoSchemes")
+        shutil.copytree(os.path.join(samples, "HelloClassic"), project)
+        shutil.rmtree(os.path.join(project, "HelloClassic.xcodeproj", "xcshareddata"))
+        z = Zcode(project)
+        try:
+            z.wait_for(lambda s: s["scheme"] == "HelloClassic" and s["scheme_options"], timeout=60)
+            z.run("keys cmd-<", "wait 300")
+            assert scheme_editor(z)["storage"] == "No scheme file · options kept by zcode", scheme_editor(z)
+            z.run("edit-scheme variable GREETING=from-session", "edit-scheme argument -session", "edit-scheme close")
+            assert not os.path.exists(os.path.join(project, "HelloClassic.xcodeproj", "xcshareddata")), "no scheme file written"
+            z.run("keys cmd-r")
+            console_has(z, "arguments: -session GREETING=from-session")
+            z.run("keys cmd-.", "wait 1500")
+        finally:
+            z.quit()
+
+    check("Schemes xcodebuild makes up keep their options in the session; ⌘R uses them", schemeless_project)
 
     shutil.rmtree(DEBUG_DIR, ignore_errors=True)
     shutil.rmtree(WORK, ignore_errors=True)
