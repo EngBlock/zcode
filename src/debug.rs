@@ -17,6 +17,7 @@
 //!   add-files <path>[;<path>…] -> <folder>  the Add Files sheet, after its open panel
 //!   inspect <path>             show the File inspector for a file or folder
 //!   membership <target> on|off toggle a Target Membership checkbox in the inspector
+//!   run-test <Target/Class/test> run a test, class or target as the Test navigator's play button does
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -217,6 +218,13 @@ fn run_command(
                 .map_err(|e| e.to_string())?;
             Ok(String::new())
         }
+        "run-test" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.run_test_named(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
+        }
         "membership" => {
             let (target, state) = arg.rsplit_once(' ').ok_or("usage: membership <target> on|off")?;
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
@@ -261,7 +269,7 @@ fn run_command(
         }
         "dump" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
-            Ok(workspace.read(cx).debug_state(cx).to_string())
+            Ok(workspace.update(cx, |ws, cx| ws.debug_state(cx)).to_string())
         }
         other => Err(format!("unknown command {other}")),
     }

@@ -220,7 +220,10 @@ impl Workspace {
                         BuildAction::Clean => "Cleaning",
                         _ => "Building",
                     },
-                    scheme,
+                    match action {
+                        BuildAction::Test => build.last_test.as_ref().and_then(|r| r.label()).unwrap_or(scheme),
+                        _ => scheme,
+                    },
                     started.elapsed().as_secs_f32()
                 ),
                 true,
@@ -303,6 +306,10 @@ impl Workspace {
     }
 
     pub(super) fn start_build(&mut self, action: BuildAction, window: &mut Window, cx: &mut Context<Self>) {
+        if action == BuildAction::Test {
+            self.test_all(window, cx);
+            return;
+        }
         // Like Xcode, save edited files before building. The build itself
         // refreshes the index, so skip the scheduled background refresh.
         self.save_all(window, cx);
@@ -510,19 +517,25 @@ impl Workspace {
                 .into_any_element();
         };
         let editor = buffer.editor.clone();
+        let diamonds = self.render_test_gutter(&editor, cx);
         v_flex()
             .size_full()
             .child(self.render_tabs(cx))
             .child(self.render_jump_bar(cx))
             .child(
-                div().flex_1().min_h_0().child(
-                    Editor::new(&editor)
-                        .bordered(false)
-                        .p_0()
-                        .h_full()
-                        .font_family(theme.mono_font_family.clone())
-                        .text_size(px(self.font_size)),
-                ),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(
+                        Editor::new(&editor)
+                            .bordered(false)
+                            .p_0()
+                            .h_full()
+                            .font_family(theme.mono_font_family.clone())
+                            .text_size(px(self.font_size)),
+                    )
+                    .children(diamonds),
             )
             .into_any_element()
     }
@@ -1159,7 +1172,12 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ResetFontSize, _, cx| this.change_font_size(0., cx)))
             .on_action(cx.listener(|this, _: &Build, window, cx| this.start_build(BuildAction::Build, window, cx)))
             .on_action(cx.listener(|this, _: &Run, window, cx| this.start_build(BuildAction::Run, window, cx)))
-            .on_action(cx.listener(|this, _: &Test, window, cx| this.start_build(BuildAction::Test, window, cx)))
+            .on_action(cx.listener(|this, _: &Test, window, cx| this.test_all(window, cx)))
+            .on_action(cx.listener(Self::test_selected_items))
+            .on_action(cx.listener(Self::test_again))
+            .on_action(cx.listener(Self::rerun_failed_tests))
+            .on_action(cx.listener(Self::choose_test_plan))
+            .on_action(cx.listener(|this, _: &ClearTestResults, _, cx| this.build.update(cx, |b, cx| b.clear_test_results(cx))))
             .on_action(cx.listener(|this, _: &Clean, window, cx| this.start_build(BuildAction::Clean, window, cx)))
             .on_action(cx.listener(|this, _: &Stop, _, cx| this.stop(cx)))
             .on_action(cx.listener(Self::toggle_breakpoint))

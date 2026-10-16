@@ -8,6 +8,8 @@ mod panels;
 mod pickers;
 mod project_files;
 mod project_settings;
+mod test_gutter;
+mod testing;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -137,6 +139,8 @@ pub struct Workspace {
     restore_destination: Option<String>,
     pub outline_generation: u64,
     session: Session,
+    pub tests: testing::TestsState,
+    gutter: Rc<test_gutter::GutterState>,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
     outline_task: Option<Task<()>>,
@@ -240,6 +244,8 @@ impl Workspace {
             restore_destination: None,
             outline_generation: 0,
             session,
+            tests: Default::default(),
+            gutter: Default::default(),
             _subscriptions: subscriptions,
             _tasks: vec![],
             outline_task: None,
@@ -254,6 +260,9 @@ impl Workspace {
                 }
                 build.scheme = saved.scheme.clone();
             });
+        }
+        if saved.test_plan.is_some() {
+            this.build.update(cx, |build, _| build.test_plan = saved.test_plan.clone());
         }
         this.restore_destination = saved.destination.clone();
         this.debugger.update(cx, |d, _| {
@@ -326,6 +335,7 @@ impl Workspace {
                 }
                 this.tree.update(cx, |tree, cx| tree.set_items(items, cx));
                 this.reveal_active_in_tree(cx);
+                this.refresh_tests(cx);
                 cx.notify();
             })
             .ok();
@@ -574,6 +584,7 @@ impl Workspace {
             scheme: build.scheme.clone(),
             destination: build.destination.as_ref().map(|d| d.id.clone()),
             configuration: Some(build.configuration.clone()),
+            test_plan: build.test_plan.clone(),
             show_navigator: Some(self.show_navigator),
             show_debug_area: Some(self.show_debug_area),
             show_inspector: Some(self.show_inspector),
@@ -749,6 +760,7 @@ impl Workspace {
                         this.lsp
                             .update(cx, |lsp, cx| lsp.document_changed(&path, text, cx));
                     }
+                    this.schedule_test_reparse(&path, cx);
                 }
             }
         });
@@ -1108,7 +1120,10 @@ impl Workspace {
                     lsp.files_changed(&[db]);
                 });
             }
+            BuildEvent::TestsChanged => {}
             BuildEvent::ConfigurationChanged => {
+                // A package's test targets arrive with its schemes.
+                self.assign_test_targets(cx);
                 if let Some(id) = self.restore_destination.take() {
                     build.update(cx, |build, cx| {
                         if let Some(dest) = build.destinations.iter().find(|d| d.id == id).cloned() {
@@ -1642,7 +1657,8 @@ impl Workspace {
 
 impl Workspace {
     /// A JSON summary of UI state for the debug harness and tests.
-    pub fn debug_state(&self, cx: &App) -> serde_json::Value {
+    pub fn debug_state(&mut self, cx: &App) -> serde_json::Value {
+        let testing = self.tests_summary(cx);
         let build = self.build.read(cx);
         let active = self.active_buffer().map(|b| {
             let state = b.editor.read(cx);
@@ -1697,9 +1713,11 @@ impl Workspace {
             "phase": format!("{:?}", build.phase),
             "indexing": build.indexing,
             "issues": issues.iter().map(|i| format!("{:?} {}:{} {}", i.severity, i.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), i.line.unwrap_or(0), i.message)).collect::<Vec<_>>(),
-            "tests": build.tests.iter().map(|t| format!("{:?} {}", t.status, t.name)).collect::<Vec<_>>(),
+            "tests": build.tests.iter().map(|t| format!("{:?} {}", t.status, t.full_name())).collect::<Vec<_>>(),
+            "testing": testing,
             "console_tail": build.console.iter().rev().take(8).rev().cloned().collect::<Vec<_>>(),
             "log_lines": build.log.len(),
+            "reports": build.reports.len(),
             "find_results": self.find.results.iter().map(|f| f.matches.len()).sum::<usize>(),
             "outline": self.outline.iter().map(|o| o.name.clone()).collect::<Vec<_>>(),
             "scm_branch": self.scm_branch,

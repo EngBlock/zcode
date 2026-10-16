@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::{Disableable as _, Selectable as _};
+use gpui_kit::component::Selectable as _;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
@@ -16,7 +16,7 @@ use gpui_kit::assets::IconName;
 
 use super::pickers::{file_icon, symbol_icon};
 use super::{Target, Workspace};
-use crate::build::log::{IssueSource, Severity, TestStatus};
+use crate::build::log::{IssueSource, Severity};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavigatorTab {
@@ -77,7 +77,7 @@ fn row(id: impl Into<ElementId>) -> Stateful<Div> {
     h_flex().id(id).w_full().px_2().py(px(3.)).gap_1p5().text_sm()
 }
 
-fn section_header(label: impl Into<SharedString>, cx: &App) -> Div {
+pub(super) fn section_header(label: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .px_2()
         .pt_2()
@@ -88,7 +88,7 @@ fn section_header(label: impl Into<SharedString>, cx: &App) -> Div {
         .child(label.into())
 }
 
-fn empty(message: impl Into<SharedString>, cx: &App) -> Div {
+pub(super) fn empty(message: impl Into<SharedString>, cx: &App) -> Div {
     div()
         .p_4()
         .text_sm()
@@ -620,60 +620,6 @@ impl Workspace {
                             ),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| this.open_issue(&open, window, cx))),
-            );
-        }
-        list
-    }
-
-    fn render_test_navigator(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
-        let build = self.build.read(cx);
-        let tests = build.tests.clone();
-        let failed = build.failed_tests();
-        let busy = build.phase.is_busy();
-        let mut list = v_flex()
-            .id("tests")
-            .size_full()
-            .overflow_y_scroll()
-            .child(
-                h_flex()
-                    .justify_between()
-                    .child(section_header(
-                        if tests.is_empty() {
-                            "Tests".to_string()
-                        } else {
-                            format!("{} tests, {failed} failed", tests.len())
-                        },
-                        cx,
-                    ))
-                    .child(
-                        Button::new("run-tests")
-                            .icon(IconName::Play)
-                            .ghost()
-                            .xsmall()
-                            .disabled(busy)
-                            .tooltip("Run Tests (⌘U)")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.build.update(cx, |b, cx| b.start(crate::build::BuildAction::Test, cx));
-                            })),
-                    ),
-            );
-        if tests.is_empty() {
-            return list.child(empty("Run tests with ⌘U to see results here.", cx));
-        }
-        for (ix, test) in tests.into_iter().enumerate() {
-            let (icon, color) = match test.status {
-                TestStatus::Passed => (IconName::CircleCheck, theme.success),
-                TestStatus::Failed => (IconName::CircleX, theme.danger),
-                TestStatus::Skipped => (IconName::CircleSlash, theme.muted_foreground),
-            };
-            list = list.child(
-                row(("test", ix))
-                    .child(Icon::new(icon).small().text_color(color))
-                    .child(div().flex_1().truncate().child(test.name.clone()))
-                    .when_some(test.duration, |el, d| {
-                        el.child(div().text_xs().text_color(theme.muted_foreground).child(format!("{d:.3}s")))
-                    }),
             );
         }
         list

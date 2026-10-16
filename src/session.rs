@@ -13,6 +13,8 @@ pub struct ProjectSession {
     pub scheme: Option<String>,
     pub destination: Option<String>,
     pub configuration: Option<String>,
+    /// The chosen test plan, when not the scheme's default.
+    pub test_plan: Option<String>,
     pub show_navigator: Option<bool>,
     pub show_debug_area: Option<bool>,
     pub show_inspector: Option<bool>,

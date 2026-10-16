@@ -111,6 +111,8 @@ impl Workspace {
             settings.update(cx, |settings, cx| settings.reload_if_changed(window, cx));
         }
         self.refresh_project_index(cx);
+        // Target membership decides which test target a file's tests run in.
+        self.refresh_tests(cx);
         cx.notify();
     }
 
