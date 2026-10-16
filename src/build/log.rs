@@ -50,9 +50,34 @@ pub enum TestStatus {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TestResult {
+    /// The test as the runner printed it: `testFoo`, `foo()`, or a Swift
+    /// Testing display name in quotes (`"Adds one"`).
     pub name: String,
+    /// Enclosing classes or suites, when the output names them.
+    pub suites: Vec<String>,
+    /// The test module, from XCTest's `-[Module.Class test]` form.
+    pub module: Option<String>,
     pub status: TestStatus,
     pub duration: Option<f64>,
+}
+
+impl TestResult {
+    /// `Class/test`, `Suite/Inner/test()` or just the test.
+    pub fn full_name(&self) -> String {
+        self.suites.iter().chain([&self.name]).cloned().collect::<Vec<_>>().join("/")
+    }
+
+    /// Whether this reports the same test as `other`.
+    pub fn same_test(&self, other: &TestResult) -> bool {
+        self.name == other.name && self.suites == other.suites && self.module == other.module
+    }
+}
+
+/// A Swift Testing suite starting or finishing (`◇ Suite Foo started.`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SuiteEvent {
+    Started(String),
+    Finished(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +106,7 @@ pub struct LogLine {
 pub struct Parsed {
     pub issue: Option<Issue>,
     pub test: Option<TestResult>,
+    pub suite: Option<SuiteEvent>,
 }
 
 fn re(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
@@ -171,58 +197,100 @@ pub fn parse_issue(line: &str) -> Option<Issue> {
     None
 }
 
+fn status(word: &str) -> TestStatus {
+    match word {
+        "passed" => TestStatus::Passed,
+        "failed" => TestStatus::Failed,
+        _ => TestStatus::Skipped,
+    }
+}
+
+/// Splits an xcodebuild test name: `Class.testFoo()` (XCTest),
+/// `Suite/Inner/foo()` (Swift Testing) or `foo()`.
+fn split_test_name(name: &str) -> (Vec<String>, String) {
+    if name.contains('/') {
+        let mut parts: Vec<String> = name.split('/').map(str::to_string).collect();
+        let last = parts.pop().unwrap_or_default();
+        return (parts, last);
+    }
+    let base = name.split('(').next().unwrap_or(name);
+    match base.rfind('.') {
+        Some(dot) => (vec![name[..dot].to_string()], name[dot + 1..].to_string()),
+        None => (vec![], name.to_string()),
+    }
+}
+
 pub fn parse_test(line: &str) -> Option<TestResult> {
     static XCTEST: OnceLock<Regex> = OnceLock::new();
     static SWIFT_TESTING: OnceLock<Regex> = OnceLock::new();
     let line = line.trim();
     // XCTest: Test Case '-[Mod.Tests testFoo]' passed (0.001 seconds).
-    //         Test case 'Tests.testFoo()' failed on 'iPhone' (0.002 seconds)
+    // xcodebuild: Test case 'Tests.testFoo()' failed on 'iPhone' (0.002 seconds)
+    //             Test case 'Suite/foo()' passed on 'My Mac' (0.001 seconds)
     if let Some(c) = re(
         &XCTEST,
         r"^Test [Cc]ase '(.+?)' (passed|failed|skipped)(?: on '.*?')? \((\d+\.\d+) seconds\)",
     )
     .captures(line)
     {
-        let name = c[1]
-            .trim_start_matches("-[")
-            .trim_end_matches(']')
-            .replace(' ', ".");
+        let (module, suites, name) = match c[1].strip_prefix("-[").and_then(|s| s.strip_suffix(']')) {
+            Some(objc) => {
+                let (class, method) = objc.split_once(' ').unwrap_or((objc, ""));
+                match class.rsplit_once('.') {
+                    Some((module, class)) => (Some(module.to_string()), vec![class.to_string()], method.to_string()),
+                    None => (None, vec![class.to_string()], method.to_string()),
+                }
+            }
+            None => {
+                let (suites, name) = split_test_name(&c[1]);
+                (None, suites, name)
+            }
+        };
         return Some(TestResult {
             name,
-            status: match &c[2] {
-                "passed" => TestStatus::Passed,
-                "failed" => TestStatus::Failed,
-                _ => TestStatus::Skipped,
-            },
+            suites,
+            module,
+            status: status(&c[2]),
             duration: c[3].parse().ok(),
         });
     }
     // Swift Testing: ✔ Test foo() passed after 0.001 seconds.
-    //                ✘ Test foo() failed after 0.002 seconds with 1 issue.
+    //                ✘ Test "Adds one" failed after 0.002 seconds with 1 issue.
     //                ➜ Test foo() skipped.
+    // Older releases print both names: Test "Adds one" (foo()) passed.
     if let Some(c) = re(
         &SWIFT_TESTING,
-        r#"^[^\s]+ Test (?:"[^"]*" \()?([^\s"]+?\))\)? (passed|failed|skipped)(?: after (\d+\.\d+) seconds)?"#,
+        r#"^\S+ Test (?:"[^"]*" \((\S+?\))\)|("[^"]*")|(\S+?\))) (passed|failed|skipped)(?: after (\d+\.\d+) seconds)?"#,
     )
     .captures(line)
     {
+        let name = c.get(1).or(c.get(2)).or(c.get(3))?.as_str().to_string();
         return Some(TestResult {
-            name: c[1].to_string(),
-            status: match &c[2] {
-                "passed" => TestStatus::Passed,
-                "failed" => TestStatus::Failed,
-                _ => TestStatus::Skipped,
-            },
-            duration: c.get(3).and_then(|m| m.as_str().parse().ok()),
+            name,
+            suites: vec![],
+            module: None,
+            status: status(&c[4]),
+            duration: c.get(5).and_then(|m| m.as_str().parse().ok()),
         });
     }
     None
+}
+
+pub fn parse_suite_event(line: &str) -> Option<SuiteEvent> {
+    static SUITE: OnceLock<Regex> = OnceLock::new();
+    let c = re(&SUITE, r#"^\S+ Suite ("[^"]*"|\S+) (started|passed|failed|skipped)"#).captures(line.trim())?;
+    let name = c[1].trim_matches('"').to_string();
+    Some(match &c[2] {
+        "started" => SuiteEvent::Started(name),
+        _ => SuiteEvent::Finished(name),
+    })
 }
 
 pub fn parse_line(line: &str) -> Parsed {
     Parsed {
         issue: parse_issue(line),
         test: parse_test(line),
+        suite: parse_suite_event(line),
     }
 }
 
@@ -294,7 +362,7 @@ pub fn prettify(raw: &str) -> LogLine {
             raw: raw.to_string(),
             pretty: Some(format!(
                 "{mark} {}{}",
-                test.name,
+                test.full_name(),
                 test.duration.map(|d| format!("  {d:.3}s")).unwrap_or_default()
             )),
             style,
@@ -411,7 +479,7 @@ mod tests {
     fn parses_tests() {
         let t = parse_test("Test Case '-[HelloZTests.CounterTests testIncrement]' passed (0.001 seconds).")
             .unwrap();
-        assert_eq!(t.name, "HelloZTests.CounterTests.testIncrement");
+        assert_eq!((t.module.as_deref(), t.full_name().as_str()), (Some("HelloZTests"), "CounterTests/testIncrement"));
         assert_eq!(t.status, TestStatus::Passed);
         let t = parse_test("✘ Test resetClearsCount() failed after 0.002 seconds with 1 issue.")
             .unwrap();
@@ -419,6 +487,30 @@ mod tests {
         assert_eq!(t.status, TestStatus::Failed);
         let t = parse_test("✔ Test incrementAddsOne() passed after 0.001 seconds.").unwrap();
         assert_eq!(t.status, TestStatus::Passed);
+        let t = parse_test(r#"✔ Test "Named test" passed after 0.001 seconds."#).unwrap();
+        assert_eq!(t.name, r#""Named test""#);
+        let t = parse_test(r#"✔ Test "Adds one" (addsOne()) passed after 0.001 seconds."#).unwrap();
+        assert_eq!(t.name, "addsOne()");
+        let t = parse_test("➜ Test later() skipped: \"not yet\"").unwrap();
+        assert_eq!((t.name.as_str(), t.status), ("later()", TestStatus::Skipped));
+    }
+
+    #[test]
+    fn parses_xcodebuild_test_names() {
+        let t = parse_test("Test case 'GreeterTests.testGreeting()' passed on 'My Mac - HelloClassic (82577)' (0.001 seconds)").unwrap();
+        assert_eq!((t.suites.clone(), t.name.as_str(), t.module), (vec!["GreeterTests".to_string()], "testGreeting()", None));
+        let t = parse_test("Test case 'Outer/Inner/deep()' failed on 'iPhone 17' (0.000 seconds)").unwrap();
+        assert_eq!((t.full_name().as_str(), t.status), ("Outer/Inner/deep()", TestStatus::Failed));
+        let t = parse_test("Test case 'globalCheck()' passed on 'My Mac' (0.000 seconds)").unwrap();
+        assert!(t.suites.is_empty());
+    }
+
+    #[test]
+    fn parses_suite_events() {
+        assert_eq!(parse_suite_event("◇ Suite CounterTests started."), Some(SuiteEvent::Started("CounterTests".into())));
+        assert_eq!(parse_suite_event(r#"✘ Suite "Fancy name" failed after 0.1 seconds with 1 issue."#), Some(SuiteEvent::Finished("Fancy name".into())));
+        assert_eq!(parse_suite_event("✔ Test run with 4 tests in 2 suites passed after 0.001 seconds."), None);
+        assert_eq!(parse_test("◇ Suite CounterTests started."), None);
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub mod picker;
 pub mod project;
 pub mod search;
 pub mod session;
+pub mod testing;
 pub mod toolchain;
 pub mod welcome;
 pub mod workspace;
