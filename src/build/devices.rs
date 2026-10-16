@@ -392,7 +392,7 @@ pub fn has_cached_symbols(destination: &Destination) -> bool {
 }
 
 /// The LLDB commands lldb-dap runs to attach to a device process. lldb's
-/// `device` commands (Xcode 26+) attach through CoreDevice, as Xcode does.
+/// `device` commands attach through CoreDevice, as Xcode does.
 /// `device process attach` makes its own target, so the app's local build
 /// is found through `target.exec-search-paths`, and the bundle's own
 /// libraries (the debug dylib, embedded frameworks) are added to the target
