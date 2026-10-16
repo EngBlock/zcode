@@ -47,6 +47,7 @@ Source: `/Users/nathan/Downloads/Xcode-beta.app` (Xcode 27.0, build 27A5228h). `
 | Add Files… | ⌥⌘A |
 | Open… / Open Quickly… | ⌘O / ⇧⌘O |
 | Close Tab/Pane/Window / Close Other Tabs / Close Editor Pane / Close Workspace | ⌘W / ⌥⌘W / ⌃⇧⌘W / ⌃⌥⌘W |
+| Close Other Editor Panes / Close Document | ⌃⌥⇧⌘W / ⌃⌘W |
 | Save / Save All | ⌘S / ⌥⌘S |
 | Show in Finder, Open Terminal at Location, Packages > Resolve/Update/Reset | — |
 
@@ -102,6 +103,8 @@ Source: `/Users/nathan/Downloads/Xcode-beta.app` (Xcode 27.0, build 27A5228h). `
 | Next / Previous Bookmark In Workspace | ⌃⌥; / ⌃⌥⇧; |
 | Previous / Next Tab | ⇧⌘[ / ⇧⌘] |
 | Move Focus to Next Area / Next Editor Pane / Editor Pane… | ⌥⌘\` / ⌃\` / ⌘J |
+| Move Focus to Previous Editor Pane | ⌃⇧\` |
+| Jump to Next Counterpart in the assistant (⌥) | ⌃⌥⌘↑ |
 | Jump to Instruction Pointer (debugging) | ⌃⌘P |
 
 ### Editor (source editor context)

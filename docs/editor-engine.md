@@ -308,6 +308,38 @@ undo or the programmatic APIs. Both are what a multibuffer needs, and
 `BufferEdit` is also what incremental LSP sync needs (zcode still sends
 whole documents).
 
+### Linked views: one buffer in several editors (`linked.rs`)
+
+```rust
+let view = cx.new(|cx| EditorState::new(window, cx).language("swift"));
+EditorState::link(&buffer_editor, &view, window, cx);  // view takes the text
+view.read(cx).shares_buffer_with(buffer_editor.read(cx));  // true
+buffer_editor.read(cx).linked_views();                     // the others still open
+```
+
+Two panes on one file (2.2) are two editors, each with its own selections,
+scroll position, folds, soft wrap, search, popovers, gutter lanes and
+decorations. Linked, they are one buffer: every edit one of them applies
+(typing, commands, `edit`, `transact`, undo and redo, `set_value`) is
+applied to the others inside the same update, so their texts are equal
+whenever anyone reads them; they share one undo history, so ⌘Z in any view
+undoes the last edit made in any of them (and puts the cursors back in the
+view that undoes); and they share one anchor table, so an anchor made
+through one view resolves in the others and moves once per edit. A view
+applying another's edit keeps its own cursors (moved past the edit),
+records nothing in the history and leaves the anchors alone: the view that
+made the edit did both. The undo history and anchor table are shared
+handles (`Rc<RefCell<…>>`) behind the same methods the engine used before,
+so nothing else in the engine changed. Views hold each other weakly; the
+last one open is the buffer.
+
+zcode keeps one `Buffer` per file (dirty state, the language server's
+document, breakpoint and bookmark anchors) whose `editor` is one of its
+views, and gives each pane a view of its own; breakpoint markers drawn in
+every pane come from the one set of anchors. Typing in a 6,000-line Swift
+file shown in two panes takes as long as in one (keystroke to frame, median
+3.9–4.6 ms on this branch with two panes, 3.9–5.3 ms on `master` with one).
+
 ### Multibuffers: the excerpt model (`multibuffer.rs`, stub for 2.5)
 
 A multibuffer is one editor showing editable excerpts of many files. The
@@ -365,6 +397,7 @@ undoes on its own), and excerpts that grow when context is expanded
 | Edit predictions (3.3) | an inlay at the cursor for the first line and a block for the rest; Tab accepts through `edit` in a `transact` |
 | Minimap (later) | an element beside the editor reading the rope and the highlight styles; the display map already gives row ↔ offset |
 | Read-only views (package sources, generated interfaces) | `set_read_only`, or read-only ranges for parts of a file |
+| Split panes (2.2, done) | linked views: an editor per pane, one text, history and anchor table |
 
 ## Performance
 

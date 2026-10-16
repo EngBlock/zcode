@@ -18,7 +18,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 
 | Area | Feature | Keys (Xcode-compatible) |
 |---|---|---|
-| **Projects** | Opens `.xcodeproj`, `.xcworkspace`, Swift packages and plain folders. Includes a welcome window with recent projects and per-project session restore (tabs, scheme, destination, breakpoints, layout). | ⌘O |
+| **Projects** | Opens `.xcodeproj`, `.xcworkspace`, Swift packages and plain folders. Includes a welcome window with recent projects and per-project session restore (panes and tabs, scheme, destination, breakpoints, layout). | ⌘O |
 | | Project settings: click the project in the navigator to edit the project and its targets (General fields such as bundle ID, version, deployment targets and team, plus every build setting per configuration). Edits are written straight to `project.pbxproj` and keep its formatting. The panel can also open `project.pbxproj` as text or open the project in Xcode. | — |
 | | Signing & Capabilities for each target: Automatically manage signing, Team (from Xcode's signed-in accounts and the keychain's signing identities, or typed), Bundle Identifier, Signing Certificate (Development, Distribution, Sign to Run Locally, or a keychain identity) and Provisioning Profile (installed profiles that match the team and bundle ID). + Capability adds App Groups, iCloud, Push Notifications, Keychain Sharing, Background Modes, Associated Domains, Sign in with Apple, HealthKit, and on the Mac App Sandbox and Hardened Runtime, each with its options: entitlements go into the target's `.entitlements` file (created, set as `CODE_SIGN_ENTITLEMENTS` and added to the project the first time), Background Modes into its Info.plist, App Sandbox and Hardened Runtime into build settings, as Xcode 15+ keeps them. Builds register them with Apple through `-allowProvisioningUpdates`; zcode never calls the developer portal. Signing errors open this tab. | — |
 | | The target's Info tab: Custom Target Properties, its Info.plist keys and `INFOPLIST_KEY_` build settings together in the property list editor. The first key added to a target with a generated Info.plist creates the file next to its sources and sets `INFOPLIST_FILE` (in a synchronized folder, with the membership exception that keeps it out of the target's resources). | — |
@@ -26,6 +26,8 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | **Swift packages** | Package Dependencies at the bottom of the project navigator: every resolved package with its version (or branch, or commit), expandable to browse its sources, which open read-only (with a lock on the tab), as do package sources Jump to Definition reaches. | — |
 | | File ▸ Add Package Dependencies…: enter a repository URL or a GitHub `owner/repo`; its versions come from its tags (`git ls-remote`) for the dependency rule (Up to Next Major Version, Up to Next Minor Version, Range of Versions, Exact Version, Branch, Commit). Add Package fetches that version to read its products; then pick the target each product is added to. Add Local… adds a package folder. In an `.xcworkspace` you choose which project gets the package. | — |
 | | File ▸ Packages ▸ Reset Package Caches, Resolve Package Versions, Update to Latest Package Versions; Update Package and Remove Package on a package's context menu. Xcode projects are edited in `project.pbxproj` as Xcode writes it (package references, product dependencies, the targets' Frameworks phase) and resolved with `xcodebuild -resolvePackageDependencies` into the DerivedData folder builds use; Swift packages use `swift package add-dependency`, `add-target-dependency`, `resolve`, `update` and `reset`. Progress shows in the activity view, errors under Package Loading in the Issue navigator, and the index refreshes afterwards so new modules can be imported. | — |
+| **Editor panes** | File ▸ New ▸ Editor Pane on Right / Below splits the focused pane, showing its file at the same place; panes split further side by side or stacked and are resized by dragging. Each pane has its own tabs, jump bar and Go Back / Go Forward history. A file shown in several panes is one document: an edit, undo or redo in one pane shows in the others at once, each pane keeps its own cursor and scroll position, and breakpoints, bookmarks, test diamonds, issues, the execution mark and the property list outline appear in every pane. Close Editor Pane, Close Other Editor Panes, Close Other Tabs; closing a pane's last tab closes the pane. Move Focus to Next / Previous Editor Pane, or click; Focus Editor Pane shows the focused pane alone. The layout, tabs, sizes and focus are restored with the session. | ⌃⌘T ⌃⌥⌘T, ⌃⇧⌘W ⌃⌥⇧⌘W ⌥⌘W, ⌃\` ⌃⇧\`, ⌃⇧⌘↩ |
+| | The assistant (Editor ▸ Assistant) opens beside the focused editor in Counterparts mode, following it with the `.h` / `.m` (`.c`, `.cpp`, `.mm`) counterpart of its file, or in Manual mode with what was opened in it. ⌥-click in the project navigator, ⌥-Return (or ⌥-click) in Open Quickly, Jump to Definition and Jump to Next Counterpart with ⌥ open in the assistant (or the next pane, or a new assistant). Show Editor Only closes it. | ⌃⌥⌘↩, ⌘↩, ⌃⌥⌘J, ⌃⌥⌘↑ |
 | **Editing** | Rope-based editor with tree-sitter highlighting (Swift, C/ObjC, C++, JSON, YAML, Markdown…), multiple cursors, folding, indent guides and find/replace. | ⌘F, ⌥⌘F |
 | | Comment selection, duplicate, move line, select next occurrence, soft wrap and font size. | ⌘/, ⌘D, ⌥⌘[ ⌥⌘], ⌥⌘E, ⌃⇧⌘L, ⌘+ ⌘- ⌃⌘0 |
 | | Xcode-style `<#placeholder#>` snippets from completions, with Tab or ⌃/ jumping to the next placeholder. | Tab, ⌃/, ⌃⇧/ |
@@ -71,6 +73,7 @@ Measured on an M4 Max with macOS 27.2 and a release build.
 | `zcode <project>` while zcode is running (the usual case) | | **~50–70 ms**; the CLI itself returns in ~50 ms |
 | Cold launch, welcome window | **~230–240 ms** | ~200–210 ms (7 ms of it before `main()`) |
 | Cold launch, project with 2 Swift tabs restored | | ~210–230 ms |
+| Cold launch, ZKit with 4 Swift tabs restored in one pane / split over two panes | ~260 ms / ~275 ms | |
 | *Reference:* minimal native AppKit app (one window, one line of text) | ~295 ms | ~270 ms |
 | *Reference:* the same app with the open animation off | ~170 ms | ~150 ms |
 
@@ -140,7 +143,8 @@ if zcode is not faster.
 src/
   app.rs            startup, windows, global commands, --startup-bench
   actions.rs        commands, Xcode key bindings, menu bar
-  workspace/        project window: buffers, navigators, panels, pickers, editor commands
+  workspace/        project window: buffers (one per open file, a linked editor per pane), panes of tabs in
+                    a split tree with the assistant, navigators, inspector, debug area, pickers, commands
   lsp/              JSON-RPC client, document sync store, editor provider adapters
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner, log/issue/test
                     parsing, compilation-database extraction
@@ -162,7 +166,8 @@ src/
   debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR)
 crates/
   zcode-editor/     the code editor: rope buffer, display map (soft wrap, folding), highlighting,
-                    undo, multiple cursors, LSP popovers, find panel (docs/editor-engine.md)
+                    undo, multiple cursors, linked views of one buffer, LSP popovers, find panel
+                    (docs/editor-engine.md)
 vendor/
   gpui-component/   gpui-component 0.7.3 plus small patches (ZCODE-PATCH.md)
 scripts/
@@ -173,7 +178,10 @@ scripts/
 The code editor is zcode's own crate, `crates/zcode-editor`. It started as
 the text engine of `gpui-base` and the editor UI of `gpui-component` (both
 Apache-2.0, from GPUI Kit 0.7.3; see its `NOTICE`), and zcode now evolves it
-(`docs/editor-engine.md`). The rest of `gpui-component` (widgets, theme,
+(`docs/editor-engine.md`), most recently with linked views, which let two
+panes show one buffer. The workspace's panes, items and split tree follow
+the model Zed describes publicly (a pane of items, a tree of splits), written
+from scratch. The rest of `gpui-component` (widgets, theme,
 tree-sitter highlighter) is vendored with a startup patch and a visibility
 patch for the highlighter, both described in
 `vendor/gpui-component/ZCODE-PATCH.md`.
@@ -214,6 +222,15 @@ saved breakpoints can't leak in. It covers:
   suite, and the Greeting test plan; in a Swift package a test and an XCTest
   class (`swift test --filter`) and Re-run Failed Tests after a fix
 * run, test and debug for a Swift package
+* editor panes on a copy of ZKit with an Objective-C pair and a property
+  list: ⌃⌘T / ⌃⌥⌘T splits, two panes on one buffer (typing in one, ⌘Z and
+  ⇧⌘Z in the other, a cursor each), focus with ⌃\` ⌃⇧\` and clicks;
+  breakpoints, bookmarks and test diamonds in every pane through edits and
+  undo made in another; a property list edited in one pane and undone in
+  the other; the assistant's Counterparts, ⌘↩, ⌥-Return, ⌥-click, ⌃⌥⌘↑
+  and ⌃⌥⌘J; Focus Editor Pane, Close Other Tabs, ⌃⇧⌘W, ⌘W on a pane's last
+  tab; a dragged split, the layout, tabs, assistant and focus after a
+  relaunch
 * the editor's extension points (`crates/zcode-editor`) on a copy of ZKit:
   inlays the caret steps over and that follow typing and undo, blocks that
   move the rows below them, a highlight layer following edits, and a
@@ -306,6 +323,13 @@ The control channel also takes window screenshots
   zcode don't move bookmarks. They live in zcode's session, so Xcode doesn't see them.
   A bookmarked search keeps one bookmark per matching line, and Find Again
   searches the files of the last project scan.
+* Editor panes: the assistant has Counterparts and Manual modes only (no
+  Callers, Superclasses, Preview or other Xcode modes), and Swift files have
+  no counterparts (Xcode shows generated interfaces). Move Focus to Editor
+  Pane… (⌘J) and the ⌥⇧ destination chooser aren't there; ⌥-click opens in
+  the assistant or the next pane. Panes aren't dragged between windows, and
+  tabs can't be dragged between panes. Project Settings is one tab, in one
+  pane at a time, and isn't restored with the session.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas or Instruments.
 * Devices: there's no Devices and Simulators window (⇧⌘2), so pairing a new
   device, turning on Developer Mode and copying a device's system symbols
