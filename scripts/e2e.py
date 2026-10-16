@@ -86,6 +86,9 @@ XCODE_SHORTCUTS = [
     ("cmd-b", "zcode::Build", "Product ▸ Build"),
     ("cmd-r", "zcode::Run", "Product ▸ Run"),
     ("cmd-u", "zcode::Test", "Product ▸ Test"),
+    ("ctrl-alt-cmd-u", "zcode::TestSelectedItems", "Product ▸ Perform Action ▸ Test Selected Items"),
+    ("ctrl-alt-cmd-g", "zcode::TestAgain", "Product ▸ Perform Action ▸ Test Again"),
+    ("ctrl-alt-cmd-k", "zcode::ClearTestResults", "Product ▸ Clear Test Results"),
     ("cmd-.", "zcode::Stop", "Product ▸ Stop"),
     ("cmd-shift-k", "zcode::Clean", "Product ▸ Clean Build Folder"),
     ("ctrl-0", "zcode::ChooseScheme", "Product ▸ Scheme ▸ Choose Scheme"),
@@ -231,6 +234,29 @@ def group_block(text, name):
     return text[start:text.index("\t\t};", start)]
 
 
+def finished(s):
+    return s["phase"].startswith("Finished")
+
+
+def run_tests(z, *commands, timeout=300):
+    """Starts a test run with `commands` and waits for it to finish."""
+    before = z.dump()["reports"]
+    z.run(*commands)
+    return z.wait_for(lambda s: s["reports"] > before and finished(s), timeout=timeout)
+
+
+def diamond(z, path, test, timeout=60):
+    """The gutter diamond of `test` (a `Class/test` suffix) in `path`."""
+    z.run(f"open {path}", "wait 300")
+    s = z.wait_for(lambda s: any(d["test"].endswith(test) for d in s["testing"]["gutter"]), timeout=timeout, interval=0.5)
+    return next(d for d in s["testing"]["gutter"] if d["test"].endswith(test))
+
+
+def item_status(s, test):
+    """`Passed`, `Failed`, `Skipped` or `NotRun` for a test (`Target/Class/test` suffix)."""
+    return next(i.split(" ", 1)[0] for i in s["testing"]["items"] if i.endswith(test))
+
+
 def empty_trash_item(name):
     """Removes a test file Move to Trash put in ~/.Trash."""
     path = os.path.expanduser(os.path.join("~/.Trash", name))
@@ -358,7 +384,37 @@ def xcode_project_checks(z, samples, sim):
         z.run("keys cmd-u")
         s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=300)
         assert "success: true" in s["phase"], s["phase"]
-        assert sorted(s["tests"]) == ["Passed incrementAddsOne()", "Passed resetClearsCount()"], s["tests"]
+        assert sorted(s["tests"]) == [
+            "Passed CounterTests/incrementAddsOne()",
+            "Passed CounterTests/resetClearsCount()",
+            "Passed LegacyTests/testIncrementTwice",
+            "Passed LegacyTests/testStartsAtZero",
+        ], s["tests"]
+
+    def single_tests_on_simulator():
+        legacy = os.path.join(samples, "HelloZ", "HelloZTests", "LegacyTests.swift")
+        counter_tests = os.path.join(samples, "HelloZ", "HelloZTests", "CounterTests.swift")
+        z.run("action zcode::ClearTestResults")
+        d = diamond(z, legacy, "LegacyTests/testStartsAtZero")
+        s = run_tests(z, f"click {d['x']} {d['y']}")
+        assert "success: true" in s["phase"] and s["tests"] == ["Passed LegacyTests/testStartsAtZero"], s["tests"]
+        # A Swift Testing suite through the injected bundle's scope.
+        d = diamond(z, counter_tests, "HelloZTests/CounterTests")
+        s = run_tests(z, f"click {d['x']} {d['y']}")
+        assert sorted(s["tests"])[:2] == ["Passed CounterTests/incrementAddsOne()", "Passed CounterTests/resetClearsCount()"], s["tests"]
+        assert len(s["tests"]) == 3, s["tests"]
+
+    def test_plan_on_simulator():
+        s = z.wait_for(lambda s: s["testing"]["plans"] == ["HelloZ", "Smoke"], timeout=30)
+        assert s["testing"]["plan"] == "HelloZ", s["testing"]
+        z.run("action zcode::ChooseTestPlan", "wait 300", "type Smoke", "keys enter", "wait 300")
+        assert z.dump()["testing"]["plan"] == "Smoke"
+        s = run_tests(z, "keys cmd-u")
+        # Smoke skips LegacyTests/testIncrementTwice().
+        assert "success: true" in s["phase"], s["phase"]
+        assert not any("testIncrementTwice" in t for t in s["tests"]), s["tests"]
+        assert "Passed LegacyTests/testStartsAtZero" in s["tests"], s["tests"]
+        z.run("action zcode::ChooseTestPlan", "wait 300", "type HelloZ", "keys enter", "wait 300")
 
     def run_on_simulator():
         z.run("keys cmd-r")
@@ -415,6 +471,8 @@ def xcode_project_checks(z, samples, sim):
     check("Synchronized folders: New File / Rename / Trash leave project.pbxproj alone", synchronized_folders_untouched)
     if sim:
         check("Unit tests in iOS Simulator (⌘U)", unit_tests_on_simulator)
+        check("Simulator: one test and one suite from gutter diamonds (XCTest scope)", single_tests_on_simulator)
+        check("Simulator: test plan (Smoke) honored by the in-simulator runner", test_plan_on_simulator)
         check("Run on iOS Simulator (⌘R) with console", run_on_simulator)
         check("Debug on iOS Simulator (breakpoint stop)", debug_on_simulator)
 
@@ -492,6 +550,62 @@ def classic_project_checks(z, samples):
     check("Add Files (⌥⌘A): copy a folder in as a group, Sources + Resources", add_files)
     check("xcodebuild builds the edited project (⌘B)", builds)
 
+    suite = os.path.join(root, "HelloClassicTests", "GreeterSuite.swift")
+    xctests = os.path.join(root, "HelloClassicTests", "GreeterTests.swift")
+
+    def gutter_diamonds():
+        z.run(f"open {suite}", "wait 300")
+        s = z.wait_for(lambda s: len(s["testing"]["gutter"]) == 3, timeout=60, interval=0.5)
+        lines = [(d["line"], d["test"]) for d in s["testing"]["gutter"]]
+        assert lines == [
+            (line_of(suite, "struct GreeterSuite"), "HelloClassicTests/GreeterSuite"),
+            (line_of(suite, "func greets"), "HelloClassicTests/GreeterSuite/greets()"),
+            (line_of(suite, "func world"), "HelloClassicTests/GreeterSuite/world()"),
+        ], lines
+        assert all(d["status"] == "NotRun" for d in s["testing"]["gutter"])
+        z.run("screenshot " + os.path.join(WORK, "diamonds.png"))
+
+    def run_one_from_gutter():
+        d = diamond(z, suite, "GreeterSuite/world()")
+        s = run_tests(z, f"click {d['x']} {d['y']}")
+        assert "success: true" in s["phase"], s["phase"]
+        # xcodebuild ran just that test (-only-testing); its display name maps back.
+        assert len(s["tests"]) == 1 and s["tests"][0].startswith("Passed GreeterSuite/") and "world" in s["tests"][0], s["tests"]
+        assert s["testing"]["last"] == "GreeterSuite/world()", s["testing"]
+        assert item_status(s, "GreeterSuite/world()") == "Passed" and item_status(s, "GreeterSuite/greets()") == "NotRun"
+        s = z.wait_for(lambda s: any(d["status"] == "Passed" for d in s["testing"]["gutter"]), timeout=10, interval=0.3)
+        assert [d["status"] for d in s["testing"]["gutter"]] == ["NotRun", "NotRun", "Passed"], s["testing"]["gutter"]
+
+    def test_at_cursor_and_again():
+        s = run_tests(z, f"open {xctests}:{line_of(xctests, 'XCTAssertEqual')}", "wait 300", "keys ctrl-alt-cmd-u")
+        assert s["testing"]["last"] == "GreeterTests/testGreeting", s["testing"]
+        assert item_status(s, "GreeterTests/testGreeting") == "Passed", s["testing"]["items"]
+        assert item_status(s, "HelloClassicTests/GreeterTests") == "Passed", "a class rolls up its tests"
+        s = run_tests(z, "keys ctrl-alt-cmd-g")
+        assert s["testing"]["last"] == "GreeterTests/testGreeting", s["testing"]
+        # The whole class, as the Test navigator's play button runs it.
+        s = run_tests(z, "run-test HelloClassicTests/GreeterSuite")
+        assert s["testing"]["last"] == "GreeterSuite", s["testing"]
+        assert item_status(s, "HelloClassicTests/GreeterSuite") == "Passed", s["testing"]["items"]
+
+    def test_plan():
+        s = z.wait_for(lambda s: s["testing"]["plans"] == ["HelloClassic", "Greeting"], timeout=30)
+        assert s["testing"]["plan"] == "HelloClassic", s["testing"]
+        z.run("action zcode::ChooseTestPlan", "wait 300", "type Greeting", "keys enter", "wait 300")
+        assert z.dump()["testing"]["plan"] == "Greeting"
+        s = run_tests(z, "keys cmd-u")
+        # The Greeting plan selects only GreeterTests (xcodebuild -testPlan).
+        assert "success: true" in s["phase"], s["phase"]
+        assert s["tests"] == ["Passed GreeterTests/testGreeting"] or s["tests"] == ["Passed GreeterTests/testGreeting()"], s["tests"]
+        z.run("action zcode::ChooseTestPlan", "wait 300", "type HelloClassic", "keys enter", "wait 300")
+        z.run("action zcode::ClearTestResults")
+        assert all(i.startswith("NotRun") for i in z.dump()["testing"]["items"])
+
+    check("Test diamonds in the gutter for Swift Testing suites and tests", gutter_diamonds)
+    check("Click a diamond: xcodebuild -only-testing runs one Swift Testing test", run_one_from_gutter)
+    check("Test Selected Items at the cursor (⌃⌥⌘U), Test Again (⌃⌥⌘G), run a suite", test_at_cursor_and_again)
+    check("Test plans: choose Greeting, ⌘U runs only its tests (xcodebuild -testPlan)", test_plan)
+
 
 def package_checks(z, samples):
     kit = os.path.join(samples, "ZKit")
@@ -522,6 +636,41 @@ def package_checks(z, samples):
         z.run(f"open {main}:{loop_line}", "keys cmd-\\", "keys ctrl-cmd-y")
         z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=60)
 
+    tests_dir = os.path.join(kit, "Tests", "ZKitTests")
+    swift_tests = os.path.join(tests_dir, "GreeterTests.swift")
+    xctests = os.path.join(tests_dir, "GreeterXCTests.swift")
+
+    def package_single_tests():
+        d = diamond(z, swift_tests, "ZKitTests/excitedGreeting()")
+        s = run_tests(z, f"click {d['x']} {d['y']}")
+        assert s["tests"] == ["Passed excitedGreeting()"], s["tests"]
+        s = run_tests(z, "run-test ZKitTests/GreeterXCTests")
+        assert s["tests"][-1] == "Passed GreeterXCTests/testPlainGreeting", s["tests"]
+        assert len(s["tests"]) == 2, s["tests"]
+
+    def rerun_failed():
+        original = open(xctests).read()
+        try:
+            with open(xctests, "w") as f:
+                f.write(original.replace('"Hello, C."', '"Hello, D."'))
+            z.run(f"open {xctests}", "wait 3500")  # reloads from disk
+            s = run_tests(z, "keys cmd-u")
+            assert "success: false" in s["phase"], s["phase"]
+            assert item_status(s, "GreeterXCTests/testPlainGreeting") == "Failed", s["testing"]["items"]
+            assert item_status(s, "ZKitTests/plainGreeting()") == "Passed", s["testing"]["items"]
+            with open(xctests, "w") as f:
+                f.write(original)
+            z.wait_for(lambda s: s["active"]["text"] == original, timeout=15, interval=0.5)
+            s = run_tests(z, "action zcode::RerunFailedTests")
+            assert "success: true" in s["phase"], s["phase"]
+            assert s["testing"]["last"] == "GreeterXCTests/testPlainGreeting", s["testing"]
+            assert item_status(s, "GreeterXCTests/testPlainGreeting") == "Passed", s["testing"]["items"]
+        finally:
+            with open(xctests, "w") as f:
+                f.write(original)
+
+    check("Swift package: a test from the gutter and an XCTest class (swift test --filter)", package_single_tests)
+    check("Swift package: re-run failed tests", rerun_failed)
     check("Swift package: Run on My Mac (⌘R)", run_package)
     check("Swift package: Test (⌘U) → Test navigator", test_package)
     check("Swift package: breakpoint, variables, step over (F6)", debug_package)
