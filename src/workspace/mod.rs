@@ -197,6 +197,12 @@ impl Workspace {
                 }
             }),
         ];
+        // Devices are listed while the window is active, and at once when it
+        // becomes active (one may have been plugged in meanwhile).
+        subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
+            let active = window.is_window_active();
+            this.build.update(cx, |build, cx| build.set_window_active(active, cx));
+        }));
         // Only redraw when the displayed memory figure changes.
         subscriptions.push(cx.observe_global::<crate::perf::Perf>(|this, cx| {
             let shown = crate::perf::Perf::global(cx).status_label();
@@ -1188,6 +1194,10 @@ impl Workspace {
                 self.debugger
                     .update(cx, |d, cx| d.start(DebugTarget::Attach { pid }, cx));
             }
+            BuildEvent::AttachDeviceDebugger(attach) => {
+                let target = DebugTarget::AttachDevice(attach.clone());
+                self.debugger.update(cx, |d, cx| d.start(target, cx));
+            }
             BuildEvent::LaunchDebugger { program, cwd, args, env } => {
                 let target = DebugTarget::Launch {
                     program: program.clone(),
@@ -1420,6 +1430,11 @@ impl Workspace {
 
     pub fn open_issue(&mut self, issue: &Issue, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = issue.path.clone() else { return };
+        // Project-level issues (signing) are fixed in the project settings.
+        if path.extension().is_some_and(|e| e == "xcodeproj" || e == "xcworkspace") {
+            self.open_project_settings(window, cx);
+            return;
+        }
         let target = Target::Line {
             line: issue.line.unwrap_or(1).saturating_sub(1),
             column: issue.column.unwrap_or(1).saturating_sub(1),
@@ -1728,6 +1743,8 @@ impl Workspace {
             "configuration": build.configuration,
             "destination": build.destination.as_ref().map(|d| format!("{} ({})", d.name, d.runtime)),
             "destinations": build.destinations.len(),
+            // The menu as shown: section, item and the picker's detail.
+            "destination_menu": build.destinations.iter().map(|d| format!("{} | {} | {}", d.group(), d.menu_label(), d.detail())).collect::<Vec<_>>(),
             "phase": format!("{:?}", build.phase),
             "indexing": build.indexing,
             "issues": issues.iter().map(|i| format!("{:?} {}:{} {}", i.severity, i.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), i.line.unwrap_or(0), i.message)).collect::<Vec<_>>(),

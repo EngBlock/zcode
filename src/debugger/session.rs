@@ -65,6 +65,8 @@ pub enum DebuggerEvent {
 pub enum Target {
     Launch { program: PathBuf, cwd: PathBuf, args: Vec<String>, env: Vec<(String, String)> },
     Attach { pid: i32 },
+    /// An app launched suspended on a physical device.
+    AttachDevice(crate::build::devices::Attach),
 }
 
 /// Which breakpoints a sync sends to lldb-dap.
@@ -102,6 +104,12 @@ pub struct Debugger {
     pub variables: Vec<Variable>,
     client: Option<Arc<DapClient>>,
     exit_code: Option<i64>,
+    /// A device app launched suspended reports its pending SIGSTOP once
+    /// resumed; that stop is continued rather than shown.
+    resume_launch_stop: bool,
+    /// lldb-dap sent `initialized`: stops before it are the attach's own,
+    /// and lldb-dap resumes from them after `configurationDone`.
+    initialized: bool,
     _event_task: Option<Task<()>>,
     _fetch_task: Option<Task<()>>,
 }
@@ -124,6 +132,8 @@ impl Default for Debugger {
             variables: vec![],
             client: None,
             exit_code: None,
+            resume_launch_stop: false,
+            initialized: false,
             _event_task: None,
             _fetch_task: None,
         }
@@ -428,12 +438,15 @@ impl Debugger {
         };
         self.client = Some(client.clone());
 
+        self.resume_launch_stop = matches!(target, Target::AttachDevice(_));
+        self.initialized = false;
         let (command, args) = match target {
             Target::Launch { program, cwd, args, env } => {
                 let env: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
                 ("launch", json!({ "program": program, "cwd": cwd, "args": args, "env": env, "stopOnEntry": false }))
             }
             Target::Attach { pid } => ("attach", json!({ "pid": pid })),
+            Target::AttachDevice(attach) => ("attach", attach.dap_arguments()),
         };
         let initialize = client.request("initialize", initialize_args());
         let session = client.clone();
@@ -479,6 +492,7 @@ impl Debugger {
         match event {
             DapEvent::Event { event, body } => match event.as_str() {
                 "initialized" => {
+                    self.initialized = true;
                     let requests = self.all_sync_requests(&client);
                     // configurationDone after every breakpoint is set.
                     let done = client.clone();
@@ -486,6 +500,25 @@ impl Debugger {
                     self.run_sync(requests, Some(then), cx);
                 }
                 "stopped" => {
+                    if self.resume_launch_stop {
+                        // lldb-dap reports the attach's stop (sometimes
+                        // without a thread) and may then report the
+                        // launch's pending SIGSTOP once it resumes.
+                        let thread = body.get("threadId").and_then(Value::as_i64).unwrap_or(0);
+                        if thread == 0 || !self.initialized {
+                            return;
+                        }
+                        if body.get("description").and_then(Value::as_str) == Some("signal SIGSTOP") {
+                            self.resume_launch_stop = false;
+                            let resume = client.request("continue", json!({ "threadId": thread }));
+                            cx.background_spawn(async move {
+                                resume.await.ok();
+                            })
+                            .detach();
+                            return;
+                        }
+                        self.resume_launch_stop = false;
+                    }
                     let thread_id = body
                         .get("threadId")
                         .and_then(Value::as_i64)
@@ -776,7 +809,11 @@ impl Debugger {
     pub fn continue_or_pause(&mut self, cx: &mut Context<Self>) {
         match self.state {
             DebugState::Stopped { .. } => self.send("continue", cx),
-            DebugState::Running => self.send("pause", cx),
+            DebugState::Running => {
+                // The stop that follows is the user's, not the launch's.
+                self.resume_launch_stop = false;
+                self.send("pause", cx)
+            }
             _ => {}
         }
     }

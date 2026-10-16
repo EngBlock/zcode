@@ -1,0 +1,37 @@
+{
+  "info" : {
+    "arguments" : [
+      "devicectl",
+      "device",
+      "install",
+      "app",
+      "--device",
+      "00008150-0000000000000001",
+      "dd/Build/Products/Debug-iphoneos/HelloZ.app",
+      "--json-output",
+      "/tmp/install.json"
+    ],
+    "commandType" : "devicectl.device.install.app",
+    "environment" : {
+
+    },
+    "jsonVersion" : 5,
+    "outcome" : "success",
+    "version" : "642.15"
+  },
+  "result" : {
+    "deviceIdentifier" : "FAD3EBA8-0000-0000-0000-000000000001",
+    "installedApplications" : [
+      {
+        "bundleID" : "dev.zcode.HelloZ",
+        "databaseSequenceNumber" : 3980,
+        "databaseUUID" : "F09F5E20-7452-4017-8B93-1E57FAE3C4A0",
+        "installationURL" : "file:///private/var/containers/Bundle/Application/431CB3DB-0000-0000-0000-000000000000/HelloZ.app/",
+        "launchServicesIdentifier" : "unknown",
+        "options" : {
+
+        }
+      }
+    ]
+  }
+}

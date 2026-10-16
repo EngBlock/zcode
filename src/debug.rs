@@ -19,6 +19,7 @@
 //!   inspect <path>             show the File inspector for a file or folder
 //!   membership <target> on|off toggle a Target Membership checkbox in the inspector
 //!   run-test <Target/Class/test> run a test, class or target as the Test navigator's play button does
+//!   destination <name|id>     choose a run destination, as its menu item does
 //!   edit-scheme <field> [<value>]  edit the open scheme editor (see `EditSchemeDialog::set_field`)
 //!   breakpoint <field> [<value>]   edit the open breakpoint editor (see `BreakpointEditor::set_field`)
 //!   console <command>          run a command at the LLDB console's prompt
@@ -267,6 +268,20 @@ fn run_command(
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.run_test_named(arg, window, cx)))
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
+        }
+        "destination" => {
+            // A run destination by name or id, as choosing it in the menu does.
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            let build = workspace.read(cx).build.clone();
+            let destination = build
+                .read(cx)
+                .destinations
+                .iter()
+                .find(|d| d.id == arg || d.name == arg)
+                .cloned()
+                .ok_or(format!("no destination {arg}"))?;
+            build.update(cx, |build, cx| build.set_destination(destination, cx));
+            Ok(String::new())
         }
         "membership" => {
             let (target, state) = arg.rsplit_once(' ').ok_or("usage: membership <target> on|off")?;

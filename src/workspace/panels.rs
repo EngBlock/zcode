@@ -96,23 +96,16 @@ impl Workspace {
                 let state = build_entity.read(cx);
                 let current = state.destination.as_ref().map(|d| d.id.clone());
                 let mut menu = menu.scrollable(true).max_h(px(480.));
-                let mut last_runtime = String::new();
+                let mut last_group = String::new();
                 for destination in state.destinations.clone() {
-                    if destination.runtime != last_runtime {
-                        last_runtime = destination.runtime.clone();
-                        menu = menu.label(if destination.platform.is_simulator() {
-                            format!("{} Simulators", destination.runtime)
-                        } else {
-                            "My Mac".to_string()
-                        });
+                    let group = destination.group();
+                    if group != last_group {
+                        menu = menu.label(group.clone());
+                        last_group = group;
                     }
                     let checked = current.as_ref() == Some(&destination.id);
                     let build = build_entity.clone();
-                    let label = if destination.booted && destination.platform.is_simulator() {
-                        format!("{} (Booted)", destination.name)
-                    } else {
-                        destination.name.clone()
-                    };
+                    let label = destination.menu_label();
                     let icon = destination_icon(&destination);
                     menu = menu.item(PopupMenuItem::new(label).icon(icon).checked(checked).on_click(
                         move |_, _, cx| {

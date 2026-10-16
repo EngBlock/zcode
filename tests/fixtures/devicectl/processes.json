@@ -1,0 +1,81 @@
+{
+  "info": {
+    "arguments": [
+      "devicectl",
+      "device",
+      "info",
+      "processes",
+      "--device",
+      "00008150-0000000000000001",
+      "--json-output",
+      "/tmp/procs.json",
+      "-q"
+    ],
+    "commandType": "devicectl.device.info.processes",
+    "environment": {},
+    "jsonVersion": 5,
+    "outcome": "success",
+    "version": "642.15"
+  },
+  "result": {
+    "deviceIdentifier": "FAD3EBA8-0000-0000-0000-000000000001",
+    "runningProcesses": [
+      {
+        "executable": "file:///sbin/launchd",
+        "processIdentifier": 1
+      },
+      {
+        "executable": "file:///usr/libexec/UserEventAgent",
+        "processIdentifier": 61761
+      },
+      {
+        "executable": "file:///usr/libexec/logd",
+        "processIdentifier": 61763
+      },
+      {
+        "executable": "file:///usr/libexec/runningboardd",
+        "processIdentifier": 61764
+      },
+      {
+        "executable": "file:///System/Library/CoreServices/SpringBoard.app/SpringBoard",
+        "processIdentifier": 61765
+      },
+      {
+        "executable": "file:///System/Library/PrivateFrameworks/AssistantServices.framework/assistantd",
+        "processIdentifier": 61767
+      },
+      {
+        "executable": "file:///usr/libexec/routined",
+        "processIdentifier": 61768
+      },
+      {
+        "executable": "file:///System/Library/PrivateFrameworks/MediaRemote.framework/Support/mediaremoted",
+        "processIdentifier": 61769
+      },
+      {
+        "executable": "file:///System/Library/Frameworks/Accounts.framework/accountsd",
+        "processIdentifier": 61770
+      },
+      {
+        "executable": "file:///System/Library/PrivateFrameworks/AXAssetLoader.framework/Support/axassetsd",
+        "processIdentifier": 61771
+      },
+      {
+        "executable": "file:///usr/libexec/configd",
+        "processIdentifier": 61776
+      },
+      {
+        "executable": "file:///System/Library/PrivateFrameworks/TCC.framework/Support/tccd",
+        "processIdentifier": 61779
+      },
+      {
+        "executable": "file:///private/var/containers/Bundle/Application/431CB3DB-0000-0000-0000-000000000000/HelloZ.app/HelloZ",
+        "processIdentifier": 90947
+      },
+      {
+        "executable": "file:///private/var/containers/Bundle/Application/431CB3DB-0000-0000-0000-000000000000/HelloZExtras.app/HelloZExtras",
+        "processIdentifier": 90950
+      }
+    ]
+  }
+}

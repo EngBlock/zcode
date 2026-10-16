@@ -592,12 +592,16 @@ impl PickerDelegate for SchemeDelegate {
 pub fn destination_icon(destination: &Destination) -> IconName {
     match destination.platform {
         Platform::MacOS => IconName::Laptop,
-        Platform::IOSSimulator if destination.name.contains("iPad") => IconName::Tablet,
-        Platform::IOSSimulator => IconName::Smartphone,
-        Platform::WatchOSSimulator => IconName::Watch,
-        Platform::TvOSSimulator => IconName::Tv,
-        Platform::VisionOSSimulator => IconName::Glasses,
+        Platform::IOSSimulator | Platform::IOS if is_ipad(destination) => IconName::Tablet,
+        Platform::IOSSimulator | Platform::IOS => IconName::Smartphone,
+        Platform::WatchOSSimulator | Platform::WatchOS => IconName::Watch,
+        Platform::TvOSSimulator | Platform::TvOS => IconName::Tv,
+        Platform::VisionOSSimulator | Platform::VisionOS => IconName::Glasses,
     }
+}
+
+fn is_ipad(destination: &Destination) -> bool {
+    destination.name.contains("iPad") || destination.device.as_ref().is_some_and(|d| d.model.contains("iPad"))
 }
 
 pub struct DestinationDelegate {
@@ -651,14 +655,7 @@ impl PickerDelegate for DestinationDelegate {
                 let name_len = d.name.chars().count();
                 PickerItem {
                     label: d.name.clone().into(),
-                    detail: Some(
-                        if d.booted && d.platform.is_simulator() {
-                            format!("{} · Booted", d.runtime)
-                        } else {
-                            d.runtime.clone()
-                        }
-                        .into(),
-                    ),
+                    detail: Some(d.detail().into()),
                     icon: Some(destination_icon(d)),
                     positions: m.positions.into_iter().filter(|&p| p < name_len).collect(),
                     checked: self.current.as_ref() == Some(&d.id),

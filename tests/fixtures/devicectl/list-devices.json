@@ -1,0 +1,1206 @@
+{
+  "info": {
+    "arguments": [
+      "devicectl",
+      "list",
+      "devices",
+      "--json-output",
+      "list-devices.json"
+    ],
+    "commandType": "devicectl.list.devices",
+    "environment": {},
+    "jsonVersion": 5,
+    "outcome": "success",
+    "version": "642.15"
+  },
+  "result": {
+    "devices": [
+      {
+        "_deprecationNotice": {
+          "deprecatedFields": [
+            "hardwareProperties",
+            "deviceProperties",
+            "connectionProperties"
+          ],
+          "message": "The 'hardwareProperties', 'deviceProperties', 'connectionProperties' fields are deprecated and will be removed in a future release. Use the 'properties' dictionary instead.",
+          "replacement": "properties"
+        },
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.acquireusageassertion",
+            "name": "Acquire Usage Assertion"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.connectdevice",
+            "name": "Connect to Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.default.user.credentials",
+            "name": "Modify Credentials for Default Users for a Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.tags",
+            "name": "Modify Tags"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.unpairdevice",
+            "name": "Unpair Device"
+          }
+        ],
+        "connectionProperties": {
+          "authenticationType": "manualPairing",
+          "isMobileDeviceOnly": false,
+          "lastConnectionDate": "2026-10-16T11:05:00.000Z",
+          "pairingState": "paired",
+          "potentialHostnames": [
+            "Test-iPhone.coredevice.local",
+            "FAD3EBA8-0000-0000-0000-000000000001.coredevice.local",
+            "00008150-0000000000000001.coredevice.local"
+          ],
+          "transportType": "localNetwork",
+          "tunnelState": "connected",
+          "tunnelTransportProtocol": "tcp"
+        },
+        "deviceProperties": {
+          "bootState": "booted",
+          "bootedFromSnapshot": true,
+          "bootedSnapshotName": "com.apple.os.update-0A2C77018F3009C16212202CADDA1506F539D4224F9D16584DA2AD9EA8AC289D",
+          "ddiServicesAvailable": false,
+          "developerModeStatus": "enabled",
+          "hasInternalOSBuild": false,
+          "name": "Test iPhone",
+          "osBuildUpdate": "24B5084k",
+          "osVersionNumber": "27.2",
+          "releaseType": "Beta",
+          "rootFileSystemIsWritable": false,
+          "supportsCheckedAllocations": true
+        },
+        "hardwareProperties": {
+          "cpuType": {
+            "name": "arm64e",
+            "subType": -2147483646,
+            "type": 16777228
+          },
+          "deviceType": "iPhone",
+          "ecid": 1001,
+          "hardwareModel": "V53AP",
+          "internalStorageCapacity": 256000000000,
+          "isProductionFused": true,
+          "marketingName": "iPhone 17 Pro",
+          "platform": "iOS",
+          "productType": "iPhone18,1",
+          "reality": "physical",
+          "serialNumber": "SERIAL0001",
+          "supportedCPUTypes": [
+            {
+              "name": "arm64e",
+              "subType": -2147483646,
+              "type": 16777228
+            },
+            {
+              "name": "arm64",
+              "subType": 0,
+              "type": 16777228
+            }
+          ],
+          "supportedDeviceFamilies": [
+            1
+          ],
+          "thinningProductType": "iPhone18,1",
+          "udid": "00008150-0000000000000001"
+        },
+        "identifier": "FAD3EBA8-0000-0000-0000-000000000001",
+        "properties": {
+          "connection": {
+            "authenticationType": "manualPairing",
+            "lastConnectionDate": 813847500,
+            "pairingState": "paired",
+            "screenViewingURL": {
+              "relative": "devices://device/open?id=FAD3EBA8-0000-0000-0000-000000000001"
+            },
+            "state": "connected",
+            "transportType": "localNetwork",
+            "tunnelTransportProtocol": "tcp"
+          },
+          "hardware": {
+            "cpuCount": {
+              "logicalCores": 6,
+              "packages": 1,
+              "physicalCores": 6
+            },
+            "cpuType": {
+              "subtype": 18446744071562067970,
+              "type": 16777228
+            },
+            "deviceType": "iPhone",
+            "ecid": 1001,
+            "hasActionButton": true,
+            "internalStorageCapacity": 256000000000,
+            "marketingName": "iPhone 17 Pro",
+            "platform": "iOS",
+            "productType": "iPhone18,1",
+            "reality": "physical",
+            "serialNumber": "SERIAL0001",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 18446744071562067970,
+                "type": 16777228
+              },
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportedDeviceFamilies": [
+              1
+            ],
+            "supportsSiri": true,
+            "thinningProductType": "iPhone18,1",
+            "udid": "00008150-0000000000000001"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              },
+              "supplementalBuildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                27,
+                2,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "27.2"
+            },
+            "supportsCheckedAllocations": true
+          },
+          "state": {
+            "bootState": "booted",
+            "developerModeStatus": {
+              "enabled": {
+                "mode": 1
+              }
+            },
+            "name": "Test iPhone",
+            "preparednessState": 7
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "default"
+      },
+      {
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.acquireusageassertion",
+            "name": "Acquire Usage Assertion"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.applicationcontrol",
+            "name": "Application Control"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.capturescreenshot",
+            "name": "Capture Screenshot"
+          }
+        ],
+        "identifier": "FAD3EBA8-0000-0000-0000-000000000002",
+        "properties": {
+          "connection": {
+            "authenticationType": "manualPairing",
+            "lastConnectionDate": 813847500,
+            "pairingState": "paired",
+            "screenViewingURL": {
+              "relative": "devices://device/open?id=FAD3EBA8-0000-0000-0000-000000000002"
+            },
+            "state": "connected",
+            "transportType": "wired",
+            "tunnelTransportProtocol": "tcp"
+          },
+          "hardware": {
+            "cpuCount": {
+              "logicalCores": 6,
+              "packages": 1,
+              "physicalCores": 6
+            },
+            "cpuType": {
+              "subtype": 18446744071562067970,
+              "type": 16777228
+            },
+            "deviceType": "iPhone",
+            "ecid": 1002,
+            "hasActionButton": true,
+            "internalStorageCapacity": 256000000000,
+            "marketingName": "iPad Pro (11-inch) (M4)",
+            "platform": "iOS",
+            "productType": "iPad16,3",
+            "reality": "physical",
+            "serialNumber": "SERIAL0002",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 18446744071562067970,
+                "type": 16777228
+              },
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportedDeviceFamilies": [
+              2
+            ],
+            "supportsSiri": true,
+            "udid": "00008112-0000000000000002"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              },
+              "supplementalBuildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                26,
+                4,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "26.4"
+            },
+            "supportsCheckedAllocations": true
+          },
+          "state": {
+            "bootState": "booted",
+            "developerModeStatus": {
+              "disabled": {}
+            },
+            "name": "Test iPad",
+            "preparednessState": 7
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "default"
+      },
+      {
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.acquireusageassertion",
+            "name": "Acquire Usage Assertion"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.applicationcontrol",
+            "name": "Application Control"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.capturescreenshot",
+            "name": "Capture Screenshot"
+          }
+        ],
+        "identifier": "FAD3EBA8-0000-0000-0000-000000000003",
+        "properties": {
+          "connection": {
+            "authenticationType": "manualPairing",
+            "lastConnectionDate": 813847500,
+            "pairingState": "unpaired",
+            "screenViewingURL": {
+              "relative": "devices://device/open?id=FAD3EBA8-0000-0000-0000-000000000003"
+            },
+            "state": "disconnected",
+            "transportType": "localNetwork",
+            "tunnelTransportProtocol": "tcp"
+          },
+          "hardware": {
+            "cpuCount": {
+              "logicalCores": 6,
+              "packages": 1,
+              "physicalCores": 6
+            },
+            "cpuType": {
+              "subtype": 18446744071562067970,
+              "type": 16777228
+            },
+            "deviceType": "iPhone",
+            "ecid": 1003,
+            "hasActionButton": true,
+            "internalStorageCapacity": 256000000000,
+            "marketingName": "Apple Watch Series 11",
+            "platform": "watchOS",
+            "productType": "Watch8,1",
+            "reality": "physical",
+            "serialNumber": "SERIAL0003",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 18446744071562067970,
+                "type": 16777228
+              },
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportedDeviceFamilies": [
+              4
+            ],
+            "supportsSiri": true,
+            "udid": "00008310-0000000000000003"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              },
+              "supplementalBuildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                27,
+                0,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "27.0"
+            },
+            "supportsCheckedAllocations": true
+          },
+          "state": {
+            "bootState": "booted",
+            "developerModeStatus": {
+              "enabled": {
+                "mode": 1
+              }
+            },
+            "name": "Test Watch",
+            "preparednessState": 7
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "default"
+      },
+      {
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.acquireusageassertion",
+            "name": "Acquire Usage Assertion"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.applicationcontrol",
+            "name": "Application Control"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.capturescreenshot",
+            "name": "Capture Screenshot"
+          }
+        ],
+        "identifier": "FAD3EBA8-0000-0000-0000-000000000004",
+        "properties": {
+          "connection": {
+            "authenticationType": "manualPairing",
+            "lastConnectionDate": 813847500,
+            "pairingState": "paired",
+            "screenViewingURL": {
+              "relative": "devices://device/open?id=FAD3EBA8-0000-0000-0000-000000000004"
+            },
+            "state": "connected",
+            "transportType": "wired",
+            "tunnelTransportProtocol": "tcp"
+          },
+          "hardware": {
+            "cpuCount": {
+              "logicalCores": 6,
+              "packages": 1,
+              "physicalCores": 6
+            },
+            "cpuType": {
+              "subtype": 18446744071562067970,
+              "type": 16777228
+            },
+            "deviceType": "iPhone",
+            "ecid": 1004,
+            "hasActionButton": true,
+            "internalStorageCapacity": 256000000000,
+            "marketingName": "iPhone 17 Pro",
+            "platform": "iOS",
+            "productType": "iPhone18,1",
+            "reality": "physical",
+            "serialNumber": "SERIAL0004",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 18446744071562067970,
+                "type": 16777228
+              },
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportedDeviceFamilies": [
+              1
+            ],
+            "supportsSiri": true,
+            "udid": "00008150-0000000000000004"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              },
+              "supplementalBuildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                27,
+                2,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "27.2"
+            },
+            "supportsCheckedAllocations": true
+          },
+          "state": {
+            "bootState": "booted",
+            "developerModeStatus": {
+              "enabled": {
+                "mode": 1
+              }
+            },
+            "name": "Test iPhone (USB)",
+            "preparednessState": 7
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "default"
+      },
+      {
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.acquireusageassertion",
+            "name": "Acquire Usage Assertion"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.applicationcontrol",
+            "name": "Application Control"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.capturescreenshot",
+            "name": "Capture Screenshot"
+          }
+        ],
+        "identifier": "FAD3EBA8-0000-0000-0000-000000000005",
+        "properties": {
+          "connection": {
+            "authenticationType": "manualPairing",
+            "lastConnectionDate": 813847500,
+            "pairingState": "paired",
+            "state": "disconnected"
+          },
+          "hardware": {
+            "cpuCount": {
+              "logicalCores": 6,
+              "packages": 1,
+              "physicalCores": 6
+            },
+            "cpuType": {
+              "subtype": 18446744071562067970,
+              "type": 16777228
+            },
+            "deviceType": "iPhone",
+            "ecid": 1005,
+            "hasActionButton": true,
+            "internalStorageCapacity": 256000000000,
+            "marketingName": "iPhone 11",
+            "platform": "iOS",
+            "productType": "iPhone12,1",
+            "reality": "physical",
+            "serialNumber": "SERIAL0005",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 18446744071562067970,
+                "type": 16777228
+              },
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportedDeviceFamilies": [
+              1
+            ],
+            "supportsSiri": true,
+            "udid": "00008030-0000000000000005"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              },
+              "supplementalBuildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                18,
+                6,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "18.6"
+            },
+            "supportsCheckedAllocations": true
+          },
+          "state": {
+            "bootState": "booted",
+            "developerModeStatus": {
+              "enabled": {
+                "mode": 1
+              }
+            },
+            "name": "Old iPhone",
+            "preparednessState": 7
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "default"
+      },
+      {
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.acquireusageassertion",
+            "name": "Acquire Usage Assertion"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.applicationcontrol",
+            "name": "Application Control"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.capturescreenshot",
+            "name": "Capture Screenshot"
+          }
+        ],
+        "identifier": "FAD3EBA8-0000-0000-0000-000000000006",
+        "properties": {
+          "connection": {
+            "authenticationType": "manualPairing",
+            "lastConnectionDate": 813847500,
+            "pairingState": "paired",
+            "screenViewingURL": {
+              "relative": "devices://device/open?id=FAD3EBA8-0000-0000-0000-000000000006"
+            },
+            "state": "connected",
+            "transportType": "localNetwork",
+            "tunnelTransportProtocol": "tcp"
+          },
+          "hardware": {
+            "cpuCount": {
+              "logicalCores": 6,
+              "packages": 1,
+              "physicalCores": 6
+            },
+            "cpuType": {
+              "subtype": 18446744071562067970,
+              "type": 16777228
+            },
+            "deviceType": "iPhone",
+            "ecid": 1006,
+            "hasActionButton": true,
+            "internalStorageCapacity": 256000000000,
+            "marketingName": "Apple TV 4K (3rd generation)",
+            "platform": "tvOS",
+            "productType": "AppleTV14,1",
+            "reality": "physical",
+            "serialNumber": "SERIAL0006",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 18446744071562067970,
+                "type": 16777228
+              },
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportedDeviceFamilies": [
+              3
+            ],
+            "supportsSiri": true,
+            "udid": "00008110-0000000000000006"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              },
+              "supplementalBuildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                27,
+                0,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "27.0"
+            },
+            "supportsCheckedAllocations": true
+          },
+          "state": {
+            "bootState": "booted",
+            "name": "Living Room",
+            "preparednessState": 7
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "default"
+      },
+      {
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.acquireusageassertion",
+            "name": "Acquire Usage Assertion"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.applicationcontrol",
+            "name": "Application Control"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.capturescreenshot",
+            "name": "Capture Screenshot"
+          }
+        ],
+        "identifier": "FAD3EBA8-0000-0000-0000-000000000007",
+        "properties": {
+          "connection": {
+            "authenticationType": "manualPairing",
+            "lastConnectionDate": 813847500,
+            "pairingState": "paired",
+            "screenViewingURL": {
+              "relative": "devices://device/open?id=FAD3EBA8-0000-0000-0000-000000000007"
+            },
+            "state": "connected",
+            "transportType": "localNetwork",
+            "tunnelTransportProtocol": "tcp"
+          },
+          "hardware": {
+            "cpuCount": {
+              "logicalCores": 6,
+              "packages": 1,
+              "physicalCores": 6
+            },
+            "cpuType": {
+              "subtype": 18446744071562067970,
+              "type": 16777228
+            },
+            "deviceType": "iPhone",
+            "ecid": 1007,
+            "hasActionButton": true,
+            "internalStorageCapacity": 256000000000,
+            "marketingName": "Apple Vision Pro",
+            "platform": "xrOS",
+            "productType": "RealityDevice14,1",
+            "reality": "physical",
+            "serialNumber": "SERIAL0007",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 18446744071562067970,
+                "type": 16777228
+              },
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportedDeviceFamilies": [
+              7
+            ],
+            "supportsSiri": true,
+            "udid": "00008112-0000000000000007"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              },
+              "supplementalBuildVersion": {
+                "majorLetterComponent": "B",
+                "majorNumberComponent": 24,
+                "name": "24B5084k",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    2,
+                    84,
+                    5,
+                    11
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.2.84.5.11"
+                },
+                "trainProgram": "iOS",
+                "updateLetterComponent": "k",
+                "updateNumberComponent": 5084
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                27,
+                0,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "27.0"
+            },
+            "supportsCheckedAllocations": true
+          },
+          "state": {
+            "bootState": "booted",
+            "developerModeStatus": {
+              "enabled": {
+                "mode": 1
+              }
+            },
+            "name": "Test Vision Pro",
+            "preparednessState": 7
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "default"
+      },
+      {
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.applicationcontrol",
+            "name": "Application Control"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.audioinput",
+            "name": "Audio Input Device Selection"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.audiooutput",
+            "name": "Audio Output Device Selection"
+          }
+        ],
+        "identifier": "949CEA5F-3D19-4BBF-8817-53DF2324094D",
+        "properties": {
+          "connection": {
+            "authenticationType": "implicit",
+            "lastConnectionDate": 813802615,
+            "pairingState": "paired",
+            "state": "connected",
+            "transportType": "sameMachine"
+          },
+          "hardware": {
+            "cpuType": {
+              "subtype": 0,
+              "type": 16777228
+            },
+            "deviceType": "iPhone",
+            "hasActionButton": true,
+            "marketingName": "iPhone 17",
+            "platform": "iOS",
+            "productType": "iPhone18,3",
+            "reality": "simulated",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportsSiri": true,
+            "udid": "949CEA5F-3D19-4BBF-8817-53DF2324094D"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "A",
+                "majorNumberComponent": 24,
+                "name": "24A5390f",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    1,
+                    390,
+                    5,
+                    6
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.1.390.5.6"
+                },
+                "updateLetterComponent": "f",
+                "updateNumberComponent": 5390
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                27,
+                0,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "27.0"
+            }
+          },
+          "state": {
+            "bootState": "booted",
+            "name": "iPhone 17",
+            "preparednessState": 15,
+            "visibilityClass": "simulators"
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "simulators"
+      },
+      {
+        "capabilities": [
+          {
+            "featureIdentifier": "com.apple.dt.coredevice.device.boot",
+            "name": "Boot Device"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.companiondevicepairing",
+            "name": "Companion Device Pairing"
+          },
+          {
+            "featureIdentifier": "com.apple.coredevice.feature.default.user.credentials",
+            "name": "Modify Credentials for Default Users for a Device"
+          }
+        ],
+        "identifier": "B7BDBB60-14A1-4F69-97E6-3B795B671685",
+        "properties": {
+          "connection": {
+            "authenticationType": "implicit",
+            "lastConnectionDate": 813846242,
+            "pairingState": "paired",
+            "state": "disconnected",
+            "transportType": "sameMachine"
+          },
+          "hardware": {
+            "cpuType": {
+              "subtype": 0,
+              "type": 16777228
+            },
+            "deviceType": "iPhone",
+            "hasActionButton": true,
+            "marketingName": "iPhone 17 Pro",
+            "platform": "iOS",
+            "productType": "iPhone18,1",
+            "reality": "simulated",
+            "supportedBiometrics": [
+              "faceID"
+            ],
+            "supportedCPUTypes": [
+              {
+                "subtype": 0,
+                "type": 16777228
+              }
+            ],
+            "supportsSiri": true,
+            "udid": "B7BDBB60-14A1-4F69-97E6-3B795B671685"
+          },
+          "software": {
+            "osBuildVersions": {
+              "buildVersion": {
+                "majorLetterComponent": "A",
+                "majorNumberComponent": 24,
+                "name": "24A5390f",
+                "revisionVersion": {
+                  "components": [
+                    24,
+                    1,
+                    390,
+                    5,
+                    6
+                  ],
+                  "originalComponentsCount": 5,
+                  "stringValue": "24.1.390.5.6"
+                },
+                "updateLetterComponent": "f",
+                "updateNumberComponent": 5390
+              }
+            },
+            "osVersionNumber": {
+              "components": [
+                27,
+                0,
+                0,
+                0,
+                0
+              ],
+              "originalComponentsCount": 2,
+              "stringValue": "27.0"
+            }
+          },
+          "state": {
+            "bootState": "shutdown",
+            "name": "iPhone 17 Pro",
+            "preparednessState": 0,
+            "visibilityClass": "simulators"
+          }
+        },
+        "propertyDisplayNames": null,
+        "visibilityClass": "simulators"
+      }
+    ]
+  }
+}

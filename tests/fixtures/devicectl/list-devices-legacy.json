@@ -1,0 +1,80 @@
+{
+  "info": {
+    "arguments": [
+      "devicectl",
+      "list",
+      "devices",
+      "--json-output",
+      "list-devices-legacy.json"
+    ],
+    "commandType": "devicectl.list.devices",
+    "environment": {},
+    "jsonVersion": 2,
+    "outcome": "success",
+    "version": "355.28"
+  },
+  "result": {
+    "devices": [
+      {
+        "capabilities": [],
+        "connectionProperties": {
+          "authenticationType": "manualPairing",
+          "isMobileDeviceOnly": false,
+          "pairingState": "paired",
+          "potentialHostnames": [],
+          "transportType": "wired",
+          "tunnelState": "connected",
+          "tunnelTransportProtocol": "tcp"
+        },
+        "deviceProperties": {
+          "bootState": "booted",
+          "ddiServicesAvailable": true,
+          "developerModeStatus": "enabled",
+          "name": "Legacy iPhone",
+          "osBuildUpdate": "21F90",
+          "osVersionNumber": "17.5"
+        },
+        "hardwareProperties": {
+          "deviceType": "iPhone",
+          "marketingName": "iPhone 15",
+          "platform": "iOS",
+          "productType": "iPhone15,4",
+          "reality": "physical",
+          "udid": "00008120-0000000000000011"
+        },
+        "identifier": "LEGACY00-0000-0000-0000-000000000001",
+        "visibilityClass": "default"
+      },
+      {
+        "capabilities": [],
+        "connectionProperties": {
+          "authenticationType": "manualPairing",
+          "isMobileDeviceOnly": false,
+          "pairingState": "paired",
+          "potentialHostnames": [],
+          "transportType": "localNetwork",
+          "tunnelState": "connected",
+          "tunnelTransportProtocol": "tcp"
+        },
+        "deviceProperties": {
+          "bootState": "booted",
+          "ddiServicesAvailable": true,
+          "developerModeStatus": "disabled",
+          "name": "Legacy iPhone 2",
+          "osBuildUpdate": "21F90",
+          "osVersionNumber": "17.4"
+        },
+        "hardwareProperties": {
+          "deviceType": "iPhone",
+          "marketingName": "iPhone 15",
+          "platform": "iOS",
+          "productType": "iPhone15,4",
+          "reality": "physical",
+          "udid": "00008120-0000000000000012"
+        },
+        "identifier": "LEGACY00-0000-0000-0000-000000000002",
+        "visibilityClass": "default"
+      }
+    ]
+  }
+}

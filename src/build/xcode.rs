@@ -28,6 +28,10 @@ pub enum Platform {
     WatchOSSimulator,
     TvOSSimulator,
     VisionOSSimulator,
+    IOS,
+    WatchOS,
+    TvOS,
+    VisionOS,
 }
 
 impl Platform {
@@ -38,23 +42,103 @@ impl Platform {
             Self::WatchOSSimulator => "watchsimulator",
             Self::TvOSSimulator => "appletvsimulator",
             Self::VisionOSSimulator => "xrsimulator",
+            Self::IOS => "iphoneos",
+            Self::WatchOS => "watchos",
+            Self::TvOS => "appletvos",
+            Self::VisionOS => "xros",
+        }
+    }
+
+    /// The OS name Xcode shows ("iOS", "visionOS").
+    pub fn os_name(&self) -> &'static str {
+        match self {
+            Self::MacOS => "macOS",
+            Self::IOSSimulator | Self::IOS => "iOS",
+            Self::WatchOSSimulator | Self::WatchOS => "watchOS",
+            Self::TvOSSimulator | Self::TvOS => "tvOS",
+            Self::VisionOSSimulator | Self::VisionOS => "visionOS",
         }
     }
 
     pub fn is_simulator(&self) -> bool {
-        !matches!(self, Self::MacOS)
+        matches!(self, Self::IOSSimulator | Self::WatchOSSimulator | Self::TvOSSimulator | Self::VisionOSSimulator)
     }
+
+    /// iOS, watchOS, tvOS or visionOS hardware.
+    pub fn is_device(&self) -> bool {
+        matches!(self, Self::IOS | Self::WatchOS | Self::TvOS | Self::VisionOS)
+    }
+
+    pub const DEVICES: [Platform; 4] = [Self::IOS, Self::WatchOS, Self::TvOS, Self::VisionOS];
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Destination {
-    /// Simulator UDID, or "mac" for My Mac.
+    /// Simulator or device UDID, "mac" for My Mac, "generic:<os>" for Any
+    /// <os> Device.
     pub id: String,
     pub name: String,
     pub platform: Platform,
     /// e.g. "iOS 27.0".
     pub runtime: String,
     pub booted: bool,
+    /// A physical device's connection, from devicectl.
+    pub device: Option<Device>,
+}
+
+/// What devicectl tells about a physical device.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Device {
+    /// CoreDevice's identifier, which lldb's `device select` takes.
+    pub identifier: String,
+    /// e.g. "iPhone 17 Pro".
+    pub model: String,
+    /// e.g. "iPhone18,1", which names Xcode's symbol cache folders.
+    pub product_type: String,
+    /// The OS build, e.g. "24B5084k".
+    pub os_build: String,
+    pub transport: Option<Transport>,
+    /// CoreDevice has a tunnel to the device right now.
+    pub connected: bool,
+    pub paired: bool,
+    /// `None` where the OS has no Developer Mode (or devicectl doesn't say).
+    pub developer_mode: Option<bool>,
+    pub booted: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Transport {
+    Wired,
+    Network,
+}
+
+impl Device {
+    /// Why the device can't run apps now, as Xcode says it; `None` when it can.
+    pub fn unavailable_reason(&self) -> Option<&'static str> {
+        if !self.paired {
+            Some("Not paired")
+        } else if self.developer_mode == Some(false) {
+            Some("Developer Mode disabled")
+        } else if self.transport.is_none() && !self.connected {
+            Some("Unavailable")
+        } else if !self.booted {
+            Some("Not booted")
+        } else {
+            None
+        }
+    }
+
+    /// The menu's status: "Connected via USB", "Developer Mode disabled"…
+    pub fn status(&self) -> String {
+        if let Some(reason) = self.unavailable_reason() {
+            return reason.to_string();
+        }
+        match self.transport {
+            Some(Transport::Wired) => "Connected via USB".into(),
+            Some(Transport::Network) => "Connected via network".into(),
+            None => "Connected".into(),
+        }
+    }
 }
 
 impl Destination {
@@ -65,6 +149,57 @@ impl Destination {
             platform: Platform::MacOS,
             runtime: "macOS".into(),
             booted: true,
+            device: None,
+        }
+    }
+
+    /// Xcode's "Any iOS Device (arm64)": builds for the platform, runs nowhere.
+    pub fn any_device(platform: Platform) -> Self {
+        let os = platform.os_name();
+        Self {
+            id: format!("generic:{os}"),
+            name: format!("Any {os} Device (arm64)"),
+            platform,
+            runtime: os.into(),
+            booted: false,
+            device: None,
+        }
+    }
+
+    pub fn is_any_device(&self) -> bool {
+        self.platform.is_device() && self.device.is_none()
+    }
+
+    /// The run destination menu's section, as Xcode groups it: My Mac,
+    /// devices per OS, "Any … Device" under Build, simulators per runtime.
+    pub fn group(&self) -> String {
+        match self.platform {
+            Platform::MacOS => "My Mac".into(),
+            p if p.is_simulator() => format!("{} Simulators", self.runtime),
+            p if self.device.is_some() => format!("{} Devices", p.os_name()),
+            _ => "Build".into(),
+        }
+    }
+
+    /// The name in the menu: "(Booted)" simulators, unavailable devices
+    /// with the reason.
+    pub fn menu_label(&self) -> String {
+        if self.booted && self.platform.is_simulator() {
+            return format!("{} (Booted)", self.name);
+        }
+        match self.device.as_ref().and_then(Device::unavailable_reason) {
+            Some(reason) => format!("{} ({reason})", self.name),
+            None => self.name.clone(),
+        }
+    }
+
+    /// The picker's detail: the OS version and the state.
+    pub fn detail(&self) -> String {
+        match &self.device {
+            Some(device) => format!("{} · {}", self.runtime, device.status()),
+            None if self.booted && self.platform.is_simulator() => format!("{} · Booted", self.runtime),
+            None if self.is_any_device() => "Build only".into(),
+            None => self.runtime.clone(),
         }
     }
 
@@ -72,6 +207,7 @@ impl Destination {
     pub fn xcodebuild_specifier(&self) -> String {
         match self.platform {
             Platform::MacOS => "platform=macOS,arch=arm64".into(),
+            _ if self.is_any_device() => format!("generic/platform={}", self.platform.os_name()),
             _ => format!("id={}", self.id),
         }
     }
@@ -241,6 +377,7 @@ pub fn list_simulators() -> Result<Vec<Destination>> {
                 platform,
                 runtime: format!("{os_label} {version}"),
                 booted: device.state == "Booted",
+                device: None,
             });
         }
     }
@@ -280,7 +417,8 @@ pub fn simulator_runtime_root(udid: &str) -> Option<PathBuf> {
 pub fn main_thread_checker(destination: &Destination) -> Option<PathBuf> {
     let root = match destination.platform {
         Platform::MacOS => crate::toolchain::developer_dir()?,
-        _ => simulator_runtime_root(&destination.id)?,
+        platform if platform.is_simulator() => simulator_runtime_root(&destination.id)?,
+        _ => return None,
     };
     Some(root.join("usr/lib/libMainThreadChecker.dylib")).filter(|p| p.exists())
 }
@@ -407,6 +545,32 @@ mod tests {
             Destination::my_mac().xcodebuild_specifier(),
             "platform=macOS,arch=arm64"
         );
+    }
+
+    #[test]
+    fn device_specifiers() {
+        assert_eq!(Destination::any_device(Platform::IOS).xcodebuild_specifier(), "generic/platform=iOS");
+        assert_eq!(Destination::any_device(Platform::VisionOS).name, "Any visionOS Device (arm64)");
+        let device = Destination {
+            id: "00008150-000915212104401C".into(),
+            name: "iPhone".into(),
+            platform: Platform::IOS,
+            runtime: "iOS 27.2".into(),
+            booted: true,
+            device: Some(Device {
+                identifier: "FAD3EBA8-582D-56C7-B6C0-317E4ADB2CCC".into(),
+                model: "iPhone 17 Pro".into(),
+                product_type: "iPhone18,1".into(),
+                os_build: "24B5084k".into(),
+                transport: Some(Transport::Wired),
+                connected: true,
+                paired: true,
+                developer_mode: Some(true),
+                booted: true,
+            }),
+        };
+        assert_eq!(device.xcodebuild_specifier(), "id=00008150-000915212104401C");
+        assert!(!device.is_any_device());
     }
 
     #[test]
