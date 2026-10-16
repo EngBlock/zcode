@@ -275,8 +275,7 @@ impl Debugger {
         }
     }
 
-    fn changed(&mut self, mut scopes: Vec<Scope>, cx: &mut Context<Self>) {
-        scopes.dedup();
+    fn changed(&mut self, scopes: Vec<Scope>, cx: &mut Context<Self>) {
         let mut unique: Vec<Scope> = vec![];
         for scope in scopes {
             if !unique.contains(&scope) {
