@@ -1388,6 +1388,95 @@ def bookmark_list(s):
     return [(b["file"], b["line"], b["title"]) for sec in s["bookmarks"]["sections"] for b in sec["bookmarks"]]
 
 
+def editor_extension_checks(samples):
+    """The editor's extension points (crates/zcode-editor) in the real window,
+    through the control channel's `editor` probe, on a copy of ZKit."""
+    project = os.path.join(WORK, "EditorKit")
+    shutil.copytree(os.path.join(samples, "ZKit"), project)
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    with open(greeter) as f:
+        text = f.read()
+    name_line = line_of(greeter, "public let name")
+    init_line = line_of(greeter, "public init")
+    after_name = text.index("let name") + len("let name")
+    line_start = text.rindex("\n", 0, after_name) + 1
+    z = Zcode(project)
+
+    def probe():
+        return z.dump()["active"]["probe"]
+
+    def inlays():
+        z.run(f"open {greeter}:{name_line}", "wait 400", keys_right(after_name - line_start), "wait 200")
+        before = probe()["caret"]
+        z.run("keys right", "wait 200")
+        plain_step = probe()["caret"]["x"] - before["x"]
+        z.run("keys left", f"editor inlay {after_name} after : String", "wait 300")
+        s = probe()
+        assert s["inlays"] == [[after_name, ": String"]], s
+        assert abs(s["caret"]["x"] - before["x"]) < 0.5, "the caret at a type hint's offset stays before it"
+        # The caret steps over the inlay in one move; the text didn't change.
+        z.run("keys right", "wait 200")
+        s = probe()
+        assert s["cursor"] == after_name + 1, s
+        assert s["caret"]["x"] - before["x"] > plain_step * 6, (s["caret"], before, plain_step)
+        assert z.dump()["active"]["text"] == text
+        # Typing at its offset keeps the hint after the typed text; undo brings it back.
+        z.run("keys left", "type Q", "wait 200")
+        assert probe()["inlays"] == [[after_name + 1, ": String"]], probe()
+        z.run("keys cmd-z", "wait 200")
+        s = z.dump()["active"]
+        assert s["probe"]["inlays"] == [[after_name, ": String"]] and not s["dirty"], s
+        z.run("screenshot " + os.path.join(WORK, "inlay.png"))
+
+    def blocks():
+        rows = dict(map(tuple, probe()["rows"]))
+        line_height = rows[init_line + 1] - rows[init_line]
+        z.run(f"editor block {name_line - 1} first block line|second block line", "wait 300")
+        s = probe()
+        assert s["blocks"] == [[name_line - 1, 2]], s
+        moved = dict(map(tuple, s["rows"]))
+        assert moved[name_line] == rows[name_line], "the block's own row stays"
+        assert abs(moved[name_line + 1] - rows[name_line + 1] - 2 * line_height) < 0.5, (moved, rows)
+        # The caret moves past the block in one step.
+        z.run(f"open {greeter}:{name_line}", "wait 200", "keys down", "wait 200")
+        assert z.dump()["active"]["line"] == name_line + 1
+        z.run("screenshot " + os.path.join(WORK, "block.png"))
+
+    def highlight_layer():
+        z.run(f"editor layer {line_start} {after_name}", "wait 200", f"open {greeter}:1", "type //", "wait 200")
+        assert probe()["layer"] == [[line_start + 2, after_name + 2]], probe()
+        z.run("keys cmd-z", "wait 200")
+        assert probe()["layer"] == [[line_start, after_name]] and not z.dump()["active"]["dirty"]
+
+    def modal():
+        z.run("editor clear", f"open {greeter}:{name_line}", "wait 200", "editor modal on", "wait 200")
+        assert probe()["cursor_shape"] == "Block"
+        # `j` moves instead of typing; `x` deletes; anything else types as usual.
+        z.run("keys j", "keys j", "wait 200")
+        s = z.dump()["active"]
+        assert s["line"] == init_line and s["text"] == text, s["line"]
+        z.run("keys x", "type i", "wait 200")
+        s = z.dump()["active"]
+        assert s["line_text"] == "i" + text.splitlines()[init_line - 1][1:], s["line_text"]
+        caret = probe()["caret"]
+        assert caret["w"] > 4, "a block caret is a character wide"
+        z.run("editor modal off", "wait 200", "keys j", "wait 200")
+        assert z.dump()["active"]["line_text"].startswith("ij"), "off again, `j` types"
+        for _ in range(4):
+            if not z.dump()["active"]["dirty"]:
+                break
+            z.run("keys cmd-z", "wait 200")
+        assert z.dump()["active"]["text"] == text and probe()["cursor_shape"] == "Bar"
+
+    try:
+        check("Editor: inlays take room but no offsets; the caret steps over them; they follow typing and undo", inlays)
+        check("Editor: blocks push the rows below them down; the caret moves past them", blocks)
+        check("Editor: a highlight layer follows edits and undo", highlight_layer)
+        check("Editor: a keystroke interceptor runs before the keymap and typing; block caret", modal)
+    finally:
+        z.quit()
+
+
 def bookmark_checks(samples):
     """Bookmarks on a copy of ZKit, relaunched at the end to check they're kept."""
     project = os.path.join(WORK, "BookmarkKit")
@@ -1981,6 +2070,9 @@ def main():
 
     print("Bookmarks (a copy of samples/ZKit):")
     bookmark_checks(samples)
+
+    print("Editor extension points (a copy of samples/ZKit):")
+    editor_extension_checks(samples)
 
     print("Package dependencies (offline, a local repository of the Tally fixture):")
     package_dependency_checks(samples)

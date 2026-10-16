@@ -10,6 +10,7 @@ mod console;
 mod edit_scheme;
 mod editing;
 mod inspector;
+mod editor_probe;
 mod line_anchors;
 mod navigator;
 mod packages;
@@ -1895,6 +1896,7 @@ impl Workspace {
                 "read_only": b.read_only,
                 "editor_read_only": state.is_read_only(),
                 "can_undo": state.can_undo(),
+                "probe": self.editor_probe_state(cx),
                 "line": pos.line + 1,
                 "column": pos.character + 1,
                 "selection": state.selected_text().to_string(),

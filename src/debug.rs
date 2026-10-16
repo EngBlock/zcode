@@ -326,6 +326,13 @@ fn run_command(
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
         }
+        "editor" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.editor_probe(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
+        }
         "bookmark" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window
