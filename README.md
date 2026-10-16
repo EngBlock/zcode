@@ -59,6 +59,15 @@ thread and records the time after the capture returns, so slow captures count
 against zcode. "First frame produced" is the next main-loop turn after the
 app produced its first frame.
 
+**Against Xcode:** timed from outside with `scripts/launch_timer.swift`,
+which launches each app and polls the window server for its first window,
+zcode's window appears in **~195–205 ms**. Xcode 27.0 takes **~930–990 ms**
+(after a warm-up launch, with state restoration off; the warm-up itself took
+~2 s). That makes zcode about 5× faster. `python3 scripts/e2e.py --compare-apps`
+repeats the comparison and also times Zed when Zed isn't already running. Zed
+allows only one instance, even with `--user-data-dir`, so it can't be cold
+launched next to a running copy.
+
 zcode shows its window ~55 ms sooner than a minimal native AppKit app and
 ~65 ms after that app's lower bound. `scripts/e2e.py` builds the reference app
 (`scripts/appkit_floor.swift`), which measures itself the same way, and fails
@@ -133,7 +142,7 @@ zcode doesn't use any GPL code from Zed.
 ```
 cargo test                          # unit tests
 cargo test -- --ignored             # needs Xcode: sourcekit-lsp + lldb-dap integration tests
-cargo build --release && python3 scripts/e2e.py [--simulator]   # drives the real UI
+cargo build --release && python3 scripts/e2e.py [--simulator] [--compare-apps]   # drives the real UI
 ```
 
 `scripts/e2e.py` launches zcode with `ZCODE_DEBUG_DIR` set and checks against

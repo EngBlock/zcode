@@ -413,6 +413,47 @@ def warm_open(samples, background=False, limit_ms=150):
             os.remove(socket)
 
 
+def compare_apps():
+    """Times zcode, Xcode and Zed from launch to their first window on screen
+    with scripts/launch_timer.swift, the same external measurement for all
+    three. An app that is already running is skipped: it can't be cold
+    launched without quitting the user's session."""
+    timer = os.path.join(WORK, "launch_timer")
+    subprocess.run(["xcrun", "swiftc", "-O", os.path.join(ROOT, "scripts", "launch_timer.swift"), "-o", timer],
+                   check=True, capture_output=True)
+
+    def timed(command, runs=3, env=None):
+        out = subprocess.run([timer, "--runs", str(runs), "--", *command], capture_output=True, text=True,
+                             env=env, timeout=300).stdout
+        return json.loads(out.strip().splitlines()[-1])
+
+    def running(pattern):
+        return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
+
+    zcode = timed([BINARY], runs=5, env=dict(os.environ, ZCODE_NEW_INSTANCE="1"))
+    print(f"      zcode   {zcode['median_ms']:.0f} ms  {zcode['runs_ms']}")
+    others = {}
+    apps = {
+        "Xcode": ("/Applications/Xcode.app/Contents/MacOS/Xcode", ["-ApplePersistenceIgnoreState", "YES"]),
+        "Zed": ("/Applications/Zed.app/Contents/MacOS/zed", []),
+    }
+    for name, (path, args) in apps.items():
+        if not os.path.exists(path):
+            print(f"      {name:7} not installed")
+        elif running(path):
+            print(f"      {name:7} skipped: already running")
+        else:
+            # The first launch warms the OS caches; report the median of the
+            # launches after it.
+            timed([path, *args], runs=1)
+            result = timed([path, *args])
+            others[name] = result["median_ms"]
+            print(f"      {name:7} {result['median_ms']:.0f} ms  {result['runs_ms']}")
+    assert others, "neither Xcode nor Zed could be cold launched"
+    for name, ms in others.items():
+        assert zcode["median_ms"] < ms, f"{name} ({ms:.0f} ms) launched faster than zcode"
+
+
 def main():
     if not os.path.exists(BINARY):
         sys.exit("build first: cargo build --release")
@@ -450,6 +491,9 @@ def main():
         assert zcode_ms < native_ms, "zcode should show its window before a minimal native app does"
 
     check("Cold launch: content on screen before a minimal native AppKit app", cold_start)
+
+    if "--compare-apps" in sys.argv:
+        check("Cold launch vs Xcode and Zed (first window on screen, timed from outside)", compare_apps)
 
     samples = os.path.join(WORK, "samples")
     warm_open_check_pending = True
