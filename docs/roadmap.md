@@ -28,7 +28,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 5. SwiftPM management: Add Package, Resolve/Update/Reset, Package
    Dependencies in the navigator. ✅
 6. Plist and entitlements editors (reuse the project-settings panel), basic
-   Signing & Capabilities.
+   Signing & Capabilities. ✅
 7. Bookmarks navigator (Xcode 27 moved ⌘3 to Bookmarks).
 
 ## Phase 2: Zed-quality editing
