@@ -15,7 +15,7 @@ which was extracted from Xcode 27's own command definitions.
 | Source editor with tabs, highlighting, Save/Save All, undo, find/replace, ⌘/, ⌘[ ⌘], ⌥⌘[ ⌥⌘], ⌘L | ✅ | |
 | sourcekit-lsp: completion, diagnostics, hover, ⌃⌘J, references, ⌃6 | ✅ | `.xcodeproj` indexing through a compilation database pulled from `xcodebuild` output (no xcode-build-server needed) |
 | Open Quickly (⇧⌘O), Quick Actions (⇧⌘A) | ✅ | Files and workspace symbols, `file:line` |
-| Scheme and destination pickers | ✅ | `xcodebuild -list`, `simctl list`, filtered by `SUPPORTED_PLATFORMS`; Debug/Release |
+| Scheme and destination pickers | ✅ | `xcodebuild -list`, `simctl list`, `devicectl list devices` (polled while the window is active), Any iOS Device; grouped as in Xcode and filtered by `SUPPORTED_PLATFORMS`; Debug/Release |
 | Build, Run, Stop, Clean (⌘B ⌘R ⌘. ⇧⌘K) | ✅ | Simulator boot, install and launch; Mac executables; Swift packages |
 | Issue navigator, ⌘' / ⌘" | ✅ | Live and build issues, de-duplicated, shown inline |
 | Console / debug area (⇧⌘Y, ⌘K) | ✅ | App stdout/stderr via `simctl launch --console-pty` |
@@ -25,7 +25,7 @@ which was extracted from Xcode 27's own command definitions.
 
 | Item | Status | Notes |
 |---|---|---|
-| Debugging with lldb-dap: breakpoints (⌘\\, ⌘Y), pause/continue (⌃⌘Y), step (F6/F7/F8), Debug navigator, Variables view, Breakpoints navigator | ✅ | Attaches to simulator apps and launches Mac executables; breakpoints are persisted and follow edits |
+| Debugging with lldb-dap: breakpoints (⌘\\, ⌘Y), pause/continue (⌃⌘Y), step (F6/F7/F8), Debug navigator, Variables view, Breakpoints navigator | ✅ | Attaches to simulator and device apps and launches Mac executables; breakpoints are persisted and follow edits |
 | Breakpoint editing (Edit Breakpoint…, double-click): condition, ignore count, actions (Log Message with `@expr@`/`%B`/`%H`, Debugger Command, Sound), auto-continue, enable/disable | ✅ | Gutter markers with click, double-click and right-click as in Xcode. Actions run in zcode when the breakpoint stops |
 | Symbolic (⌥⌘\\), Swift Error and Exception breakpoints (Breakpoint navigator + menu, Debug ▸ Breakpoints) | 🟡 | Symbol and module; Objective-C/C++ on throw or catch. No Swift error type filter, Test Failure, Runtime Issue or Constraint Error breakpoints, or watchpoints |
 | LLDB console (`po`, `p`, `v`, `expr`, any lldb command) | ✅ | `(lldb)` prompt while paused, ↑/↓ history, Return repeats; Variables view Copy Value and Print Description; values on hover while paused |
@@ -41,7 +41,7 @@ which was extracted from Xcode 27's own command definitions.
 | Build configuration picker | ✅ | The Run action's configuration, written to the scheme |
 | Edit Scheme (⌘<), Run… (⌥⌘R), Test… (⌥⌘U), Next / Previous Scheme | ✅ | Run and Test actions: configuration, Debug executable, arguments and environment variables with checkboxes, working directory, persistent state, sanitizers, Main Thread Checker and memory diagnostics, written in place to the `.xcscheme` (packages: session). Applied to simulator, Mac, package and lldb-dap launches and to tests. No Build/Profile/Analyze/Archive actions, pre/post actions, scheme management, language/region or location options; test plans own their schemes' test options |
 | Project editor (click the project in the navigator) | 🟡 | General fields and every build setting, per configuration, for the project and each target, written in place to `project.pbxproj`. No Signing & Capabilities, Info, Build Phases or Build Rules tabs, and no adding targets or configurations |
-| Physical devices (devicectl) | ⬜ | |
+| Physical devices (devicectl) | 🟡 | Devices in the destination menu with their connection state; automatic signing (`-allowProvisioningUpdates`), install, launch with the scheme's arguments and environment, console, Stop, unlock wait; signing errors in the Issue navigator; lldb attaches through CoreDevice; `xcodebuild test` on the device. No Devices and Simulators window (⇧⌘2): pairing, Developer Mode and copying system symbols still need Xcode. Run, debugging and tests verified on an iPhone over the network; other hardware only against recorded `devicectl` output |
 
 ## P2
 

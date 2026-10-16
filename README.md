@@ -30,11 +30,12 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | Group-based projects (no file-system-synchronized folders) stay consistent as Xcode keeps them: New File, Rename (a name with `/` moves the item), Move to Trash and Add Files… add, update and remove file references, groups and build files in `project.pbxproj` (Sources for code, Resources for resources), with Xcode-style IDs and the rest of the file left byte for byte. New files join the targets that build their neighbors. | ⌥⌘A |
 | | File inspector: name, type, location, full path and Target Membership checkboxes for the selected file. | ⌥⌘1 |
 | **Navigators** | Project (file tree with New File / Add Files / Rename / Move to Trash / Show File Inspector / Show in Finder), Source Control (git status), Symbols, Find (find in workspace with case, word and regex options), Issues (live + build), Tests, Debug (threads and frames), Breakpoints and Reports (build/run/test history with full logs). | ⌘1 … ⌘9 |
-| **Build & run** | Scheme, configuration and run destination pickers. Destinations are My Mac plus every available simulator, filtered by the scheme's `SUPPORTED_PLATFORMS`. | ⌃0, ⌃⇧0 |
+| **Build & run** | Scheme, configuration and run destination pickers. Destinations are grouped as in Xcode: My Mac, connected iOS, iPadOS, watchOS, tvOS and visionOS devices (from `devicectl`, with how they're connected or why they can't be used: not paired, Developer Mode disabled, unavailable), Any iOS Device (arm64) for building, then every available simulator, filtered by the scheme's `SUPPORTED_PLATFORMS`. Devices appear and disappear as they connect, without a refresh. | ⌃0, ⌃⇧0 |
 | | Build, Run, Test, Stop and Clean. Files are saved first. | ⌘B, ⌘R, ⌘U, ⌘., ⇧⌘K |
 | | Edit Scheme for the Run and Test actions: build configuration, Debug executable, arguments passed on launch and environment variables (each with its checkbox; `$(BUILD_SETTING)`s expand), working directory, launching without state restoration, and the Address, Thread and Undefined Behavior Sanitizers, Main Thread Checker, Malloc Scribble, Guard Edges and Stack Logging, and Zombie Objects. Changes are written in place to the scheme's `.xcscheme` (shared or the user's), the rest of the file left byte for byte; Swift packages keep them in zcode's session. Run… and Test… open the editor with a button that starts the action. Product ▸ Scheme also has Next and Previous Scheme. | ⌘<, ⌥⌘R, ⌥⌘U, ⌃⌘] ⌃⌘[ |
 | | The scheme's options reach every launch: simulator apps (`simctl launch` with `SIMCTL_CHILD_` variables), Mac apps, package products and lldb-dap; sanitizers reach `xcodebuild` and `swift build`/`swift test`, tests build with the Test action's configuration, and the Test action's environment reaches `swift test` and the in-simulator runner. The toolbar's build configuration is the Run action's. Mac executables and package products run on a pseudo-terminal, as in Xcode's console, so their output streams as it is printed. | — |
 | | Running on a simulator boots it, opens Simulator.app, installs and launches the app, and streams the app's stdout/stderr into the console. Mac executables and Swift packages run directly. | — |
+| | Running on a device builds with automatic signing (`xcodebuild -destination id=… -allowProvisioningUpdates -allowProvisioningDeviceRegistration`), installs with `devicectl device install app`, waits while the device is locked ("Unlock it to continue"), launches with `devicectl device process launch --console` and the scheme's arguments and environment, and streams the app's output into the console. Stop terminates the app. A device that can't run apps says why before anything builds. Signing errors appear in the Issue navigator under the project, saying where in zcode to set the team; clicking one opens the project settings. ⌘U runs `xcodebuild test` on the device. | — |
 | | Build output streams into the debug area as a condensed Xcode-style activity log, or as the raw `xcodebuild` log. Errors and warnings appear inline, in the Issue navigator and with next/previous issue keys. | ⇧⌘Y, ⇧⌘C, ⌘K, ⌘' ⌘" |
 | | Test results from XCTest and Swift Testing populate the Test navigator, and Swift Testing failures appear as issues at the failing line. On a simulator, unit tests run inside the host app by injecting the test bundle (XCTest's own hosted-test mechanism). That is faster than `xcodebuild test` and doesn't depend on its test-runner service. | ⌘U |
 | **Testing** | Test diamonds in the editor gutter on XCTest classes and `test…` methods, Swift Testing `@Suite` types and `@Test` functions (found in source as you type, Objective-C XCTest too). They show the last result; clicking one runs just that test or class. | — |
@@ -42,7 +43,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | The Test navigator lists targets, classes, suites and tests from source with their results; each row runs on its play button or context menu. Results of tests a run doesn't include stay, as in Xcode. | ⌘6 |
 | | Test plans: the scheme's `.xctestplan`s in Product ▸ Choose Test Plan… and the Test navigator; ⌘U and Test Again run the chosen plan, and tests it leaves out are dimmed. | — |
 | | Every runner gets the selection: `xcodebuild test -only-testing:`/`-testPlan`, `swift test --filter`, and in the simulator an XCTest scope for the injected bundle (which also selects Swift Testing tests), honoring the plan's skipped and selected tests, environment and arguments. | — |
-| **Debugging** (lldb-dap) | Breakpoints as blue markers on the line numbers: click the gutter to add one, click a marker to disable or enable it, double-click it (or Edit Breakpoint…) to edit it, right-click for its menu. They follow edits (lines inserted above move them), renames and moves, and are saved per project. ⌘R runs under the debugger whenever enabled breakpoints are active, as in Xcode. Simulator apps launch with `--wait-for-debugger` and lldb attaches to them. | ⌘\\, ⌘Y |
+| **Debugging** (lldb-dap) | Breakpoints as blue markers on the line numbers: click the gutter to add one, click a marker to disable or enable it, double-click it (or Edit Breakpoint…) to edit it, right-click for its menu. They follow edits (lines inserted above move them), renames and moves, and are saved per project. ⌘R runs under the debugger whenever enabled breakpoints are active, as in Xcode. Simulator apps launch with `--wait-for-debugger` and lldb attaches to them. Device apps launch suspended and lldb attaches through CoreDevice (lldb's `device select` and `device process attach`, as Xcode does), using the local build's symbols. | ⌘\\, ⌘Y |
 | | The breakpoint editor popover: name, condition, "Ignore N times before stopping", actions (Log Message with `@expression@`, `%B` and `%H`, logged or spoken; Debugger Command; Sound) and "Automatically continue after evaluating actions". | — |
 | | Symbolic (symbol and module), Swift Error and Exception (Objective-C, C++ or both, on throw or catch) breakpoints from the Breakpoint navigator's + menu or Debug ▸ Breakpoints; the navigator lists every breakpoint with its toggle and options. | ⌥⌘\\ |
 | | Pause/continue, step over/into/out, the stopped line highlighted in green, threads and frames in the Debug navigator, and an expandable Variables view next to the console, with Copy Value and Print Description. Hovering a variable while paused shows its value. | ⌃⌘Y, F6, F7, F8 |
@@ -108,8 +109,10 @@ if zcode is not faster.
   first frame is already with the window server. `ZCODE_TRACE_STARTUP=1`
   prints the phases. `ZCODE_PAUSE_AT_START=<ms>` lets a profiler attach before
   startup begins.
-* sourcekit-lsp, scheme listing, simulator discovery, file scanning and git
-  status all start after the window appears, on background threads.
+* sourcekit-lsp, scheme listing, simulator and device discovery, file
+  scanning and git status all start after the window appears, on background
+  threads. Devices are listed again every 5 s, only while the project's
+  window is active and its scheme builds for a device platform.
 * Swift highlighting uses a compact tree-sitter query
   (`src/languages/swift-highlights.scm`) that compiles in ~11 ms. The upstream
   query takes ~185 ms, and the editor pays that cost for every Swift file it
@@ -131,8 +134,8 @@ src/
   actions.rs        commands, Xcode key bindings, menu bar
   workspace/        project window: buffers, navigators, panels, pickers, editor commands
   lsp/              JSON-RPC client, document sync store, editor provider adapters
-  build/            xcodebuild/swift/simctl queries, streaming runner, log/issue/test parsing,
-                    compilation-database extraction
+  build/            xcodebuild/swift/simctl/devicectl queries, streaming runner, log/issue/test
+                    parsing, compilation-database extraction
   testing/          tests found in source, test plans, test selections per runner, results → tests
   scheme/           Edit Scheme options: .xcscheme read and edited in place, what launches get
   debugger/         DAP client, debugger model, breakpoints and their options, data tips (lldb-dap)
@@ -218,8 +221,20 @@ The control channel also takes window screenshots
   added as a plain file reference), and Headers-phase visibility (Public,
   Private) isn't editable. The navigator has no drag and drop: move items by
   renaming them to a path.
-* No Interface Builder, asset-catalog editor, SwiftUI canvas, Instruments or
-  physical-device deployment.
+* No Interface Builder, asset-catalog editor, SwiftUI canvas or Instruments.
+* Devices: there's no Devices and Simulators window (⇧⌘2), so pairing a new
+  device, turning on Developer Mode and copying a device's system symbols
+  still happen in Xcode. Without those symbols for the device's OS build
+  (Xcode copies them to `~/Library/Developer/Xcode/iOS DeviceSupport` the
+  first time it prepares a device; CoreDevice offers no command-line way),
+  lldb reads system libraries from the device: attaching over the network
+  takes about a minute, system frames show addresses rather than names, and
+  expressions (`po`) are slow. Debugging needs an lldb with the `device`
+  commands (Xcode 27's has them). Main Thread Checker
+  isn't inserted on devices. Run, debugging, tests and signing were verified
+  on an iPhone connected over the network; USB connections and iPad, Apple
+  Watch, Apple TV and Vision Pro hardware were only exercised against
+  recorded `devicectl` output and a fake `devicectl`.
 * Edit Scheme covers the Run and Test actions only (not Build, Profile,
   Analyze or Archive, nor pre- and post-actions), and doesn't create,
   duplicate, share or delete schemes. It has no App Language or Region,
