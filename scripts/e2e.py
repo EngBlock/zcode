@@ -246,6 +246,21 @@ def xcode_project_checks(z, samples, sim):
         s = z.dump()
         assert not s["active"]["dirty"], "undo should restore the saved state"
 
+    def line_clipboard():
+        saved = subprocess.run(["pbpaste"], capture_output=True).stdout
+        try:
+            line = open(counter).read().splitlines()[count_line - 1] + "\n"
+            z.run(f"open {counter}:{count_line}", "wait 300", "keys cmd-c", "keys cmd-v", "wait 200")
+            s = z.dump()["active"]
+            assert line + line in s["text"], "⌘C then ⌘V with no selection should duplicate the line"
+            assert s["line"] == count_line + 1, s["line"]
+            z.run("keys cmd-z", "keys cmd-x", "wait 200")
+            assert z.dump()["active"]["text"].count(line) == 0, "⌘X with no selection should cut the line"
+            z.run("keys cmd-z", "wait 200")
+            assert not z.dump()["active"]["dirty"], "undo should restore the saved state"
+        finally:
+            subprocess.run(["pbcopy"], input=saved)
+
     def document_items():
         z.run(f"open {counter}", "keys ctrl-6", "wait 1500", "type reset", "keys enter", "wait 300")
         assert z.dump()["active"]["selection"] == "reset()"
@@ -320,6 +335,7 @@ def xcode_project_checks(z, samples, sim):
     check("Jump to Definition across files (⌃⌘J)", definition)
     check("Completion + placeholder Tab", completion)
     check("Comment (⌘/) and undo restores clean state", comment_and_undo)
+    check("Cut / copy / paste whole line with no selection (⌘X ⌘C ⌘V)", line_clipboard)
     check("Document Items (⌃6)", document_items)
     check("Find in Workspace (⇧⌘F) and references (⌃⇧⌘F)", find_and_references)
     check("Build error → Issue navigator → next issue (⌘')", build_error_and_issue_navigation)

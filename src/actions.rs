@@ -22,6 +22,9 @@ gpui_kit::actions!(
         RevealInFinder,
         ShowPerformance,
         // Edit
+        CutOrCutLine,
+        CopyOrCopyLine,
+        PasteOrPasteLine,
         ToggleComment,
         DuplicateLine,
         MoveLineUp,
@@ -117,6 +120,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-w", CloseTab, None),
         KeyBinding::new("ctrl-alt-cmd-w", CloseProject, None),
         // Edit
+        KeyBinding::new("cmd-x", CutOrCutLine, Some(EDITOR)),
+        KeyBinding::new("cmd-c", CopyOrCopyLine, Some(EDITOR)),
+        KeyBinding::new("cmd-v", PasteOrPasteLine, Some(EDITOR)),
         KeyBinding::new("cmd-/", ToggleComment, Some(EDITOR)),
         KeyBinding::new("cmd-d", DuplicateLine, Some(EDITOR)),
         KeyBinding::new("alt-up", MoveLineUp, Some(EDITOR)),
@@ -336,13 +342,9 @@ pub fn set_menus(cx: &mut App) {
         if menu_name == "Edit" {
             // Native items keep the system text services (cut/copy/paste in
             // dialogs) working.
-            items.push(MenuItem::os_action("Cut", gpui_kit::component::input::Cut, OsAction::Cut));
-            items.push(MenuItem::os_action("Copy", gpui_kit::component::input::Copy, OsAction::Copy));
-            items.push(MenuItem::os_action(
-                "Paste",
-                gpui_kit::component::input::Paste,
-                OsAction::Paste,
-            ));
+            items.push(MenuItem::os_action("Cut", CutOrCutLine, OsAction::Cut));
+            items.push(MenuItem::os_action("Copy", CopyOrCopyLine, OsAction::Copy));
+            items.push(MenuItem::os_action("Paste", PasteOrPasteLine, OsAction::Paste));
             items.push(MenuItem::os_action(
                 "Select All",
                 gpui_kit::component::input::SelectAll,

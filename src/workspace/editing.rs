@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::component::input::{
-    EditorState, GoToDefinition, IndentInline, Rope, RopeExt as _, ToggleCodeActions,
+    Copy, Cut, EditorState, GoToDefinition, IndentInline, Paste, Rope, RopeExt as _,
+    ToggleCodeActions,
 };
 use gpui_kit::*;
 use serde_json::{Value, json};
@@ -28,6 +29,35 @@ fn line_block(text: &Rope, selection: &Range<usize>) -> Range<usize> {
     let start = text.line_start_offset(start_row);
     let end = text.line_end_offset(end_row);
     start..end
+}
+
+/// The line containing `offset`, including its trailing newline when it has
+/// one.
+fn whole_line(text: &Rope, offset: usize) -> Range<usize> {
+    let block = line_block(text, &(offset..offset));
+    let end = if block.end < text.len() { block.end + 1 } else { block.end };
+    block.start..end
+}
+
+/// Clipboard metadata key marking text that was cut or copied as a whole
+/// line, so pasting it with nothing selected inserts above the current line
+/// (as in Zed).
+const WHOLE_LINE_KEY: &str = "zcode_whole_line";
+
+fn whole_line_clipboard(text: &Rope, offset: usize) -> (Range<usize>, ClipboardItem) {
+    let line = whole_line(text, offset);
+    let mut content = text.slice(line.clone()).to_string();
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    let item = ClipboardItem::new_string_with_json_metadata(content, json!({ WHOLE_LINE_KEY: true }));
+    (line, item)
+}
+
+fn is_whole_line(item: &ClipboardItem) -> bool {
+    item.metadata()
+        .and_then(|m| serde_json::from_str::<Value>(m).ok())
+        .is_some_and(|m| m[WHOLE_LINE_KEY] == json!(true))
 }
 
 fn comment_prefix(language: &str) -> Option<&'static str> {
@@ -95,6 +125,84 @@ impl Workspace {
             .editor
             .clone()
             .update(cx, |state, cx| f(state, language, window, cx));
+    }
+
+    /// The active editor when it has focus and nothing selected — the case
+    /// where cut, copy and paste act on whole lines.
+    fn line_edit_target(&self, window: &Window, cx: &App) -> Option<Entity<EditorState>> {
+        self.active_editor().filter(|editor| {
+            let state = editor.read(cx);
+            state.focus_handle(cx).is_focused(window) && state.selected_range().is_empty()
+        })
+    }
+
+    /// ⌘X: cuts the selection, or the current line when nothing is selected.
+    pub(super) fn cut_or_cut_line(&mut self, _: &CutOrCutLine, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self
+            .line_edit_target(window, cx)
+            .filter(|editor| editor.read(cx).is_editable())
+        else {
+            window.dispatch_action(Box::new(Cut), cx);
+            return;
+        };
+        editor.update(cx, |state, cx| {
+            let text = state.text().clone();
+            let cursor = state.cursor();
+            let (line, item) = whole_line_clipboard(&text, cursor);
+            cx.write_to_clipboard(item);
+            // The last line has no newline of its own; take the one before
+            // it so no empty line is left behind.
+            let removed = if line.end == text.len() && line.start > 0 {
+                line.start - 1..line.end
+            } else {
+                line.clone()
+            };
+            state.set_selected_range(removed.clone(), cx);
+            state.replace("", window, cx);
+            // Keep the cursor's column on the line that took its place.
+            let text = state.text().clone();
+            let row = text.offset_to_point(removed.start.min(text.len())).row;
+            let start = text.line_start_offset(row);
+            let target = (start + cursor - line.start).min(text.line_end_offset(row));
+            state.set_selected_range(target..target, cx);
+        });
+    }
+
+    /// ⌘C: copies the selection, or the current line when nothing is
+    /// selected.
+    pub(super) fn copy_or_copy_line(&mut self, _: &CopyOrCopyLine, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.line_edit_target(window, cx) else {
+            window.dispatch_action(Box::new(Copy), cx);
+            return;
+        };
+        let state = editor.read(cx);
+        let (_, item) = whole_line_clipboard(state.text(), state.cursor());
+        cx.write_to_clipboard(item);
+    }
+
+    /// ⌘V: text cut or copied as a whole line goes above the current line
+    /// when nothing is selected; anything else pastes at the cursor.
+    pub(super) fn paste_or_paste_line(&mut self, _: &PasteOrPasteLine, window: &mut Window, cx: &mut Context<Self>) {
+        let line = cx
+            .read_from_clipboard()
+            .filter(is_whole_line)
+            .and_then(|item| item.text());
+        let editor = self
+            .line_edit_target(window, cx)
+            .filter(|editor| editor.read(cx).is_editable());
+        let (Some(editor), Some(line)) = (editor, line) else {
+            window.dispatch_action(Box::new(Paste), cx);
+            return;
+        };
+        editor.update(cx, |state, cx| {
+            let text = state.text().clone();
+            let cursor = state.cursor();
+            let start = text.line_start_offset(text.offset_to_point(cursor).row);
+            state.set_selected_range(start..start, cx);
+            state.insert(line.clone(), window, cx);
+            let target = cursor + line.len();
+            state.set_selected_range(target..target, cx);
+        });
     }
 
     pub(super) fn toggle_comment(&mut self, _: &ToggleComment, window: &mut Window, cx: &mut Context<Self>) {
@@ -590,7 +698,7 @@ fn locations_to_matches(locations: Vec<lsp_types::Location>) -> Vec<FileMatches>
 
 #[cfg(test)]
 mod tests {
-    use super::{line_block, toggle_comment_text};
+    use super::{line_block, toggle_comment_text, whole_line};
     use gpui_kit::component::input::Rope;
 
     #[test]
@@ -607,5 +715,13 @@ mod tests {
         assert_eq!(line_block(&text, &(5..5)), 4..7);
         // Selection ending at column 0 of the next line excludes that line.
         assert_eq!(line_block(&text, &(0..8)), 0..7);
+    }
+
+    #[test]
+    fn whole_lines() {
+        let text = Rope::from("one\ntwo\nthree");
+        assert_eq!(whole_line(&text, 5), 4..8);
+        // The last line has no newline to include.
+        assert_eq!(whole_line(&text, 9), 8..13);
     }
 }
