@@ -414,7 +414,8 @@ impl Workspace {
         }
         let loaded = build.update(cx, |b, _| b.scheme.clone().map(|s| b.fresh_scheme_options(&s)));
         let Some(loaded) = loaded else {
-            self.notify_error("There is no scheme to edit.".into(), window, cx);
+            let message = if build.read(cx).schemes_loading { "Schemes are still loading." } else { "There is no scheme to edit." };
+            self.notify_error(message.into(), window, cx);
             return;
         };
         let workspace = cx.weak_entity();
