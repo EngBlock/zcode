@@ -20,6 +20,9 @@ struct ContentView: View {
         .padding()
         .onAppear {
             print("HelloZ launched")
+            // What the scheme's Run action passes (Edit Scheme ▸ Arguments).
+            let arguments = CommandLine.arguments.dropFirst().joined(separator: " ")
+            print("arguments: \(arguments) HELLOZ_MODE=\(ProcessInfo.processInfo.environment["HELLOZ_MODE"] ?? "")")
         }
     }
 }

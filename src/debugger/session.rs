@@ -55,7 +55,7 @@ pub enum DebuggerEvent {
 }
 
 pub enum Target {
-    Launch { program: PathBuf, cwd: PathBuf, args: Vec<String> },
+    Launch { program: PathBuf, cwd: PathBuf, args: Vec<String>, env: Vec<(String, String)> },
     Attach { pid: i32 },
 }
 
@@ -213,10 +213,10 @@ impl Debugger {
         self.client = Some(client.clone());
 
         let (command, args) = match target {
-            Target::Launch { program, cwd, args } => (
-                "launch",
-                json!({ "program": program, "cwd": cwd, "args": args, "stopOnEntry": false }),
-            ),
+            Target::Launch { program, cwd, args, env } => {
+                let env: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                ("launch", json!({ "program": program, "cwd": cwd, "args": args, "env": env, "stopOnEntry": false }))
+            }
             Target::Attach { pid } => ("attach", json!({ "pid": pid })),
         };
         let initialize = client.request("initialize", initialize_args());

@@ -15,6 +15,9 @@ pub struct ProjectSession {
     pub configuration: Option<String>,
     /// The chosen test plan, when not the scheme's default.
     pub test_plan: Option<String>,
+    /// Edit Scheme options of schemes without a scheme file (Swift
+    /// packages, schemes xcodebuild makes up), by scheme.
+    pub scheme_options: std::collections::BTreeMap<String, crate::scheme::SchemeOptions>,
     pub show_navigator: Option<bool>,
     pub show_debug_area: Option<bool>,
     pub show_inspector: Option<bool>,

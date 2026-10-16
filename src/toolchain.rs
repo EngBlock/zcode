@@ -62,8 +62,7 @@ pub fn sdk_version(sdk: &str) -> Result<String> {
 /// `open -a` resolves names through Launch Services, which may not know about
 /// an Xcode outside /Applications (or may pick a different one).
 pub fn simulator_app() -> Option<PathBuf> {
-    let output = Command::new("/usr/bin/xcode-select").arg("-p").output().ok()?;
-    let developer = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let developer = developer_dir()?;
     let contents = developer.parent()?;
     [
         contents.join("Applications/DeviceHub.app"),
@@ -71,4 +70,11 @@ pub fn simulator_app() -> Option<PathBuf> {
     ]
     .into_iter()
     .find(|app| app.exists())
+}
+
+/// The active Xcode's `Contents/Developer` (`xcode-select -p`).
+pub fn developer_dir() -> Option<PathBuf> {
+    let output = Command::new("/usr/bin/xcode-select").arg("-p").output().ok()?;
+    let developer = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    (output.status.success() && developer.is_dir()).then_some(developer)
 }

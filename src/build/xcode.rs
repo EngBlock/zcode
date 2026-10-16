@@ -253,6 +253,38 @@ pub fn list_simulators() -> Result<Vec<Destination>> {
     Ok(out)
 }
 
+/// The host folder a simulator's runtime is rooted at (its `/`).
+pub fn simulator_runtime_root(udid: &str) -> Option<PathBuf> {
+    let devices = run_json(Command::new("/usr/bin/xcrun").args(["simctl", "list", "devices", "--json"])).ok()?;
+    let runtime = devices
+        .get("devices")?
+        .as_object()?
+        .iter()
+        .find(|(_, list)| {
+            list.as_array()
+                .is_some_and(|l| l.iter().any(|d| d.get("udid").and_then(Value::as_str) == Some(udid)))
+        })
+        .map(|(runtime, _)| runtime.clone())?;
+    let runtimes = run_json(Command::new("/usr/bin/xcrun").args(["simctl", "list", "runtimes", "--json"])).ok()?;
+    runtimes
+        .get("runtimes")?
+        .as_array()?
+        .iter()
+        .find(|r| r.get("identifier").and_then(Value::as_str) == Some(runtime.as_str()))
+        .and_then(|r| r.get("runtimeRoot")?.as_str())
+        .map(PathBuf::from)
+}
+
+/// Main Thread Checker, which Xcode inserts into apps it runs under the
+/// debugger: the toolchain's for Mac processes, the runtime's in a simulator.
+pub fn main_thread_checker(destination: &Destination) -> Option<PathBuf> {
+    let root = match destination.platform {
+        Platform::MacOS => crate::toolchain::developer_dir()?,
+        _ => simulator_runtime_root(&destination.id)?,
+    };
+    Some(root.join("usr/lib/libMainThreadChecker.dylib")).filter(|p| p.exists())
+}
+
 fn version_key(runtime: &str) -> Vec<u32> {
     runtime
         .rsplit(' ')

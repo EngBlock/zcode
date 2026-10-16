@@ -264,6 +264,9 @@ impl Workspace {
         if saved.test_plan.is_some() {
             this.build.update(cx, |build, _| build.test_plan = saved.test_plan.clone());
         }
+        if !saved.scheme_options.is_empty() {
+            this.build.update(cx, |build, _| build.stored_options = saved.scheme_options.clone());
+        }
         this.restore_destination = saved.destination.clone();
         this.debugger.update(cx, |d, _| {
             d.breakpoints = saved
@@ -585,6 +588,7 @@ impl Workspace {
             destination: build.destination.as_ref().map(|d| d.id.clone()),
             configuration: Some(build.configuration.clone()),
             test_plan: build.test_plan.clone(),
+            scheme_options: build.stored_options.clone(),
             show_navigator: Some(self.show_navigator),
             show_debug_area: Some(self.show_debug_area),
             show_inspector: Some(self.show_inspector),
@@ -1121,6 +1125,7 @@ impl Workspace {
                 });
             }
             BuildEvent::TestsChanged => {}
+            BuildEvent::StoredSchemeOptionsChanged => self.save_session(cx),
             BuildEvent::ConfigurationChanged => {
                 // A package's test targets arrive with its schemes.
                 self.assign_test_targets(cx);
@@ -1165,11 +1170,12 @@ impl Workspace {
                 self.debugger
                     .update(cx, |d, cx| d.start(DebugTarget::Attach { pid }, cx));
             }
-            BuildEvent::LaunchDebugger { program, cwd } => {
+            BuildEvent::LaunchDebugger { program, cwd, args, env } => {
                 let target = DebugTarget::Launch {
                     program: program.clone(),
                     cwd: cwd.clone(),
-                    args: vec![],
+                    args: args.clone(),
+                    env: env.clone(),
                 };
                 self.show_debug_area = true;
                 self.debugger.update(cx, |d, cx| d.start(target, cx));

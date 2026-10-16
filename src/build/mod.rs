@@ -6,8 +6,8 @@ pub mod process;
 pub mod sim_tests;
 pub mod xcode;
 
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -15,6 +15,7 @@ use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 use smol::channel;
 
 use crate::project::{ProjectInfo, ProjectKind};
+use crate::scheme::{self, Launch, SchemeOptions};
 use crate::testing::TestRequest;
 use crate::testing::plans::{self, TestPlan};
 use log::{Issue, LogLine, Severity, SuiteEvent, TestResult, TestStatus};
@@ -95,7 +96,9 @@ pub enum BuildEvent {
     /// Run with debugging: a simulator app is waiting for the debugger.
     AttachDebugger { pid: i32 },
     /// Run with debugging: launch this executable under the debugger.
-    LaunchDebugger { program: PathBuf, cwd: PathBuf },
+    LaunchDebugger { program: PathBuf, cwd: PathBuf, args: Vec<String>, env: Vec<(String, String)> },
+    /// Options kept in the session (packages, file-less schemes) changed.
+    StoredSchemeOptionsChanged,
 }
 
 pub struct BuildController {
@@ -104,7 +107,12 @@ pub struct BuildController {
     pub schemes_loading: bool,
     pub schemes_error: Option<String>,
     pub scheme: Option<String>,
+    /// The Run action's build configuration (Build and Run use it).
     pub configuration: String,
+    /// The current scheme's Edit Scheme options, as last read.
+    pub scheme_options: Option<scheme::Loaded>,
+    /// Options of schemes without a scheme file, persisted in the session.
+    pub stored_options: BTreeMap<String, SchemeOptions>,
     pub all_destinations: Vec<Destination>,
     pub destinations: Vec<Destination>,
     pub destination: Option<Destination>,
@@ -160,6 +168,8 @@ impl BuildController {
             schemes_error: None,
             scheme: None,
             configuration: "Debug".into(),
+            scheme_options: None,
+            stored_options: BTreeMap::new(),
             all_destinations: vec![],
             destinations: vec![],
             destination: None,
@@ -244,7 +254,7 @@ impl BuildController {
                 cx.emit(BuildEvent::ConfigurationChanged);
                 cx.notify();
                 this.refresh_supported_destinations(cx);
-                this.load_test_plans(cx);
+                this.load_scheme(cx);
                 if let Some((action, debug, tests)) = this.queued.take() {
                     this.debug_run = debug;
                     this.start_with(action, tests, cx);
@@ -315,28 +325,102 @@ impl BuildController {
         cx.emit(BuildEvent::ConfigurationChanged);
         cx.notify();
         self.refresh_supported_destinations(cx);
-        self.load_test_plans(cx);
+        self.load_scheme(cx);
     }
 
-    /// Reads the scheme's test plans (from its `.xcscheme`) in the background.
-    pub fn load_test_plans(&mut self, cx: &mut Context<Self>) {
-        let (Some(scheme), true) = (self.scheme.clone(), self.project.kind.is_xcode()) else {
+    /// Product ▸ Scheme ▸ Next / Previous Scheme.
+    pub fn step_scheme(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let schemes = &self.schemes.schemes;
+        if schemes.is_empty() {
+            return;
+        }
+        let len = schemes.len() as isize;
+        let current = self.scheme.as_ref().and_then(|s| schemes.iter().position(|n| n == s));
+        let next = match current {
+            Some(ix) => (ix as isize + delta).rem_euclid(len) as usize,
+            None => 0,
+        };
+        let scheme = schemes[next].clone();
+        self.set_scheme(scheme, cx);
+    }
+
+    /// Reads the scheme's Edit Scheme options and test plans (from its
+    /// `.xcscheme`) in the background.
+    pub fn load_scheme(&mut self, cx: &mut Context<Self>) {
+        let Some(scheme) = self.scheme.clone() else {
             self.test_plans.clear();
+            self.scheme_options = None;
             return;
         };
         let kind = self.project.kind.clone();
+        let stored = self.stored_options.get(&scheme).cloned();
         self._plans_task = Some(cx.spawn(async move |this, cx| {
-            let found = cx.background_spawn(async move { plans::scheme_test_plans(&kind, &scheme) }).await;
+            let (loaded, found) = cx
+                .background_spawn(async move {
+                    let loaded = scheme::load(&kind, &scheme, stored.as_ref());
+                    let plans = if kind.is_xcode() { plans::scheme_test_plans(&kind, &scheme) } else { vec![] };
+                    (loaded, plans)
+                })
+                .await;
             this.update(cx, |this, cx| {
                 if this.test_plan.as_ref().is_some_and(|p| !found.iter().any(|f| f.name == *p)) {
                     this.test_plan = None;
                 }
                 this.test_plans = found;
+                if this.scheme.as_deref() == Some(loaded.scheme.as_str()) {
+                    this.set_loaded_options(loaded);
+                }
                 cx.emit(BuildEvent::ConfigurationChanged);
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    fn set_loaded_options(&mut self, mut loaded: scheme::Loaded) {
+        if loaded.source == scheme::Source::Session && !self.stored_options.contains_key(&loaded.scheme) {
+            // The configuration chosen before the scheme had stored options.
+            loaded.options.run.configuration = self.configuration.clone();
+        }
+        if let Some(error) = &loaded.error {
+            ::log::warn!("scheme {}: {error}", loaded.scheme);
+        }
+        if self.configuration != loaded.options.run.configuration {
+            self.configuration = loaded.options.run.configuration.clone();
+            self.settings.clear();
+        }
+        self.scheme_options = Some(loaded);
+    }
+
+    /// The current scheme's options, re-read first when its file changed on
+    /// disk (Xcode or a checkout edited it).
+    pub fn fresh_scheme_options(&mut self, scheme: &str) -> scheme::Loaded {
+        let current = self.scheme_options.as_ref().filter(|l| l.scheme == scheme && !l.is_stale());
+        if let Some(loaded) = current {
+            return loaded.clone();
+        }
+        let loaded = scheme::load(&self.project.kind, scheme, self.stored_options.get(scheme));
+        self.set_loaded_options(loaded);
+        self.scheme_options.clone().expect("just set")
+    }
+
+    /// Product ▸ Scheme ▸ Edit Scheme… applied: writes `options` to the
+    /// scheme file, or keeps them for the session.
+    pub fn save_scheme_options(&mut self, options: SchemeOptions, cx: &mut Context<Self>) -> anyhow::Result<()> {
+        let Some(scheme) = self.scheme.clone() else { anyhow::bail!("No scheme selected") };
+        let mut loaded = self.fresh_scheme_options(&scheme);
+        match &loaded.source {
+            scheme::Source::File(_) => loaded.mtime = scheme::save(&loaded, &options)?,
+            scheme::Source::Session => {
+                self.stored_options.insert(scheme.clone(), options.clone());
+                cx.emit(BuildEvent::StoredSchemeOptionsChanged);
+            }
+        }
+        loaded.options = options;
+        self.set_loaded_options(loaded);
+        cx.emit(BuildEvent::ConfigurationChanged);
+        cx.notify();
+        Ok(())
     }
 
     /// The plan tests run with: the chosen one, else the scheme's default.
@@ -373,10 +457,21 @@ impl BuildController {
         cx.notify();
     }
 
+    /// The toolbar's Build Configuration: the scheme's Run action's.
     pub fn set_configuration(&mut self, configuration: String, cx: &mut Context<Self>) {
-        self.configuration = configuration;
-        cx.emit(BuildEvent::ConfigurationChanged);
-        cx.notify();
+        let Some(scheme) = self.scheme.clone() else {
+            self.configuration = configuration;
+            self.settings.clear();
+            cx.emit(BuildEvent::ConfigurationChanged);
+            cx.notify();
+            return;
+        };
+        let mut options = self.fresh_scheme_options(&scheme).options;
+        options.run.configuration = configuration;
+        if let Err(err) = self.save_scheme_options(options, cx) {
+            self.push_log_line(format!("error: Could not save the scheme: {err:#}"));
+            cx.emit(BuildEvent::LogUpdated);
+        }
     }
 
     pub fn error_count(&self) -> usize {
@@ -594,11 +689,27 @@ impl BuildController {
         cx.notify();
 
         let project = self.project.clone();
-        let configuration = self.configuration.clone();
+        let loaded = self.fresh_scheme_options(&scheme);
+        let options = loaded.options.clone();
+        // Tests build with the Test action's configuration, the rest with
+        // the Run action's.
+        let configuration = match action {
+            BuildAction::Test => options.test.configuration.clone(),
+            _ => self.configuration.clone(),
+        };
+        let diagnostics = match action {
+            BuildAction::Test => options.test.diagnostics.clone(),
+            BuildAction::Clean => scheme::Diagnostics::default(),
+            _ => options.run.diagnostics.clone(),
+        };
+        // xcodebuild reads a scheme file's Test action itself; other runners
+        // get the test arguments and environment from here.
+        let test_launch = (tests.is_some() && !matches!(loaded.source, scheme::Source::File(_))).then(|| options.test_launch());
         let handle = ProcessHandle::default();
         self.process = handle.clone();
         let cache_dir = self.cache_dir.clone();
-        let debug = action == BuildAction::Run && std::mem::take(&mut self.debug_run);
+        // Edit Scheme ▸ Run ▸ Debug executable off: never under the debugger.
+        let debug = action == BuildAction::Run && std::mem::take(&mut self.debug_run) && options.debug_executable;
         let cached_settings = self
             .settings
             .get(&(scheme.clone(), destination.id.clone()))
@@ -622,8 +733,21 @@ impl BuildController {
             } else {
                 build_command(&project, &scheme, &configuration, &destination, tool_action)
             };
+            cmd.args(match project.kind {
+                ProjectKind::SwiftPackage => diagnostics.swiftpm_args(),
+                _ => diagnostics.xcodebuild_args(),
+            });
             if let Some(plan) = &test_plan {
                 cmd.args(["-testPlan", plan]);
+            }
+            if let (Some(launch), false) = (&test_launch, direct_tests) {
+                // `swift test` passes its environment on; `xcodebuild test`
+                // passes on what is prefixed with TEST_RUNNER_. Neither
+                // takes launch arguments.
+                match project.kind {
+                    ProjectKind::SwiftPackage => cmd.envs(launch.environment.iter().cloned()),
+                    _ => cmd.envs(launch.environment.iter().map(|(k, v)| (format!("TEST_RUNNER_{k}"), v.clone()))),
+                };
             }
             if let (Some(request), false) = (&tests, direct_tests) {
                 match project.kind {
@@ -671,7 +795,7 @@ impl BuildController {
             if direct_tests && success && this.read_with(cx, |this, _| this.phase != Phase::Stopped).unwrap_or(false) {
                 let request = tests.clone().unwrap_or_default();
                 let (ok, output) = run_simulator_tests(
-                    &this, cx, &project, &scheme, &configuration, &destination, &request, &cache_dir, &handle,
+                    &this, cx, &project, &scheme, &configuration, &destination, &request, test_launch.as_ref(), &cache_dir, &handle,
                 )
                 .await;
                 success = ok;
@@ -754,21 +878,27 @@ impl BuildController {
                 return;
             }
 
-            // Launch.
+            // Launch, with the Run action's arguments, environment and
+            // Main Thread Checker (under the debugger, as in Xcode).
+            let main_thread_checker = debug && options.run.diagnostics.main_thread_checker;
             let launch = match &project.kind {
                 ProjectKind::SwiftPackage => {
                     let root = project.root.clone();
                     let scheme = scheme.clone();
                     let configuration = configuration.to_lowercase();
+                    let sanitizers = diagnostics.swiftpm_args();
+                    let mut launch = options.run_launch(None);
                     cx.background_spawn(async move {
                         let mut cmd = Command::new("/usr/bin/swift");
                         cmd.args(["build", "-c", &configuration, "--show-bin-path"])
+                            .args(&sanitizers)
                             .current_dir(&root);
                         let (_, out) = process::run_quiet(cmd).await?;
                         let bin = PathBuf::from(out.lines().last().unwrap_or("").trim()).join(&scheme);
-                        let mut run = Command::new(bin);
-                        run.current_dir(&root);
-                        anyhow::Ok((run, None))
+                        if main_thread_checker && let Some(library) = xcode::main_thread_checker(&Destination::my_mac()) {
+                            launch.insert_library(&library);
+                        }
+                        anyhow::Ok((launch_command(bin, &launch, &root, Some(&root)), None))
                     })
                     .await
                 }
@@ -789,9 +919,12 @@ impl BuildController {
                             let destination = destination.clone();
                             let console = channel::unbounded::<String>();
                             let lines_tx = console.0.clone();
+                            let launch = options.run_launch(Some(&settings.values));
+                            let root = project.root.clone();
                             let prepared = cx
                                 .background_spawn(async move {
-                                    prepare_launch(&destination, &settings, debug, lines_tx).await
+                                    let options = LaunchOptions { launch, debug, main_thread_checker, root };
+                                    prepare_launch(&destination, &settings, options, lines_tx).await
                                 })
                                 .await;
                             // Surface preparation messages in the console.
@@ -843,6 +976,7 @@ impl BuildController {
             };
 
             let run_started = Instant::now();
+            let run_in_simulator = target.is_some();
             let launch_under_debugger = debug && target.is_none();
             this.update(cx, |this, cx| {
                 this.awaiting_attach = if debug { target.clone() } else { None };
@@ -857,8 +991,13 @@ impl BuildController {
                         .map(PathBuf::from)
                         .or_else(|| program.parent().map(PathBuf::from))
                         .unwrap_or_default();
+                    let args = cmd.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+                    let env = cmd
+                        .get_envs()
+                        .filter_map(|(k, v)| Some((k.to_string_lossy().to_string(), v?.to_string_lossy().to_string())))
+                        .collect();
                     this.push_console_line(format!("Debugging {}", program.display()));
-                    cx.emit(BuildEvent::LaunchDebugger { program, cwd });
+                    cx.emit(BuildEvent::LaunchDebugger { program, cwd, args, env });
                 }
                 cx.emit(BuildEvent::PhaseChanged);
                 cx.notify();
@@ -869,7 +1008,9 @@ impl BuildController {
                 return;
             }
 
-            let (code, _) = stream_into(&this, cx, cmd, handle, Sink::Console).await;
+            // simctl gives the app its own pseudo-terminal (`--console-pty`).
+            let sink = if run_in_simulator { Sink::Console } else { Sink::Terminal };
+            let (code, _) = stream_into(&this, cx, cmd, handle, sink).await;
             this.update(cx, |this, cx| {
                 if matches!(this.phase, Phase::Running { .. }) {
                     this.push_console_line(match code {
@@ -956,6 +1097,8 @@ impl BuildController {
 enum Sink {
     Log,
     Console,
+    /// The console, from a program on a pseudo-terminal.
+    Terminal,
 }
 
 /// Streams a process into the build log or console, batching UI updates to
@@ -968,7 +1111,10 @@ async fn stream_into(
     sink: Sink,
 ) -> (Option<i32>, String) {
     let (tx, rx) = channel::unbounded::<String>();
-    let process = cx.background_spawn(process::run_streaming(cmd, tx, handle));
+    let process = match sink {
+        Sink::Terminal => cx.background_spawn(process::run_streaming_tty(cmd, tx, handle)),
+        _ => cx.background_spawn(process::run_streaming(cmd, tx, handle)),
+    };
     let mut raw = String::new();
     while let Ok(first) = rx.recv().await {
         let mut batch = vec![first];
@@ -990,12 +1136,12 @@ async fn stream_into(
                 for line in batch {
                     match sink {
                         Sink::Log => this.push_log_line(line),
-                        Sink::Console => this.push_console_line(line),
+                        Sink::Console | Sink::Terminal => this.push_console_line(line),
                     }
                 }
                 match sink {
                     Sink::Log => cx.emit(BuildEvent::LogUpdated),
-                    Sink::Console => cx.emit(BuildEvent::ConsoleUpdated),
+                    Sink::Console | Sink::Terminal => cx.emit(BuildEvent::ConsoleUpdated),
                 }
                 for event in std::mem::take(&mut this.pending_events) {
                     cx.emit(event);
@@ -1049,6 +1195,7 @@ async fn run_simulator_tests(
     configuration: &str,
     destination: &Destination,
     request: &TestRequest,
+    extra: Option<&Launch>,
     cache_dir: &std::path::Path,
     handle: &ProcessHandle,
 ) -> (bool, String) {
@@ -1090,7 +1237,16 @@ async fn run_simulator_tests(
     let mut ok = true;
     let mut raw = String::new();
     let mut ran = 0;
-    for target in targets {
+    for mut target in targets {
+        // A scheme without a file has no test options in the .xctestrun.
+        if let Some(extra) = extra {
+            target.arguments.extend(extra.arguments.iter().cloned());
+            for (key, value) in &extra.environment {
+                if !target.environment.iter().any(|(k, _)| k == key) {
+                    target.environment.push((key.clone(), value.clone()));
+                }
+            }
+        }
         // An explicit selection replaces the plan's; otherwise the bundle's
         // own selection (scheme or test plan) applies.
         let scope = match request.scope_for_bundle(&target.name, &target.module) {
@@ -1199,6 +1355,9 @@ pub fn build_command(
                 }
                 BuildAction::Test => {
                     cmd.arg("test");
+                    if !configuration.eq_ignore_ascii_case("debug") {
+                        cmd.args(["-c", &configuration.to_lowercase()]);
+                    }
                 }
                 BuildAction::Clean => {
                     cmd.args(["package", "clean"]);
@@ -1220,24 +1379,60 @@ pub fn build_command(
     }
 }
 
+/// `program` with the scheme's arguments, environment and working
+/// directory (relative ones are in `root`), else `default_cwd`.
+fn launch_command(program: PathBuf, launch: &Launch, root: &Path, default_cwd: Option<&Path>) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.args(&launch.arguments).envs(launch.environment.iter().cloned());
+    match (&launch.working_directory, default_cwd) {
+        (Some(dir), _) => {
+            cmd.current_dir(root.join(dir));
+        }
+        (None, Some(dir)) => {
+            cmd.current_dir(dir);
+        }
+        (None, None) => {}
+    }
+    cmd
+}
+
+/// How the Run action launches its product.
+struct LaunchOptions {
+    launch: Launch,
+    debug: bool,
+    main_thread_checker: bool,
+    /// The project folder, for relative working directories.
+    root: PathBuf,
+}
+
 /// Boots/installs as needed and returns the command whose output is the
 /// app's console, plus the bundle id when running in a simulator.
 async fn prepare_launch(
     destination: &Destination,
     settings: &BuildSettings,
-    debug: bool,
+    options: LaunchOptions,
     messages: channel::Sender<String>,
 ) -> anyhow::Result<(Command, Option<String>)> {
     let say = |m: String| {
         messages.try_send(m).ok();
     };
+    let LaunchOptions { mut launch, debug, main_thread_checker, root } = options;
+    if main_thread_checker {
+        match xcode::main_thread_checker(destination) {
+            Some(library) => launch.insert_library(&library),
+            None => say("warning: Main Thread Checker not found".to_string()),
+        }
+    }
     match destination.platform {
         Platform::MacOS => {
             let exe = settings
                 .executable_path()
                 .ok_or_else(|| anyhow::anyhow!("missing EXECUTABLE_PATH"))?;
             say(format!("Launching {}", exe.display()));
-            Ok((Command::new(exe), None))
+            // Xcode's default working directory: the built products, not
+            // the bundle (an instrumented app writes default.profraw there).
+            let products = settings.get("TARGET_BUILD_DIR").map(PathBuf::from);
+            Ok((launch_command(exe, &launch, &root, products.as_deref()), None))
         }
         _ => {
             let app = settings
@@ -1284,13 +1479,15 @@ async fn prepare_launch(
             }
 
             say(format!("Launching {bundle_id}"));
-            let mut launch = Command::new("/usr/bin/xcrun");
-            launch.args(["simctl", "launch", "--console-pty", "--terminate-running-process"]);
+            let mut command = Command::new("/usr/bin/xcrun");
+            command.args(["simctl", "launch", "--console-pty", "--terminate-running-process"]);
             if debug {
-                launch.arg("--wait-for-debugger");
+                command.arg("--wait-for-debugger");
             }
-            launch.args([&udid, &bundle_id]);
-            Ok((launch, Some(bundle_id)))
+            command.args([&udid, &bundle_id]).args(&launch.arguments);
+            // simctl passes SIMCTL_CHILD_-prefixed variables to the app.
+            command.envs(launch.environment.iter().map(|(k, v)| (format!("SIMCTL_CHILD_{k}"), v.clone())));
+            Ok((command, Some(bundle_id)))
         }
     }
 }
