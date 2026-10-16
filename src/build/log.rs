@@ -67,9 +67,13 @@ impl TestResult {
         self.suites.iter().chain([&self.name]).cloned().collect::<Vec<_>>().join("/")
     }
 
-    /// Whether this reports the same test as `other`.
+    /// Whether this reports the same test as `other`. xcodebuild prints
+    /// XCTest results twice, as `-[Module.Class test]` and `Class.test()`.
     pub fn same_test(&self, other: &TestResult) -> bool {
-        self.name == other.name && self.suites == other.suites && self.module == other.module
+        let bare = |name: &str| name.strip_suffix("()").unwrap_or(name).to_string();
+        bare(&self.name) == bare(&other.name)
+            && self.suites == other.suites
+            && (self.module == other.module || self.module.is_none() || other.module.is_none())
     }
 }
 
@@ -260,7 +264,7 @@ pub fn parse_test(line: &str) -> Option<TestResult> {
     // Older releases print both names: Test "Adds one" (foo()) passed.
     if let Some(c) = re(
         &SWIFT_TESTING,
-        r#"^\S+ Test (?:"[^"]*" \((\S+?\))\)|("[^"]*")|(\S+?\))) (passed|failed|skipped)(?: after (\d+\.\d+) seconds)?"#,
+        r#"^[^\w\s']\S* Test (?:"[^"]*" \((\S+?\))\)|("[^"]*")|(\S+?\))) (passed|failed|skipped)(?: after (\d+\.\d+) seconds)?"#,
     )
     .captures(line)
     {
@@ -278,7 +282,7 @@ pub fn parse_test(line: &str) -> Option<TestResult> {
 
 pub fn parse_suite_event(line: &str) -> Option<SuiteEvent> {
     static SUITE: OnceLock<Regex> = OnceLock::new();
-    let c = re(&SUITE, r#"^\S+ Suite ("[^"]*"|\S+) (started|passed|failed|skipped)"#).captures(line.trim())?;
+    let c = re(&SUITE, r#"^[^\w\s']\S* Suite ("[^"]*"|\S+) (started|passed|failed|skipped)"#).captures(line.trim())?;
     let name = c[1].trim_matches('"').to_string();
     Some(match &c[2] {
         "started" => SuiteEvent::Started(name),
@@ -511,6 +515,8 @@ mod tests {
         assert_eq!(parse_suite_event(r#"✘ Suite "Fancy name" failed after 0.1 seconds with 1 issue."#), Some(SuiteEvent::Finished("Fancy name".into())));
         assert_eq!(parse_suite_event("✔ Test run with 4 tests in 2 suites passed after 0.001 seconds."), None);
         assert_eq!(parse_test("◇ Suite CounterTests started."), None);
+        // XCTest's own suite lines are not Swift Testing suites.
+        assert_eq!(parse_suite_event("Test Suite 'LegacyTests' started at 2026-10-16 11:51:28.644."), None);
     }
 
     #[test]

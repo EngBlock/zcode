@@ -15,7 +15,9 @@ use gpui_kit::{AppContext as _, Context, EventEmitter, Task};
 use smol::channel;
 
 use crate::project::{ProjectInfo, ProjectKind};
-use log::{Issue, LogLine, Severity, TestResult, TestStatus};
+use crate::testing::TestRequest;
+use crate::testing::plans::{self, TestPlan};
+use log::{Issue, LogLine, Severity, SuiteEvent, TestResult, TestStatus};
 use process::ProcessHandle;
 use xcode::{BuildSettings, Destination, Platform, SchemeList};
 
@@ -86,6 +88,8 @@ pub enum BuildEvent {
     ConsoleUpdated,
     IssuesChanged,
     PhaseChanged,
+    /// Test results changed.
+    TestsChanged,
     /// A compilation database was (re)written for sourcekit-lsp.
     CompileDatabaseUpdated(PathBuf),
     /// Run with debugging: a simulator app is waiting for the debugger.
@@ -108,7 +112,20 @@ pub struct BuildController {
     pub log: Vec<LogLine>,
     pub console: Vec<String>,
     pub issues: Vec<Issue>,
+    /// The latest result of every test that has run, across runs.
     pub tests: Vec<TestResult>,
+    /// Bumped whenever `tests` changes.
+    pub tests_generation: u64,
+    /// The scheme's test plans, and the one chosen (`None`: the default).
+    pub test_plans: Vec<TestPlan>,
+    pub test_plan: Option<String>,
+    /// The selection of the current or last test run, for Test Again.
+    pub last_test: Option<TestRequest>,
+    /// Open Swift Testing suites, innermost last: its console names a
+    /// test's suite only by printing the test between the suite's start
+    /// and finish.
+    suite_stack: Vec<String>,
+    track_suites: bool,
     pub phase: Phase,
     pub reports: Vec<Report>,
     process: ProcessHandle,
@@ -125,10 +142,11 @@ pub struct BuildController {
     /// Events raised where no `Context` is available, emitted on next flush.
     pending_events: Vec<BuildEvent>,
     /// An action requested before the scheme list finished loading.
-    queued: Option<(BuildAction, bool)>,
+    queued: Option<(BuildAction, bool, Option<TestRequest>)>,
     cache_dir: PathBuf,
     task: Option<Task<()>>,
     _load_task: Option<Task<()>>,
+    _plans_task: Option<Task<()>>,
 }
 
 impl EventEmitter<BuildEvent> for BuildController {}
@@ -150,6 +168,12 @@ impl BuildController {
             console: vec![],
             issues: vec![],
             tests: vec![],
+            tests_generation: 0,
+            test_plans: vec![],
+            test_plan: None,
+            last_test: None,
+            suite_stack: vec![],
+            track_suites: false,
             phase: Phase::Idle,
             reports: vec![],
             process: ProcessHandle::default(),
@@ -165,6 +189,7 @@ impl BuildController {
             cache_dir,
             task: None,
             _load_task: None,
+            _plans_task: None,
         };
         this.reload(cx);
         this
@@ -219,9 +244,10 @@ impl BuildController {
                 cx.emit(BuildEvent::ConfigurationChanged);
                 cx.notify();
                 this.refresh_supported_destinations(cx);
-                if let Some((action, debug)) = this.queued.take() {
+                this.load_test_plans(cx);
+                if let Some((action, debug, tests)) = this.queued.take() {
                     this.debug_run = debug;
-                    this.start(action, cx);
+                    this.start_with(action, tests, cx);
                 }
             })
             .ok();
@@ -289,6 +315,56 @@ impl BuildController {
         cx.emit(BuildEvent::ConfigurationChanged);
         cx.notify();
         self.refresh_supported_destinations(cx);
+        self.load_test_plans(cx);
+    }
+
+    /// Reads the scheme's test plans (from its `.xcscheme`) in the background.
+    pub fn load_test_plans(&mut self, cx: &mut Context<Self>) {
+        let (Some(scheme), true) = (self.scheme.clone(), self.project.kind.is_xcode()) else {
+            self.test_plans.clear();
+            return;
+        };
+        let kind = self.project.kind.clone();
+        self._plans_task = Some(cx.spawn(async move |this, cx| {
+            let found = cx.background_spawn(async move { plans::scheme_test_plans(&kind, &scheme) }).await;
+            this.update(cx, |this, cx| {
+                if this.test_plan.as_ref().is_some_and(|p| !found.iter().any(|f| f.name == *p)) {
+                    this.test_plan = None;
+                }
+                this.test_plans = found;
+                cx.emit(BuildEvent::ConfigurationChanged);
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    /// The plan tests run with: the chosen one, else the scheme's default.
+    pub fn active_test_plan(&self) -> Option<&TestPlan> {
+        match &self.test_plan {
+            Some(name) => self.test_plans.iter().find(|p| p.name == *name),
+            None => self.test_plans.iter().find(|p| p.is_default).or(self.test_plans.first()),
+        }
+    }
+
+    pub fn set_test_plan(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        self.test_plan = name;
+        cx.emit(BuildEvent::ConfigurationChanged);
+        cx.notify();
+    }
+
+    /// Product ▸ Test, or a selection of tests (a gutter diamond, the Test
+    /// navigator, Test Again).
+    pub fn test(&mut self, request: TestRequest, cx: &mut Context<Self>) {
+        self.start_with(BuildAction::Test, Some(request), cx);
+    }
+
+    /// Product ▸ Clear Test Results.
+    pub fn clear_test_results(&mut self, cx: &mut Context<Self>) {
+        self.tests.clear();
+        self.tests_generation += 1;
+        cx.emit(BuildEvent::TestsChanged);
+        cx.notify();
     }
 
     pub fn set_destination(&mut self, destination: Destination, cx: &mut Context<Self>) {
@@ -455,9 +531,15 @@ impl BuildController {
 
     /// Product ▸ Build / Run / Test / Clean.
     pub fn start(&mut self, action: BuildAction, cx: &mut Context<Self>) {
+        self.start_with(action, None, cx);
+    }
+
+    /// Starts `action`; a test run runs `tests` (everything when `None`).
+    fn start_with(&mut self, action: BuildAction, tests: Option<TestRequest>, cx: &mut Context<Self>) {
         if !self.can_build() {
             return;
         }
+        let tests = (action == BuildAction::Test).then(|| tests.unwrap_or_default());
         if self.indexing {
             // The user's build supersedes (and will produce) the index data.
             self.index_process.terminate();
@@ -470,7 +552,7 @@ impl BuildController {
         let Some(scheme) = self.scheme.clone() else {
             if self.schemes_loading {
                 // Run as soon as the project's schemes are known.
-                self.queued = Some((action, self.debug_run));
+                self.queued = Some((action, self.debug_run, tests));
                 self.phase = Phase::Preparing(action);
                 cx.emit(BuildEvent::PhaseChanged);
             } else {
@@ -485,9 +567,22 @@ impl BuildController {
             .unwrap_or_else(Destination::my_mac);
         self.log.clear();
         self.issues.clear();
-        if action == BuildAction::Test {
-            self.tests.clear();
+        if let Some(request) = &tests {
+            // Results of tests this run doesn't include stay, as in Xcode.
+            if request.is_all() {
+                self.tests.clear();
+            } else {
+                self.tests.retain(|t| !request.only.iter().any(|s| s.covers(t)));
+            }
+            self.tests_generation += 1;
+            self.suite_stack.clear();
+            self.last_test = Some(request.clone());
+            cx.emit(BuildEvent::TestsChanged);
         }
+        let test_plan = self
+            .active_test_plan()
+            .filter(|_| tests.is_some() && self.project.kind.is_xcode())
+            .map(|p| p.name.clone());
         if action == BuildAction::Run {
             self.console.clear();
             cx.emit(BuildEvent::ConsoleUpdated);
@@ -520,12 +615,26 @@ impl BuildController {
             // build-for-testing here, then inject each bundle into its host.
             let direct_tests = action == BuildAction::Test
                 && project.kind.is_xcode()
-                && destination.platform.is_simulator();
-            let cmd = if direct_tests {
+                && destination.platform.is_simulator()
+                && !tests.as_ref().is_some_and(TestRequest::only_ui_tests);
+            let mut cmd = if direct_tests {
                 xcodebuild_command(&project, &scheme, &configuration, &destination, "build-for-testing")
             } else {
                 build_command(&project, &scheme, &configuration, &destination, tool_action)
             };
+            if let Some(plan) = &test_plan {
+                cmd.args(["-testPlan", plan]);
+            }
+            if let (Some(request), false) = (&tests, direct_tests) {
+                match project.kind {
+                    ProjectKind::SwiftPackage => cmd.args(request.swiftpm_args()),
+                    _ => cmd.args(request.xcodebuild_args()),
+                };
+            }
+            // Swift Testing's console order tells suites apart when tests
+            // run one at a time: always when XCTest hosts them (Xcode
+            // projects), and with `swift test --no-parallel`.
+            let track_suites = project.kind.is_xcode() || tests.as_ref().is_some_and(|r| r.serial);
 
             // Resolve run settings concurrently with the build.
             let settings_task = (action == BuildAction::Run && project.kind.is_xcode()).then(|| {
@@ -550,6 +659,7 @@ impl BuildController {
 
             this.update(cx, |this, cx| {
                 this.phase = Phase::Building { action, started };
+                this.track_suites = track_suites;
                 this.push_log_line(format!("$ {}", display_command(&cmd)));
                 cx.emit(BuildEvent::PhaseChanged);
                 cx.notify();
@@ -559,8 +669,11 @@ impl BuildController {
             let (code, mut raw_log) = stream_into(&this, cx, cmd, handle.clone(), Sink::Log).await;
             let mut success = code == Some(0);
             if direct_tests && success && this.read_with(cx, |this, _| this.phase != Phase::Stopped).unwrap_or(false) {
-                let (ok, output) =
-                    run_simulator_tests(&this, cx, &project, &scheme, &configuration, &destination, &handle).await;
+                let request = tests.clone().unwrap_or_default();
+                let (ok, output) = run_simulator_tests(
+                    &this, cx, &project, &scheme, &configuration, &destination, &request, &cache_dir, &handle,
+                )
+                .await;
                 success = ok;
                 raw_log.push_str(&output);
             }
@@ -785,11 +898,28 @@ impl BuildController {
         {
             self.issues.push(issue);
         }
-        if let Some(test) = parsed.test {
-            match self.tests.iter_mut().find(|t| t.name == test.name) {
-                Some(existing) => *existing = test,
+        match parsed.suite {
+            Some(SuiteEvent::Started(name)) => self.suite_stack.push(name),
+            Some(SuiteEvent::Finished(name)) => {
+                if let Some(ix) = self.suite_stack.iter().rposition(|s| *s == name) {
+                    self.suite_stack.truncate(ix);
+                }
+            }
+            None => {}
+        }
+        if let Some(mut test) = parsed.test {
+            if self.track_suites && test.suites.is_empty() && test.module.is_none() {
+                test.suites = self.suite_stack.clone();
+            }
+            match self.tests.iter_mut().find(|t| t.same_test(&test)) {
+                // Keep the module when only the first report named it.
+                Some(existing) => {
+                    test.module = test.module.or(existing.module.take());
+                    *existing = test;
+                }
                 None => self.tests.push(test),
             }
+            self.tests_generation += 1;
         }
         self.log.push(log::prettify(&raw));
         if self.log.len() > MAX_LOG_LINES {
@@ -910,6 +1040,7 @@ fn display_command(cmd: &Command) -> String {
 
 /// Runs the unit-test bundles of a just-built scheme inside the simulator and
 /// streams their output into the build log. Returns (success, raw output).
+#[allow(clippy::too_many_arguments)]
 async fn run_simulator_tests(
     this: &gpui_kit::WeakEntity<BuildController>,
     cx: &mut gpui_kit::AsyncApp,
@@ -917,6 +1048,8 @@ async fn run_simulator_tests(
     scheme: &str,
     configuration: &str,
     destination: &Destination,
+    request: &TestRequest,
+    cache_dir: &std::path::Path,
     handle: &ProcessHandle,
 ) -> (bool, String) {
     let say = |this: &gpui_kit::WeakEntity<BuildController>, cx: &mut gpui_kit::AsyncApp, line: String| {
@@ -956,17 +1089,40 @@ async fn run_simulator_tests(
     };
     let mut ok = true;
     let mut raw = String::new();
+    let mut ran = 0;
     for target in targets {
+        // An explicit selection replaces the plan's; otherwise the bundle's
+        // own selection (scheme or test plan) applies.
+        let scope = match request.scope_for_bundle(&target.name, &target.module) {
+            None => continue,
+            Some(entries) if entries.is_empty() => sim_tests::Scope::for_target(&target),
+            Some(entries) => sim_tests::Scope { entries, invert: false },
+        };
         if target.is_ui_test {
             say(this, cx, format!("note: Skipping UI test bundle {} (UI tests run through xcodebuild test)", target.name));
             continue;
         }
-        say(this, cx, format!("Testing {}…", target.name));
+        let title = match &target.configuration {
+            Some(configuration) => format!("{} ({configuration})", target.name),
+            None => target.name.clone(),
+        };
+        say(this, cx, format!("Testing {title}…"));
+        this.update(cx, |this, _| this.suite_stack.clear()).ok();
         let udid = destination.id.clone();
+        let scope_file = (!scope.is_all()).then(|| cache_dir.join("tests").join(format!("{}.scope.plist", target.module)));
         let prepared = cx
             .background_spawn({
                 let target = target.clone();
-                async move { sim_tests::test_command(&udid, &target) }
+                let scope_file = scope_file.clone();
+                async move {
+                    if let Some(file) = &scope_file {
+                        if let Some(dir) = file.parent() {
+                            std::fs::create_dir_all(dir)?;
+                        }
+                        std::fs::write(file, scope.plist())?;
+                    }
+                    sim_tests::test_command(&udid, &target, scope_file.as_deref())
+                }
             })
             .await;
         let cmd = match prepared {
@@ -977,15 +1133,30 @@ async fn run_simulator_tests(
                 continue;
             }
         };
+        ran += 1;
         let (code, output) = stream_into(this, cx, cmd, handle.clone(), Sink::Log).await;
         raw.push_str(&output);
-        let finished = output.contains("Test run with") || output.contains("Test Suite 'All tests'");
+        let finished = output.contains("Test run with")
+            || output.contains("Test Suite 'All tests'")
+            || output.contains("Test Suite 'Selected tests'");
         if code != Some(0) || !finished {
             ok = false;
             say(this, cx, format!("error: {} did not finish running tests", target.name));
         }
     }
-    let failed = this.read_with(cx, |this, _| this.failed_tests()).unwrap_or(0);
+    if ran == 0 && !request.is_all() {
+        say(this, cx, "error: The selected tests are in no test bundle of this scheme".into());
+        ok = false;
+    }
+    // Earlier results of tests outside this run don't count.
+    let failed = this
+        .read_with(cx, |this, _| {
+            this.tests
+                .iter()
+                .filter(|t| t.status == TestStatus::Failed && (request.is_all() || request.only.iter().any(|s| s.covers(t))))
+                .count()
+        })
+        .unwrap_or(0);
     ok &= failed == 0;
     say(this, cx, if ok { "** TEST SUCCEEDED **".into() } else { "** TEST FAILED **".into() });
     (ok, raw)

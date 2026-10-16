@@ -136,8 +136,9 @@ impl TestSpec {
             return true;
         }
         if result.suites.is_empty() {
-            // Only the test's name is known.
-            return self.components.len() == 1 || self.components.last().map(|l| strip_parens(l)) == Some(strip_parens(&result.name));
+            // Only the test's name is known, which a class or suite can't claim.
+            let is_test = self.components.len() >= 2 || self.components.last().is_some_and(|l| l.ends_with(')'));
+            return is_test && self.components.last().map(|l| strip_parens(l)) == Some(strip_parens(&result.name));
         }
         self.components.len() <= path.len() && self.components.iter().zip(&path).all(|(a, b)| strip_parens(a) == strip_parens(b))
     }
@@ -441,5 +442,8 @@ final class LegacyTests: XCTestCase {
         assert!(same.covers(&result("✔ Test same() passed after 0.001 seconds.", &["A"])));
         assert!(!same.covers(&result("✔ Test same() passed after 0.001 seconds.", &["B"])));
         assert!(same.covers(&result("✔ Test same() passed after 0.001 seconds.", &[])));
+        let suite = spec(&items, "A", "AppTests");
+        assert!(!suite.covers(&result("✔ Test \"Global name\" passed after 0.001 seconds.", &[])));
+        assert!(suite.covers(&result("✔ Test same() passed after 0.001 seconds.", &["A"])));
     }
 }

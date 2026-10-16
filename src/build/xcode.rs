@@ -16,6 +16,9 @@ pub struct SchemeList {
     pub schemes: Vec<String>,
     pub configurations: Vec<String>,
     pub targets: Vec<String>,
+    /// A Swift package's test targets and their folders (relative to the
+    /// package), which tell which target a test file belongs to.
+    pub test_targets: Vec<(String, PathBuf)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -120,6 +123,7 @@ pub fn list_schemes(project: &ProjectInfo) -> Result<SchemeList> {
                 schemes: strings("schemes"),
                 configurations,
                 targets: strings("targets"),
+                test_targets: vec![],
             })
         }
         ProjectKind::SwiftPackage => {
@@ -130,6 +134,7 @@ pub fn list_schemes(project: &ProjectInfo) -> Result<SchemeList> {
             )?;
             let mut schemes = vec![];
             let mut targets = vec![];
+            let mut test_targets = vec![];
             if let Some(products) = value.get("products").and_then(Value::as_array) {
                 for product in products {
                     let name = product.get("name").and_then(Value::as_str).unwrap_or("");
@@ -148,11 +153,20 @@ pub fn list_schemes(project: &ProjectInfo) -> Result<SchemeList> {
                     .iter()
                     .filter_map(|t| t.get("name").and_then(Value::as_str).map(str::to_string))
                     .collect();
+                test_targets = ts
+                    .iter()
+                    .filter(|t| t.get("type").and_then(Value::as_str) == Some("test"))
+                    .filter_map(|t| {
+                        let name = t.get("name")?.as_str()?.to_string();
+                        Some((name, PathBuf::from(t.get("path")?.as_str()?)))
+                    })
+                    .collect();
             }
             Ok(SchemeList {
                 schemes,
                 configurations: vec!["Debug".into(), "Release".into()],
                 targets,
+                test_targets,
             })
         }
         ProjectKind::Folder => Ok(SchemeList::default()),
