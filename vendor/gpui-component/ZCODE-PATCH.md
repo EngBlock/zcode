@@ -1,7 +1,7 @@
 # zcode patch to gpui-component 0.7.3
 
 This is the published `gpui-component` 0.7.3 crate (upstream commit
-`67265a36`, `crates/component`) with one change, wired in through
+`67265a36`, `crates/component`) with the changes below, wired in through
 `[patch.crates-io]` in zcode's `Cargo.toml`.
 
 **Why:** `gpui_component::init` resolves the theme's default UI and
@@ -13,6 +13,13 @@ two or three names. The patch checks those names individually on macOS
 keeps the full listing on other platforms. On macOS both probes choose the
 same fonts as before: `.SystemUIFont` resolves to itself, so no substitution
 happens, and Menlo is installed.
+
+**Editor popover padding (`src/input/popovers/`):** hover and diagnostic
+popovers get `px_2`/`py_1p5` padding instead of `p_1` (diagnostics had
+`px_1`/`py_0p5`). `render_markdown` passes empty `code_block_actions`, which
+hides gpui-base's code-block language label: the popover style zeroes the
+code block's padding, so the absolutely positioned label landed on the code.
+Re-apply these when updating; they are small enough to redo by hand.
 
 **Updating:** when gpui-kit moves to a newer gpui-component, check whether
 `src/theme/mono_font.rs` still enumerates fonts. If it does, re-apply the diff

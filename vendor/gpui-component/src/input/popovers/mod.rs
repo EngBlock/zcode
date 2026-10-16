@@ -42,6 +42,12 @@ pub(super) fn render_markdown(
                         .text_size(px(11.)),
                 ),
         )
+        // zcode patch: the code block's language label sits in its top-right
+        // corner, relying on top padding the popover style removes, so it
+        // overlapped the code. In an editor popover the language is the
+        // file's own, so the label is dropped: providing (empty) actions
+        // takes the corner instead of the label.
+        .code_block_actions(|_, _, _| gpui::Empty)
         .selectable(true)
 }
 

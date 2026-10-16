@@ -51,8 +51,6 @@ impl Render for DiagnosticPopover {
             self.diagnostic.range.clone(),
             move |window, cx| render_markdown("message", message.clone(), window, cx),
         )
-        .px_1()
-        .py_0p5()
         .bg(bg)
         .text_color(fg)
         .border_1()
