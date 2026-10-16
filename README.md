@@ -42,8 +42,11 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | The Test navigator lists targets, classes, suites and tests from source with their results; each row runs on its play button or context menu. Results of tests a run doesn't include stay, as in Xcode. | ⌘6 |
 | | Test plans: the scheme's `.xctestplan`s in Product ▸ Choose Test Plan… and the Test navigator; ⌘U and Test Again run the chosen plan, and tests it leaves out are dimmed. | — |
 | | Every runner gets the selection: `xcodebuild test -only-testing:`/`-testPlan`, `swift test --filter`, and in the simulator an XCTest scope for the injected bundle (which also selects Swift Testing tests), honoring the plan's skipped and selected tests, environment and arguments. | — |
-| **Debugging** (lldb-dap) | Breakpoints (toggle, deactivate all, persisted per project). ⌘R runs under the debugger whenever breakpoints are active, as in Xcode. Simulator apps launch with `--wait-for-debugger` and lldb attaches to them. | ⌘\\, ⌘Y |
-| | Pause/continue, step over/into/out, the stopped line highlighted in green, threads and frames in the Debug navigator, and an expandable Variables view next to the console. | ⌃⌘Y, F6, F7, F8 |
+| **Debugging** (lldb-dap) | Breakpoints as blue markers on the line numbers: click the gutter to add one, click a marker to disable or enable it, double-click it (or Edit Breakpoint…) to edit it, right-click for its menu. They follow edits (lines inserted above move them), renames and moves, and are saved per project. ⌘R runs under the debugger whenever enabled breakpoints are active, as in Xcode. Simulator apps launch with `--wait-for-debugger` and lldb attaches to them. | ⌘\\, ⌘Y |
+| | The breakpoint editor popover: name, condition, "Ignore N times before stopping", actions (Log Message with `@expression@`, `%B` and `%H`, logged or spoken; Debugger Command; Sound) and "Automatically continue after evaluating actions". | — |
+| | Symbolic (symbol and module), Swift Error and Exception (Objective-C, C++ or both, on throw or catch) breakpoints from the Breakpoint navigator's + menu or Debug ▸ Breakpoints; the navigator lists every breakpoint with its toggle and options. | ⌥⌘\\ |
+| | Pause/continue, step over/into/out, the stopped line highlighted in green, threads and frames in the Debug navigator, and an expandable Variables view next to the console, with Copy Value and Print Description. Hovering a variable while paused shows its value. | ⌃⌘Y, F6, F7, F8 |
+| | The LLDB console: an `(lldb)` prompt while paused takes `po`, `p`, `v`, `expr` and any other lldb command, with ↑/↓ history; an empty Return repeats the last command. | ⇧⌘C |
 | **Monitoring** | Memory is sampled every 2 s for the life of the app. The status bar shows zcode's footprint and the language server's (including its `SourceKitService` XPC helpers), and turns orange above 1.5 GB idle for zcode or 4 GB for the language server. View ▸ Performance shows startup timings, the current and 30 s idle-baseline footprint, peak, and a history graph. `--perf-log <file>` (or `ZCODE_PERF_LOG`) appends every sample as a JSON line for long-term tracking. `zcode --startup-bench` prints startup and memory as JSON and quits. | — |
 
 The full Xcode 27 menu and shortcut inventory this was matched against is in
@@ -132,7 +135,7 @@ src/
                     compilation-database extraction
   testing/          tests found in source, test plans, test selections per runner, results → tests
   scheme/           Edit Scheme options: .xcscheme read and edited in place, what launches get
-  debugger/         DAP client and debugger model (lldb-dap)
+  debugger/         DAP client, debugger model, breakpoints and their options, data tips (lldb-dap)
   project.rs        project detection and gitignore-aware scanning
   xcodeproj.rs      project.pbxproj parser and in-place editor (build settings)
   xcodeproj/        structural edits: files, groups, build files, target membership
@@ -176,6 +179,13 @@ saved breakpoints can't leak in. It covers:
   suite, and the Greeting test plan; in a Swift package a test and an XCTest
   class (`swift test --filter`) and Re-run Failed Tests after a fix
 * run, test and debug for a Swift package
+* breakpoints in a Swift package: gutter clicks, line tracking through edits
+  and undo, the editor popover; a condition, an ignore count, log and command
+  actions with auto-continue; a symbolic breakpoint in and out of its module;
+  Swift Error and Objective-C exception breakpoints; `po`/`p`/`expr`/`v`/`bt`
+  at the console's prompt with history, Print Description and data tips;
+  breakpoints restored after a relaunch. A Mac app (`samples/HelloClassic`)
+  stopped under lldb-dap with the console and an auto-continuing log message
 * Edit Scheme: arguments, environment variables and diagnostics written into
   HelloClassic's shared scheme (checked line by line, and byte for byte once
   undone), a Mac app run that receives them, the Test action's configuration;
@@ -189,7 +199,7 @@ saved breakpoints can't leak in. It covers:
   memory, the status-bar label and the `--perf-log` file
 * with `--simulator`: unit tests, one test and one suite from their diamonds,
   the Smoke test plan, and run (with the scheme's arguments and environment)
-  and debug on an iOS simulator
+  and debug on an iOS simulator (with the LLDB console)
 
 The control channel also takes window screenshots
 (`screenshot <path>`), which doesn't need Screen Recording permission.
@@ -235,6 +245,16 @@ The control channel also takes window screenshots
   Test plans can be chosen, not edited.
 * Hostless (library) test bundles on a simulator get the same selection, but
   that path is untested here: every sample's tests are hosted.
+* Breakpoint actions run when lldb reports the stop to zcode, so a
+  breakpoint that auto-continues still pauses the program briefly (as
+  lldb-dap's own log points do). Swift Error breakpoints can't be limited to
+  one error type, exception breakpoints have no condition (as in Xcode), and
+  there are no Test Failure, Runtime Issue or Constraint Error breakpoints,
+  watchpoints, or breakpoint sharing (zcode keeps breakpoints in its session,
+  not in the project's `xcuserdata`, so Xcode doesn't see them). Deleting a
+  breakpoint's line deletes the breakpoint, and edits made outside zcode
+  don't move breakpoints. The console takes lldb commands only while paused;
+  a running program's stdin isn't connected.
 * UI test bundles are skipped by the in-simulator unit-test runner and still
   need `xcodebuild test` (running only UI tests from a diamond uses it). On this machine that fails ("The test runner hung
   before establishing connection") because of the simulator runtime, with

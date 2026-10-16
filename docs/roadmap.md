@@ -23,7 +23,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
    test plan selection. ✅
 2. Edit Scheme (minimal): run arguments, environment variables, launch options. ✅
 3. Debugger depth: LLDB console (`po`/`p`/`expr`), conditional, log-message,
-   symbolic and Swift error/exception breakpoints.
+   symbolic and Swift error/exception breakpoints. ✅
 4. Physical devices via `devicectl`: install, launch, console, debug attach.
 5. SwiftPM management: Add Package, Resolve/Update/Reset, Package
    Dependencies in the navigator.

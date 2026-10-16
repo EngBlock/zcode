@@ -25,7 +25,10 @@ which was extracted from Xcode 27's own command definitions.
 
 | Item | Status | Notes |
 |---|---|---|
-| Debugging with lldb-dap: breakpoints (⌘\\, ⌘Y), pause/continue (⌃⌘Y), step (F6/F7/F8), Debug navigator, Variables view, Breakpoints navigator | ✅ | Attaches to simulator apps and launches Mac executables; breakpoints are persisted. No LLDB REPL or conditional breakpoints yet |
+| Debugging with lldb-dap: breakpoints (⌘\\, ⌘Y), pause/continue (⌃⌘Y), step (F6/F7/F8), Debug navigator, Variables view, Breakpoints navigator | ✅ | Attaches to simulator apps and launches Mac executables; breakpoints are persisted and follow edits |
+| Breakpoint editing (Edit Breakpoint…, double-click): condition, ignore count, actions (Log Message with `@expr@`/`%B`/`%H`, Debugger Command, Sound), auto-continue, enable/disable | ✅ | Gutter markers with click, double-click and right-click as in Xcode. Actions run in zcode when the breakpoint stops |
+| Symbolic (⌥⌘\\), Swift Error and Exception breakpoints (Breakpoint navigator + menu, Debug ▸ Breakpoints) | 🟡 | Symbol and module; Objective-C/C++ on throw or catch. No Swift error type filter, Test Failure, Runtime Issue or Constraint Error breakpoints, or watchpoints |
+| LLDB console (`po`, `p`, `v`, `expr`, any lldb command) | ✅ | `(lldb)` prompt while paused, ↑/↓ history, Return repeats; Variables view Copy Value and Print Description; values on hover while paused |
 | Test (⌘U), Tests navigator | ✅ | Unit tests run in the simulator by injecting the bundle into the host app; XCTest and Swift Testing results; failures shown as issues. UI tests need `xcodebuild test` |
 | Test diamonds, run one test or class (gutter, Test navigator), Test Selected Items (⌃⌥⌘U), Test Again (⌃⌥⌘G), Clear Test Results (⌃⌥⌘K), re-run failed | ✅ | Tests found in source (Swift and Objective-C); selections reach xcodebuild (`-only-testing`), `swift test` (`--filter`) and the in-simulator runner (XCTest scope). Re-run failed has no Xcode menu equivalent (Xcode offers it in test reports). No Test Without Building, Test Repeatedly or Profile Test |
 | Test plans | 🟡 | Choose a scheme's plan (Product ▸ Choose Test Plan…, Test navigator); runs honor it with every runner. No test plan editor (⌘>) |
