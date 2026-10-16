@@ -6,7 +6,7 @@
 Launches zcode on the sample projects with ZCODE_DEBUG_DIR set, sends
 keystrokes/actions, and asserts on the JSON state from `dump`. `--simulator`
 also builds, runs and debugs the iOS sample in a simulator (slower).
-`--only <text>` runs just the checks whose names contain <text>.
+`--only <text>[,<text>…]` runs just the checks whose names contain one of them.
 """
 
 import json
@@ -27,7 +27,7 @@ BINARY = os.path.join(ROOT, "target", "release", "zcode")
 DEBUG_DIR = tempfile.mkdtemp(prefix="zcode-e2e-")
 
 passed, failed = 0, 0
-ONLY = sys.argv[sys.argv.index("--only") + 1].lower() if "--only" in sys.argv else None
+ONLY = sys.argv[sys.argv.index("--only") + 1].lower().split(",") if "--only" in sys.argv else None
 
 
 # Xcode 27 default shortcuts (docs/xcode-inventory.md) → the zcode command
@@ -36,6 +36,7 @@ XCODE_SHORTCUTS = [
     ("cmd-o", "zcode::OpenProject", "File ▸ Open…"),
     ("cmd-shift-o", "zcode::OpenQuickly", "File ▸ Open Quickly…"),
     ("cmd-n", "zcode::NewFile", "File ▸ New ▸ File…"),
+    ("cmd-alt-a", "zcode::AddFiles", "File ▸ Add Files…"),
     ("cmd-s", "zcode::Save", "File ▸ Save"),
     ("cmd-alt-s", "zcode::SaveAll", "File ▸ Save All"),
     ("cmd-w", "zcode::CloseTab", "File ▸ Close Tab"),
@@ -78,6 +79,7 @@ XCODE_SHORTCUTS = [
     ("cmd-8", "zcode::ShowBreakpointNavigator", "View ▸ Navigators ▸ Breakpoints"),
     ("cmd-9", "zcode::ShowReportNavigator", "View ▸ Navigators ▸ Reports"),
     ("cmd-shift-y", "zcode::ToggleDebugArea", "View ▸ Debug Area ▸ Show Debug Area"),
+    ("cmd-alt-1", "zcode::ShowFileInspector", "View ▸ Inspectors ▸ File"),
     ("cmd-shift-c", "zcode::ActivateConsole", "View ▸ Debug Area ▸ Activate Console"),
     ("ctrl-6", "zcode::ShowDocumentItems", "View ▸ Editor ▸ Document Items"),
     ("cmd-shift-a", "zcode::QuickActions", "View ▸ Show Quick Actions…"),
@@ -169,7 +171,7 @@ class Zcode:
 
 def check(name, fn):
     global passed, failed
-    if ONLY and ONLY not in name.lower():
+    if ONLY and not any(part in name.lower() for part in ONLY):
         return
     try:
         fn()
@@ -198,6 +200,42 @@ def column_of(path, needle, offset=0):
     with open(path) as f:
         line = f.read().splitlines()[line_of(path, needle) - 1]
     return line.index(needle) + offset
+
+
+def wait_file(path, predicate, timeout=15):
+    """Polls a file until predicate(contents) holds; returns the contents."""
+    deadline = time.time() + timeout
+    while True:
+        with open(path) as f:
+            text = f.read()
+        if predicate(text):
+            return text
+        if time.time() > deadline:
+            raise TimeoutError(f"{os.path.basename(path)} never matched")
+        time.sleep(0.1)
+
+
+def lines_kept(original, edited):
+    """Every original line is still there, in order (edits only inserted lines)."""
+    rest = iter(original.splitlines())
+    want = next(rest, None)
+    for line in edited.splitlines():
+        if line == want:
+            want = next(rest, None)
+    return want is None
+
+
+def group_block(text, name):
+    """The first object commented `/* name */` (groups come before targets)."""
+    start = text.index(f"/* {name} */ = {{\n")
+    return text[start:text.index("\t\t};", start)]
+
+
+def empty_trash_item(name):
+    """Removes a test file Move to Trash put in ~/.Trash."""
+    path = os.path.expanduser(os.path.join("~/.Trash", name))
+    if os.path.exists(path):
+        os.remove(path)
 
 
 def xcode_project_checks(z, samples, sim):
@@ -302,6 +340,20 @@ def xcode_project_checks(z, samples, sim):
         assert open(pbxproj).read() == original, "restoring the value should restore the file byte for byte"
         assert not z.dump()["project_settings"]
 
+    def synchronized_folders_untouched():
+        pbxproj = os.path.join(samples, "HelloZ", "HelloZ.xcodeproj", "project.pbxproj")
+        original = open(pbxproj).read()
+        z.run(f"inspect {counter}")
+        s = z.wait_for(lambda s: s["inspector"]["tracking"], timeout=15, interval=0.3)
+        assert s["inspector"]["tracking"] == {"synchronized": "HelloZ", "targets": ["HelloZ"]}, s["inspector"]
+        name = f"ZcodeE2EScratch{os.getpid()}.swift"
+        scratch = os.path.join(hello, name)
+        z.run(f"new-file {scratch}", "wait 1000")
+        z.run(f"rename {scratch} -> Renamed{name}", "wait 1000")
+        z.run(f"trash {os.path.join(hello, 'Renamed' + name)}", "wait 1000")
+        empty_trash_item("Renamed" + name)
+        assert open(pbxproj).read() == original, "synchronized folders need no project edits"
+
     def unit_tests_on_simulator():
         z.run("keys cmd-u")
         s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=300)
@@ -360,10 +412,85 @@ def xcode_project_checks(z, samples, sim):
     check("Find in Workspace (⇧⌘F) and references (⌃⇧⌘F)", find_and_references)
     check("Project settings: edit a General field, written to project.pbxproj in place", project_settings)
     check("Build error → Issue navigator → next issue (⌘')", build_error_and_issue_navigation)
+    check("Synchronized folders: New File / Rename / Trash leave project.pbxproj alone", synchronized_folders_untouched)
     if sim:
         check("Unit tests in iOS Simulator (⌘U)", unit_tests_on_simulator)
         check("Run on iOS Simulator (⌘R) with console", run_on_simulator)
         check("Debug on iOS Simulator (breakpoint stop)", debug_on_simulator)
+
+
+def classic_project_checks(z, samples):
+    root = os.path.join(samples, "HelloClassic")
+    app = os.path.join(root, "HelloClassic")
+    pbxproj = os.path.join(root, "HelloClassic.xcodeproj", "project.pbxproj")
+    original = open(pbxproj).read()
+    badge = os.path.join(app, "Views", "Badge.swift")
+
+    def new_file():
+        z.wait_for(lambda s: s["xcode_projects"], timeout=30, interval=0.3)
+        os.makedirs(os.path.dirname(badge))  # the New File panel can create folders
+        z.run(f"new-file {badge}")
+        text = wait_file(pbxproj, lambda t: "Badge.swift in Sources" in t)
+        assert "/* Views */ = {" in text and "path = Views;" in text, "a group for the new folder"
+        assert lines_kept(original, text), "only inserted lines"
+        assert z.dump()["active"]["path"].endswith("Badge.swift")
+
+    def target_membership():
+        z.run(f"inspect {badge}")
+        on, both = ["HelloClassic: on", "HelloClassicTests: off"], ["HelloClassic: on", "HelloClassicTests: on"]
+        targets = lambda s: (s["inspector"]["tracking"] or {}).get("targets")
+        z.wait_for(lambda s: targets(s) == on, timeout=15, interval=0.3)
+        before = open(pbxproj).read()
+        z.run("membership HelloClassicTests on")
+        wait_file(pbxproj, lambda t: t.count("/* Badge.swift in Sources */ = {isa = PBXBuildFile") == 2)
+        z.wait_for(lambda s: targets(s) == both, timeout=15, interval=0.3)
+        z.run("membership HelloClassicTests off")
+        assert wait_file(pbxproj, lambda t: t == before), "unchecking restores the file byte for byte"
+
+    def rename_and_move():
+        z.run(f"rename {os.path.join(app, 'Model', 'Greeter.swift')} -> Greeting.swift")
+        wait_file(pbxproj, lambda t: "/* Greeting.swift in Sources */" in t and "Greeter.swift" not in t)
+        z.run(f"rename {os.path.join(app, 'ContentView.swift')} -> Views/ContentView.swift")
+        text = wait_file(pbxproj, lambda t: "ContentView.swift" in group_block(t, "Views"))
+        assert os.path.exists(os.path.join(app, "Views", "ContentView.swift"))
+        assert "ContentView.swift" not in group_block(text, "HelloClassic"), "moved out of its old group"
+
+    def trash():
+        name = f"ZcodeE2EJunk{os.getpid()}.swift"
+        junk = os.path.join(app, name)
+        z.run(f"new-file {junk}")
+        wait_file(pbxproj, lambda t: f"{name} in Sources" in t)
+        z.run(f"trash {junk}")
+        wait_file(pbxproj, lambda t: name not in t)
+        empty_trash_item(name)
+
+    def add_files():
+        extras = os.path.join(WORK, "external", "Extras")
+        os.makedirs(extras)
+        with open(os.path.join(extras, "Extra.swift"), "w") as f:
+            f.write("struct Extra { var name = \"extra\" }\n")
+        with open(os.path.join(extras, "extra.json"), "w") as f:
+            f.write("{}\n")
+        z.run(f"add-files {extras} -> {app}", "wait 300")
+        s = z.dump()["add_files"]
+        assert s and s["copy"] and s["targets"] == ["HelloClassic: on", "HelloClassicTests: off"], s
+        z.run("keys enter")
+        text = wait_file(pbxproj, lambda t: "Extra.swift in Sources" in t and "extra.json in Resources" in t)
+        assert "/* Extras */ = {" in text
+        assert os.path.exists(os.path.join(app, "Extras", "Extra.swift")), "copied into the project"
+        assert not z.dump()["add_files"]
+
+    def builds():
+        z.run("keys cmd-b")
+        s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=300)
+        assert "success: true" in s["phase"], (s["phase"], s["issues"][:5])
+
+    check("New File in a new folder → file reference, group and Sources build file", new_file)
+    check("File inspector (⌥⌘1): Target Membership on and off", target_membership)
+    check("Rename and move (Rename to Views/…) update references and groups", rename_and_move)
+    check("Move to Trash removes the reference and build file", trash)
+    check("Add Files (⌥⌘A): copy a folder in as a group, Sources + Resources", add_files)
+    check("xcodebuild builds the edited project (⌘B)", builds)
 
 
 def package_checks(z, samples):
@@ -526,6 +653,13 @@ def main():
     z = Zcode(os.path.join(samples, "HelloZ"), {"ZCODE_PERF_LOG": PERF_LOG})
     try:
         xcode_project_checks(z, samples, sim)
+    finally:
+        z.quit()
+
+    print("Group-based Xcode project (samples/HelloClassic):")
+    z = Zcode(os.path.join(samples, "HelloClassic"))
+    try:
+        classic_project_checks(z, samples)
     finally:
         z.quit()
 

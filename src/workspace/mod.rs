@@ -1,9 +1,12 @@
 //! The project window: navigator, editor tabs, debug area, toolbar, status.
 
+mod add_files;
 mod editing;
+mod inspector;
 mod navigator;
 mod panels;
 mod pickers;
+mod project_files;
 mod project_settings;
 
 use std::path::{Path, PathBuf};
@@ -103,6 +106,16 @@ pub struct Workspace {
     pub project_settings: Option<Entity<ProjectSettings>>,
     pub show_project_settings: bool,
     xcode_projects: Vec<PathBuf>,
+    /// Parsed projects for the File inspector.
+    project_index: project_files::ProjectIndex,
+    /// Serializes `project.pbxproj` edits.
+    project_edit_lock: Arc<parking_lot::Mutex<()>>,
+    add_files_dialog: Option<WeakEntity<add_files::AddFilesDialog>>,
+    pub show_inspector: bool,
+    /// What the File inspector shows when it isn't the active file (a
+    /// folder picked in the navigator).
+    inspected: Option<PathBuf>,
+    inspector_info: Option<inspector::InspectorInfo>,
     pub navigator: NavigatorTab,
     pub show_navigator: bool,
     pub show_debug_area: bool,
@@ -191,6 +204,12 @@ impl Workspace {
             project_settings: None,
             show_project_settings: false,
             xcode_projects: vec![],
+            project_index: Default::default(),
+            project_edit_lock: Default::default(),
+            add_files_dialog: None,
+            show_inspector: saved.show_inspector.unwrap_or(false),
+            inspected: None,
+            inspector_info: None,
             navigator: NavigatorTab::Project,
             show_navigator: saved.show_navigator.unwrap_or(true),
             show_debug_area: saved.show_debug_area.unwrap_or(false),
@@ -299,7 +318,12 @@ impl Workspace {
                 // Tree items are !Send, so they are built here (fast).
                 let items = project::build_tree(&root, &files);
                 this.files = Arc::new(files);
-                this.xcode_projects = xcode_projects;
+                if this.xcode_projects != xcode_projects {
+                    this.xcode_projects = xcode_projects;
+                    if this.show_inspector {
+                        this.refresh_project_index(cx);
+                    }
+                }
                 this.tree.update(cx, |tree, cx| tree.set_items(items, cx));
                 this.reveal_active_in_tree(cx);
                 cx.notify();
@@ -383,7 +407,7 @@ impl Workspace {
 
     /// Moves a file or folder to the user's Trash (Finder-style naming on
     /// collision) and closes any tabs inside it.
-    pub(super) fn move_to_trash(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn move_to_trash(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let path = path.canonicalize().unwrap_or(path);
         let trash = std::env::var_os("HOME")
             .map(|h| PathBuf::from(h).join(".Trash"))
@@ -404,15 +428,27 @@ impl Workspace {
         }
         self.rescan(cx);
         self.refresh_scm(cx);
+        self.remove_from_projects(path, window, cx);
     }
 
-    /// Renames a file or folder in place, keeping open tabs pointed at it.
+    /// Renames a file or folder, keeping open tabs pointed at it. A name
+    /// with `/` in it moves the item, relative to its folder (as in Zed).
     pub fn rename_path(&mut self, path: PathBuf, new_name: String, window: &mut Window, cx: &mut Context<Self>) {
         let path = path.canonicalize().unwrap_or(path);
         let Some(parent) = path.parent() else { return };
-        let target = parent.join(&new_name);
+        let target = crate::xcodeproj::files::normalize(&parent.join(&new_name));
         if target.exists() {
             self.notify_error(format!("“{new_name}” already exists."), window, cx);
+            return;
+        }
+        if target.starts_with(&path) {
+            self.notify_error(format!("Can’t move “{}” into itself.", path.display()), window, cx);
+            return;
+        }
+        if let Some(folder) = target.parent()
+            && let Err(err) = std::fs::create_dir_all(folder)
+        {
+            self.notify_error(format!("Couldn’t create {}: {err}", folder.display()), window, cx);
             return;
         }
         // Save edits first so nothing is lost when tabs reopen.
@@ -440,6 +476,7 @@ impl Workspace {
         }
         self.rescan(cx);
         self.refresh_scm(cx);
+        self.move_in_projects(path, target, window, cx);
     }
 
     pub(super) fn prompt_rename(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
@@ -453,24 +490,28 @@ impl Workspace {
         let receiver = cx.prompt_for_new_path(&dir, Some("Untitled.swift"));
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = receiver.await else { return };
-            if !path.exists() {
-                let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-                let template = match path.extension().and_then(|e| e.to_str()) {
-                    Some("swift") => format!("//\n//  {}\n//\n\nimport Foundation\n\n", path.file_name().unwrap_or_default().to_string_lossy()),
-                    _ => String::new(),
-                };
-                let _ = stem;
-                if std::fs::write(&path, template).is_err() {
-                    return;
-                }
-            }
-            this.update_in(cx, |this, window, cx| {
-                this.rescan(cx);
-                this.open_file(path, None, true, window, cx);
-            })
-            .ok();
+            this.update_in(cx, |this, window, cx| this.create_file(path, window, cx)).ok();
         })
         .detach();
+    }
+
+    /// Creates a file from the New File panel (from a template, unless it
+    /// exists), adds it to the Xcode project and opens it.
+    pub fn create_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if !path.exists() {
+            let template = match path.extension().and_then(|e| e.to_str()) {
+                Some("swift") => format!("//\n//  {}\n//\n\nimport Foundation\n\n", path.file_name().unwrap_or_default().to_string_lossy()),
+                _ => String::new(),
+            };
+            if let Err(err) = std::fs::write(&path, template) {
+                self.notify_error(format!("Couldn’t create {}: {err}", path.display()), window, cx);
+                return;
+            }
+        }
+        let path = path.canonicalize().unwrap_or(path);
+        self.rescan(cx);
+        self.open_file(path.clone(), None, true, window, cx);
+        self.add_new_file_to_projects(path, window, cx);
     }
 
     fn reload_from_disk(&mut self, path: &Path, cx: &mut Context<Self>) {
@@ -535,6 +576,7 @@ impl Workspace {
             configuration: Some(build.configuration.clone()),
             show_navigator: Some(self.show_navigator),
             show_debug_area: Some(self.show_debug_area),
+            show_inspector: Some(self.show_inspector),
             breakpoints: self
                 .debugger
                 .read(cx)
@@ -779,6 +821,7 @@ impl Workspace {
         }
         self.active = Some(ix);
         self.show_project_settings = false;
+        self.inspected = None;
         let editor = self.buffers[ix].editor.clone();
         editor.update(cx, |state, cx| state.focus(window, cx));
         window.set_window_title(&self.title());
@@ -967,7 +1010,10 @@ impl Workspace {
         match event {
             ProjectSettingsEvent::OpenFile(path) => self.open_file(path.clone(), None, true, window, cx),
             // Schemes, configurations and supported platforms may have changed.
-            ProjectSettingsEvent::Changed => self.build.update(cx, |build, cx| build.reload(cx)),
+            ProjectSettingsEvent::Changed => {
+                self.build.update(cx, |build, cx| build.reload(cx));
+                self.refresh_project_index(cx);
+            }
         }
     }
 
@@ -1631,6 +1677,9 @@ impl Workspace {
             "buffers": self.buffers.iter().map(|b| b.title()).collect::<Vec<_>>(),
             "active": active,
             "modal_open": self.modal.is_some(),
+            "xcode_projects": self.xcode_projects,
+            "inspector": self.inspector_summary(),
+            "add_files": self.add_files_dialog.as_ref().and_then(|d| d.upgrade()).map(|d| d.read(cx).summary()),
             "project_settings": self.project_settings.as_ref().map(|s| {
                 let mut summary = s.read(cx).summary();
                 summary["shown"] = self.show_project_settings.into();

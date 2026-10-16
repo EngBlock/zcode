@@ -9,7 +9,9 @@ which was extracted from Xcode 27's own command definitions.
 
 | Item | Status | Notes |
 |---|---|---|
-| Open a folder / `.xcodeproj` / `.xcworkspace` / `Package.swift`, project navigator | ✅ | Context menu: New File, Rename, Move to Trash, Show in Finder |
+| Open a folder / `.xcodeproj` / `.xcworkspace` / `Package.swift`, project navigator | ✅ | Context menu: Show File Inspector, New File, Add Files, Rename, Move to Trash, Show in Finder |
+| Project navigator edits keep `project.pbxproj` consistent (file references, groups, build phases) | ✅ | Group-based projects; synchronized folders need no edits. Add Files… (⌥⌘A) with copy, groups or folder references, and targets. Moves are renames to a path (no drag and drop) |
+| File inspector (⌥⌘1) with Target Membership | ✅ | Identity and Type plus Target Membership; read-only in synchronized folders. No Localization, On Demand Resource Tags or Text Settings sections |
 | Source editor with tabs, highlighting, Save/Save All, undo, find/replace, ⌘/, ⌘[ ⌘], ⌥⌘[ ⌥⌘], ⌘L | ✅ | |
 | sourcekit-lsp: completion, diagnostics, hover, ⌃⌘J, references, ⌃6 | ✅ | `.xcodeproj` indexing through a compilation database pulled from `xcodebuild` output (no xcode-build-server needed) |
 | Open Quickly (⇧⌘O), Quick Actions (⇧⌘A) | ✅ | Files and workspace symbols, `file:line` |

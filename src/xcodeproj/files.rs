@@ -431,6 +431,17 @@ impl ProjectFiles {
         self.items.get(&self.main_group)?.resolved.as_deref()
     }
 
+    /// Whether `path` belongs in this project's group tree: under its folder
+    /// and not in a synchronized folder.
+    pub fn contains(&self, path: &Path) -> bool {
+        self.synchronized_root(path).is_none() && self.main_dir().is_some_and(|m| path.starts_with(m))
+    }
+
+    /// Whether `path` is in this project's folder at all, synchronized or not.
+    pub fn covers(&self, path: &Path) -> bool {
+        self.main_dir().is_some_and(|m| path.starts_with(m))
+    }
+
     /// Target IDs whose phases build file reference `id`, with the build file.
     pub fn memberships(&self, id: &str) -> Vec<(&Target, &Phase, &str)> {
         let mut out = vec![];

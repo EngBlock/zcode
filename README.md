@@ -27,7 +27,9 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | Edit All in Scope, Format File / Re-Indent, code actions and fix-its, Document Items outline, and workspace symbols in Open Quickly. | ⌃⌘E, ⌃⇧I / ⌃I, ⌃⌥⌘F, ⌃6 |
 | **Xcode project indexing** | zcode pulls a compilation database out of `xcodebuild` output, the job xcode-build-server does, so cross-file features work for `.xcodeproj` targets. When a project has never been built, a low-priority background "index build" produces it. Saving source files refreshes the index, so rename and references stay current. | — |
 | **Navigation** | Open Quickly (fuzzy file and symbol search, `file:line`), Quick Actions command palette, back/forward history, jump to line, counterpart (.h ↔ .m), reveal in navigator and tab switching. | ⇧⌘O, ⇧⌘A, ⌃⌘← ⌃⌘→, ⌘L, ⌃⌘↑, ⇧⌘J, ⇧⌘[ ⇧⌘] |
-| **Navigators** | Project (file tree with New File / Rename / Move to Trash / Show in Finder), Source Control (git status), Symbols, Find (find in workspace with case, word and regex options), Issues (live + build), Tests, Debug (threads and frames), Breakpoints and Reports (build/run/test history with full logs). | ⌘1 … ⌘9 |
+| | Group-based projects (no file-system-synchronized folders) stay consistent as Xcode keeps them: New File, Rename (a name with `/` moves the item), Move to Trash and Add Files… add, update and remove file references, groups and build files in `project.pbxproj` (Sources for code, Resources for resources), with Xcode-style IDs and the rest of the file left byte for byte. New files join the targets that build their neighbors. | ⌥⌘A |
+| | File inspector: name, type, location, full path and Target Membership checkboxes for the selected file. | ⌥⌘1 |
+| **Navigators** | Project (file tree with New File / Add Files / Rename / Move to Trash / Show File Inspector / Show in Finder), Source Control (git status), Symbols, Find (find in workspace with case, word and regex options), Issues (live + build), Tests, Debug (threads and frames), Breakpoints and Reports (build/run/test history with full logs). | ⌘1 … ⌘9 |
 | **Build & run** | Scheme, configuration and run destination pickers. Destinations are My Mac plus every available simulator, filtered by the scheme's `SUPPORTED_PLATFORMS`. | ⌃0, ⌃⇧0 |
 | | Build, Run, Test, Stop and Clean. Files are saved first. | ⌘B, ⌘R, ⌘U, ⌘., ⇧⌘K |
 | | Running on a simulator boots it, opens Simulator.app, installs and launches the app, and streams the app's stdout/stderr into the console. Mac executables and Swift packages run directly. | — |
@@ -123,7 +125,8 @@ src/
                     compilation-database extraction
   debugger/         DAP client and debugger model (lldb-dap)
   project.rs        project detection and gitignore-aware scanning
-  xcodeproj.rs      project.pbxproj parser and in-place editor
+  xcodeproj.rs      project.pbxproj parser and in-place editor (build settings)
+  xcodeproj/        structural edits: files, groups, build files, target membership
   search.rs         parallel find-in-workspace
   perf.rs           startup timing and memory sampling (proc_pid_rusage)
   debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR)
@@ -144,7 +147,7 @@ zcode doesn't use any GPL code from Zed.
 
 ```
 cargo test                          # unit tests
-cargo test -- --ignored             # needs Xcode: sourcekit-lsp + lldb-dap integration tests
+cargo test -- --ignored             # needs Xcode: sourcekit-lsp, lldb-dap, and xcodebuild on an edited project
 cargo build --release && python3 scripts/e2e.py [--simulator] [--compare-apps]   # drives the real UI
 ```
 
@@ -154,6 +157,10 @@ saved breakpoints can't leak in. It covers:
 * Open Quickly, definition, completion with placeholders, comment and undo, Document Items, find and references
 * project settings: a General field edited and restored, with
   `project.pbxproj` checked byte for byte
+* a group-based project (`samples/HelloClassic`): New File in a new folder,
+  Target Membership on and off, rename and move, Move to Trash, Add Files,
+  then a build of the edited project; and in the synchronized HelloZ, the same
+  operations leave `project.pbxproj` untouched
 * the build-error → issue flow
 * run, test and debug for a Swift package
 * cold launch: first frame before the minimal native AppKit app and under 250 ms (medians of 5); opening a project through an already-running instance (< 150 ms)
@@ -171,9 +178,16 @@ The control channel also takes window screenshots
 
 * Project settings cover build settings and the General fields. Adding or
   removing targets, configurations, packages or capabilities still needs
-  Xcode, as does adding files to groups and targets. Projects that use
-  file-system-synchronized groups (the Xcode 16+ default) pick up new files
-  automatically.
+  Xcode.
+* In file-system-synchronized folders (the Xcode 16+ default) files belong to
+  the folder's targets; zcode doesn't edit their per-file exceptions, so the
+  File inspector shows that membership read-only. Trashing a whole
+  synchronized folder leaves its group in the project.
+* Structural edits don't create variant groups (localized `.lproj` folders
+  are added as folder references) or `XCVersionGroup`s (`.xcdatamodeld` is
+  added as a plain file reference), and Headers-phase visibility (Public,
+  Private) isn't editable. The navigator has no drag and drop: move items by
+  renaming them to a path.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas, Instruments or
   physical-device deployment.
 * UI test bundles are skipped by the in-simulator unit-test runner and still

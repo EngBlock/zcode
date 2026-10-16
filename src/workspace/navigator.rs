@@ -300,17 +300,23 @@ impl Workspace {
                                     }),
                             )
                             .on_click(move |_, window, cx| {
-                                if is_folder {
-                                    return;
-                                }
                                 let path = path.clone();
                                 workspace
-                                    .update(cx, |this, cx| this.open_file(path, None, true, window, cx))
+                                    .update(cx, |this, cx| {
+                                        if is_folder {
+                                            // The File inspector follows the selection.
+                                            this.inspected = Some(path);
+                                            cx.notify();
+                                        } else {
+                                            this.open_file(path, None, true, window, cx)
+                                        }
+                                    })
                                     .ok();
                             })
                     })
                     .context_menu({
                         let workspace = cx.weak_entity();
+                        let add_files_label: SharedString = format!("Add Files to “{}”…", self.project.name).into();
                         move |_, entry, menu, _, _| {
                             let path = PathBuf::from(entry.item().id.as_str());
                             let folder = if entry.is_folder() {
@@ -319,10 +325,21 @@ impl Workspace {
                                 path.parent().map(PathBuf::from).unwrap_or_else(|| path.clone())
                             };
                             let (ws1, ws2, ws3) = (workspace.clone(), workspace.clone(), workspace.clone());
-                            let (p1, p2, p3) = (path.clone(), path.clone(), path.clone());
-                            menu.item(PopupMenuItem::new("New File…").on_click(move |_, window, cx| {
+                            let (ws4, ws5) = (workspace.clone(), workspace.clone());
+                            let (p1, p2, p3, p4) = (path.clone(), path.clone(), path.clone(), path.clone());
+                            let add_to = folder.clone();
+                            menu.item(PopupMenuItem::new("Show File Inspector").on_click(move |_, _, cx| {
+                                let path = p4.clone();
+                                ws4.update(cx, |ws, cx| ws.show_file_inspector(Some(path), cx)).ok();
+                            }))
+                            .separator()
+                            .item(PopupMenuItem::new("New File…").on_click(move |_, window, cx| {
                                 let folder = folder.clone();
                                 ws1.update(cx, |ws, cx| ws.new_file_in(folder, window, cx)).ok();
+                            }))
+                            .item(PopupMenuItem::new(add_files_label.clone()).on_click(move |_, window, cx| {
+                                let folder = add_to.clone();
+                                ws5.update(cx, |ws, cx| ws.prompt_add_files(folder, window, cx)).ok();
                             }))
                             .separator()
                             .item(PopupMenuItem::new("Rename…").on_click(move |_, window, cx| {

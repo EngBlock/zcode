@@ -12,6 +12,11 @@
 //!   wait <ms>                  pause
 //!   rename <path> -> <name>    rename a file or folder (a name containing `/` moves it)
 //!   project-setting <KEY> <value>  edit a field of the open project settings
+//!   new-file <path>            create a file as File ▸ New File does after its panel
+//!   trash <path>               Move to Trash from the project navigator
+//!   add-files <path>[;<path>…] -> <folder>  the Add Files sheet, after its open panel
+//!   inspect <path>             show the File inspector for a file or folder
+//!   membership <target> on|off toggle a Target Membership checkbox in the inspector
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -187,6 +192,47 @@ fn run_command(
                 .update(cx, |_, window, cx| settings.update(cx, |s, cx| s.set_field(key, value, window, cx)))
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
+        }
+        "new-file" | "trash" | "inspect" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            let path = PathBuf::from(arg);
+            window
+                .update(cx, |_, window, cx| {
+                    workspace.update(cx, |ws, cx| match cmd {
+                        "new-file" => ws.create_file(path, window, cx),
+                        "trash" => ws.move_to_trash(path, window, cx),
+                        _ => ws.show_file_inspector(Some(path), cx),
+                    })
+                })
+                .map_err(|e| e.to_string())?;
+            Ok(String::new())
+        }
+        "add-files" => {
+            let (paths, folder) = arg.split_once(" -> ").ok_or("usage: add-files <path>[;<path>…] -> <folder>")?;
+            let paths: Vec<PathBuf> = paths.split(';').map(PathBuf::from).collect();
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            let folder = PathBuf::from(folder);
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.show_add_files(paths, folder, window, cx)))
+                .map_err(|e| e.to_string())?;
+            Ok(String::new())
+        }
+        "membership" => {
+            let (target, state) = arg.rsplit_once(' ').ok_or("usage: membership <target> on|off")?;
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| {
+                    workspace.update(cx, |ws, cx| {
+                        let (path, project, info) = ws.inspected_info().ok_or("the inspector shows no project file")?;
+                        let crate::xcodeproj::files::Tracking::Referenced { targets, .. } = info.tracking else {
+                            return Err("the inspected file has no editable membership".to_string());
+                        };
+                        let target = targets.iter().find(|t| t.name == target).ok_or(format!("no target {target}"))?;
+                        ws.set_target_membership(project, path, target.id.clone(), state == "on", window, cx);
+                        Ok(String::new())
+                    })
+                })
+                .map_err(|e| e.to_string())?
         }
         "keymap" => {
             // Every menu/Quick Actions command with all keystrokes bound to it.

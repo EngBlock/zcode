@@ -190,6 +190,15 @@ impl Workspace {
                                 this.show_debug_area = !this.show_debug_area;
                                 cx.notify();
                             })),
+                    )
+                    .child(
+                        Button::new("toggle-inspector")
+                            .icon(IconName::PanelRight)
+                            .ghost()
+                            .small()
+                            .selected(self.show_inspector)
+                            .tooltip("Show/Hide Inspector")
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_inspector(cx))),
                     ),
             )
     }
@@ -979,6 +988,11 @@ impl Render for Workspace {
                     .visible(self.show_debug_area)
                     .child(debug_area),
             );
+        let inspector = if self.show_inspector {
+            self.render_inspector(cx).into_any_element()
+        } else {
+            div().into_any_element()
+        };
         let main = h_resizable("navigator-editor")
             .child(
                 resizable_panel()
@@ -987,7 +1001,14 @@ impl Render for Workspace {
                     .visible(self.show_navigator)
                     .child(navigator),
             )
-            .child(resizable_panel().child(center));
+            .child(resizable_panel().child(center))
+            .child(
+                resizable_panel()
+                    .size(px(260.))
+                    .size_range(px(200.)..px(480.))
+                    .visible(self.show_inspector)
+                    .child(inspector),
+            );
 
         v_flex()
             .id("workspace")
@@ -1121,6 +1142,9 @@ impl Render for Workspace {
                 this.show_navigator = !this.show_navigator;
                 cx.notify();
             }))
+            .on_action(cx.listener(Self::add_files))
+            .on_action(cx.listener(|this, _: &ShowFileInspector, _, cx| this.show_file_inspector(None, cx)))
+            .on_action(cx.listener(|this, _: &ToggleInspector, _, cx| this.toggle_inspector(cx)))
             .on_action(cx.listener(|this, _: &ToggleDebugArea, _, cx| {
                 this.show_debug_area = !this.show_debug_area;
                 cx.notify();

@@ -11,11 +11,11 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 ## Phase 0: land in-flight work
 
 1. Commit the project-settings / `project.pbxproj` editing work; reconcile the
-   README (feature table vs. "Known limitations") and `parity.md`.
+   README (feature table vs. "Known limitations") and `parity.md`. ✅
 2. Structural `.pbxproj` edits: add file to group + target, target
    membership, remove references on trash/rename. Without this, New File /
    Rename / Move to Trash in projects that don't use file-system-synchronized
-   groups produce files no target compiles.
+   groups produce files no target compiles. ✅
 
 ## Phase 1: a normal iOS day without opening Xcode
 

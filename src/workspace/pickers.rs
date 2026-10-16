@@ -788,7 +788,7 @@ impl RenameFileDelegate {
 
 impl PickerDelegate for RenameFileDelegate {
     fn placeholder(&self) -> SharedString {
-        "New file name".into()
+        "New name, or a path to move it to".into()
     }
 
     fn items(&self) -> &[PickerItem] {
@@ -800,13 +800,13 @@ impl PickerDelegate for RenameFileDelegate {
     }
 
     fn update_matches(&mut self, query: String, _: &mut Window, _: &mut Context<Picker<Self>>) {
-        self.new_name = query.trim().to_string();
-        let valid = !self.new_name.is_empty()
-            && self.new_name != self.original
-            && !self.new_name.contains('/');
+        self.new_name = query.trim().trim_end_matches('/').to_string();
+        // A path relative to the item's folder moves it there.
+        let valid = !self.new_name.is_empty() && self.new_name != self.original && !self.new_name.starts_with('/');
+        let verb = if self.new_name.contains('/') { "Move" } else { "Rename" };
         self.items = if valid {
             vec![PickerItem {
-                label: format!("Rename “{}” to “{}”", self.original, self.new_name).into(),
+                label: format!("{verb} “{}” to “{}”", self.original, self.new_name).into(),
                 icon: Some(IconName::Pencil),
                 ..Default::default()
             }]
