@@ -624,6 +624,9 @@ impl Workspace {
         if let Some(text) = text {
             self.lsp.update(cx, |lsp, cx| lsp.document_changed(path, text, cx));
         }
+        if let Some(plist) = self.buffers.iter().find(|b| b.path == path).and_then(|b| b.plist.as_ref()) {
+            plist.editor.update(cx, |editor, cx| editor.text_replaced(cx));
+        }
         // Replacing the text collapsed the anchors; breakpoints keep their lines.
         self.anchor_breakpoints(path, true, cx);
     }
@@ -1548,9 +1551,20 @@ impl Workspace {
 
     pub fn open_issue(&mut self, issue: &Issue, window: &mut Window, cx: &mut Context<Self>) {
         let Some(path) = issue.path.clone() else { return };
-        // Project-level issues (signing) are fixed in the project settings.
+        // Project-level issues (signing) are fixed in the project settings,
+        // signing errors in the target's Signing & Capabilities tab.
         if path.extension().is_some_and(|e| e == "xcodeproj" || e == "xcworkspace") {
             self.open_project_settings(window, cx);
+            if crate::build::log::is_signing_issue(issue)
+                && let Some(settings) = self.project_settings.clone()
+            {
+                let target = crate::build::log::signing_target(&issue.message).unwrap_or_default();
+                settings.update(cx, |settings, cx| {
+                    if settings.show(&target, "Signing", window, cx).is_err() {
+                        settings.show_signing(window, cx);
+                    }
+                });
+            }
             return;
         }
         let target = Target::Line {

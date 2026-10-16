@@ -229,16 +229,28 @@ pub fn is_signing_issue(issue: &Issue) -> bool {
 }
 
 /// Xcode's signing errors point at its Signing & Capabilities editor; in
-/// zcode the team is set in the project settings.
+/// zcode that's the target's tab in the project settings (clicking the issue
+/// opens it).
 fn with_signing_hint(mut issue: Issue) -> Issue {
     const XCODE: &str = "Select a development team in the Signing & Capabilities editor.";
-    const ZCODE: &str = "Set the target's Development Team (your team ID) in the project settings";
+    const ZCODE: &str = "Choose the team in the target’s Signing & Capabilities tab in the project settings";
     issue.message = if issue.message.contains(XCODE) {
         issue.message.replace(XCODE, &format!("{ZCODE}."))
     } else {
         format!("{} {ZCODE}, and sign in to your Apple account in Xcode ▸ Settings ▸ Accounts.", issue.message)
     };
     issue
+}
+
+/// The target a signing error is about: `Signing for "App" …` or
+/// `… (in target 'App' …)`.
+pub fn signing_target(message: &str) -> Option<String> {
+    let quoted = |start: &str, end: char| {
+        let at = message.find(start)? + start.len();
+        let len = message[at..].find(end)?;
+        Some(message[at..at + len].to_string())
+    };
+    quoted("Signing for \"", '"').or_else(|| quoted("in target '", '\''))
 }
 
 fn status(word: &str) -> TestStatus {
@@ -500,12 +512,14 @@ mod tests {
         assert_eq!(issue.line, None);
         assert_eq!(
             issue.message,
-            "Signing for \"App\" requires a development team. Set the target's Development Team (your team ID) in the project settings."
+            "Signing for \"App\" requires a development team. Choose the team in the target’s Signing & Capabilities tab in the project settings."
         );
+        assert_eq!(signing_target(&issue.message).as_deref(), Some("App"));
+        assert_eq!(signing_target("No profiles for 'a' were found (in target 'Kit' from project 'K')").as_deref(), Some("Kit"));
         assert!(is_signing_issue(&issue));
         let profile = parse_issue("error: No profiles for 'dev.zcode.App' were found: Xcode couldn't find any iOS App Development provisioning profiles matching 'dev.zcode.App'.").unwrap();
         assert!(is_signing_issue(&profile));
-        assert!(profile.message.ends_with("in the project settings, and sign in to your Apple account in Xcode ▸ Settings ▸ Accounts."), "{}", profile.message);
+        assert!(profile.message.ends_with("Signing & Capabilities tab in the project settings, and sign in to your Apple account in Xcode ▸ Settings ▸ Accounts."), "{}", profile.message);
         assert!(!is_signing_issue(&parse_issue("/a/B.swift:1:2: error: cannot find 'x' in scope").unwrap()));
     }
 

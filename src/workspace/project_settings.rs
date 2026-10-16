@@ -179,6 +179,14 @@ impl ProjectSettings {
         self.mtimes = self.paths.iter().map(|p| mtime(p)).collect();
     }
 
+    /// Takes the keyboard when what had it (a field, the Info tab's outline)
+    /// was just replaced, so shortcuts keep working.
+    fn keep_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.focused(cx).is_none() {
+            self.focus_handle.focus(window, cx);
+        }
+    }
+
     /// Re-reads the project files if something else changed them.
     pub fn reload_if_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current: Vec<_> = self.paths.iter().map(|p| mtime(p)).collect();
@@ -260,6 +268,16 @@ impl ProjectSettings {
         Ok(())
     }
 
+    /// The Signing & Capabilities tab of the selected target (or the first).
+    pub fn show_signing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selection.target.is_none() && self.project().is_some_and(|p| !p.targets.is_empty()) {
+            self.select(Selection { project: self.selection.project, target: Some(0) }, window, cx);
+        }
+        if self.selection.target.is_some() {
+            self.set_pane(Pane::Signing, window, cx);
+        }
+    }
+
     fn set_pane(&mut self, pane: Pane, window: &mut Window, cx: &mut Context<Self>) {
         self.pane = pane;
         self.rebuild_fields(window, cx);
@@ -276,6 +294,7 @@ impl ProjectSettings {
     fn rebuild_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.rebuild_info(window, cx);
         self.rebuild_signing(window, cx);
+        self.keep_focus(window, cx);
         let configs = self.selected_configurations().to_vec();
         let is_target = self.selection.target.is_some();
         // (label, key, configuration ids, is a list, value, placeholder)

@@ -226,6 +226,7 @@ impl ProjectSettings {
             });
         }
         self.rebuild_signing(window, cx);
+        self.keep_focus(window, cx);
         cx.notify();
     }
 
@@ -300,6 +301,7 @@ impl ProjectSettings {
         let configs = self.configuration_ids();
         self.write(key, value, &configs, false, cx);
         self.rebuild_signing(window, cx);
+        self.keep_focus(window, cx);
     }
 
     fn automatic(&self) -> bool {

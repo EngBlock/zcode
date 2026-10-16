@@ -214,6 +214,13 @@ impl PlistEditor {
         }
     }
 
+    /// The text was replaced without a change event (reloaded from disk).
+    pub fn text_replaced(&mut self, cx: &mut Context<Self>) {
+        self.stale = true;
+        self.editing = None;
+        cx.notify();
+    }
+
     pub fn text_entity(&self) -> &Entity<EditorState> {
         &self.text
     }
