@@ -63,7 +63,7 @@ pub(crate) struct Replay {
 /// `commit_transaction`. The bracket nests, so an outer caller can group
 /// several already-bracketed edits into one undo entry.
 #[derive(Debug)]
-pub(crate) struct UndoManager {
+pub(crate) struct History {
     undo_transactions: Vec<UndoTransaction>,
     redo_transactions: Vec<UndoTransaction>,
     ignoring: bool,
@@ -73,8 +73,8 @@ pub(crate) struct UndoManager {
     coalescing_boundary: bool,
 }
 
-impl UndoManager {
-    pub(super) fn new() -> Self {
+impl History {
+    fn new() -> Self {
         Self {
             undo_transactions: Vec::new(),
             redo_transactions: Vec::new(),
@@ -382,6 +382,105 @@ impl UndoManager {
     #[cfg(test)]
     pub(super) fn undo_count(&self) -> usize {
         self.undo_transactions.len()
+    }
+}
+
+/// The undo history of a buffer: shared by every editor showing it
+/// (`linked.rs`), so ⌘Z in any of them undoes the last edit made in any of
+/// them. Each method borrows the history for its own duration only.
+#[derive(Clone, Debug)]
+pub(crate) struct UndoManager(std::rc::Rc<std::cell::RefCell<History>>);
+
+impl UndoManager {
+    pub(super) fn new() -> Self {
+        Self(std::rc::Rc::new(std::cell::RefCell::new(History::new())))
+    }
+
+    /// Whether `other` is the same history.
+    pub(crate) fn shares(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub(super) fn take_pending_intent(&mut self) -> Option<EditIntent> {
+        self.0.borrow_mut().take_pending_intent()
+    }
+
+    pub(super) fn set_pending_intent(&mut self, intent: EditIntent) {
+        self.0.borrow_mut().set_pending_intent(intent)
+    }
+
+    pub(super) fn record_transaction(&mut self, change: Change, intent: EditIntent) -> bool {
+        self.0.borrow_mut().record_transaction(change, intent)
+    }
+
+    pub(super) fn begin_transaction(&mut self) {
+        self.0.borrow_mut().begin_transaction()
+    }
+
+    pub(super) fn begin_transaction_with(&mut self, intent: EditIntent) {
+        self.0.borrow_mut().begin_transaction_with(intent)
+    }
+
+    pub(super) fn commit_transaction(&mut self) {
+        self.0.borrow_mut().commit_transaction()
+    }
+
+    pub(super) fn record_selections(&mut self, before: Vec<CursorSelection>, after: Vec<CursorSelection>) {
+        self.0.borrow_mut().record_selections(before, after)
+    }
+
+    pub(super) fn record_auto_closed_pairs(&mut self, before: AutoClosedPairs, after: AutoClosedPairs) {
+        self.0.borrow_mut().record_auto_closed_pairs(before, after)
+    }
+
+    pub(super) fn record_auto_closed_pairs_after(&mut self, after: AutoClosedPairs) {
+        self.0.borrow_mut().record_auto_closed_pairs_after(after)
+    }
+
+    pub(super) fn has_open_transaction(&self) -> bool {
+        self.0.borrow().has_open_transaction()
+    }
+
+    pub(super) fn break_transaction_coalescing(&mut self) {
+        self.0.borrow_mut().break_transaction_coalescing()
+    }
+
+    pub(super) fn is_ignoring(&self) -> bool {
+        self.0.borrow().is_ignoring()
+    }
+
+    pub(super) fn set_ignoring(&mut self, ignoring: bool) {
+        self.0.borrow_mut().set_ignoring(ignoring)
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.0.borrow_mut().clear()
+    }
+
+    pub(super) fn undo(&mut self) -> Option<Replay> {
+        self.0.borrow_mut().undo()
+    }
+
+    pub(super) fn redo(&mut self) -> Option<Replay> {
+        self.0.borrow_mut().redo()
+    }
+
+    pub(crate) fn can_undo(&self) -> bool {
+        self.0.borrow().can_undo()
+    }
+
+    pub(crate) fn can_redo(&self) -> bool {
+        self.0.borrow().can_redo()
+    }
+
+    #[cfg(test)]
+    pub(super) fn has_undos(&self) -> bool {
+        self.0.borrow().has_undos()
+    }
+
+    #[cfg(test)]
+    pub(super) fn undo_count(&self) -> usize {
+        self.0.borrow().undo_count()
     }
 }
 

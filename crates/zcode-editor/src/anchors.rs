@@ -13,8 +13,8 @@
 //! they were, deleted lines included; redo replays the edit, which moves
 //! them again.
 //!
-//! Offsets are UTF-8 bytes. Anchors live in the editor state, so they are
-//! dropped with it; [`EditorState::remove_anchor`] releases one earlier.
+//! Offsets are UTF-8 bytes. Anchors live with the buffer (every view of it
+//! shares them, `linked.rs`), so they are dropped with its last editor; [`EditorState::remove_anchor`] releases one earlier.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -72,7 +72,7 @@ pub struct AnchorRow {
 }
 
 #[derive(Default)]
-pub(crate) struct Anchors {
+struct AnchorTable {
     entries: BTreeMap<u64, Entry>,
     next: u64,
     /// What the last edit moved irreversibly, for its history entry.
@@ -94,7 +94,7 @@ fn map_offset(offset: usize, range: &Range<usize>, new_len: usize, after: bool) 
     }
 }
 
-impl Anchors {
+impl AnchorTable {
     fn insert(&mut self, kind: Kind, start: usize, end: usize) -> Anchor {
         let id = self.next;
         self.next += 1;
@@ -195,6 +195,66 @@ impl Anchors {
     }
 }
 
+/// A buffer's anchors, shared by every editor showing it (`linked.rs`): an
+/// anchor made in one view resolves in the others, and moves once per edit
+/// whichever view made it.
+#[derive(Clone, Default)]
+pub(crate) struct Anchors(std::rc::Rc<std::cell::RefCell<AnchorTable>>);
+
+impl Anchors {
+    fn insert(&self, kind: Kind, start: usize, end: usize) -> Anchor {
+        self.0.borrow_mut().insert(kind, start, end)
+    }
+
+    pub(crate) fn adjust_for_edit(&mut self, range: &Range<usize>, new_len: usize) {
+        self.0.borrow_mut().adjust_for_edit(range, new_len)
+    }
+
+    pub(crate) fn offset(&self, anchor: Anchor) -> Option<usize> {
+        self.0.borrow().offset(anchor)
+    }
+
+    pub(crate) fn row(&self, anchor: Anchor, text: &Rope) -> Option<u32> {
+        self.0.borrow().row(anchor, text)
+    }
+
+    pub(crate) fn take_moved(&mut self) -> Vec<AnchorSnapshot> {
+        self.0.borrow_mut().take_moved()
+    }
+
+    pub(crate) fn restore(&mut self, snapshots: &[AnchorSnapshot]) {
+        self.0.borrow_mut().restore(snapshots)
+    }
+
+    pub(crate) fn positions(&self, text: &Rope) -> Vec<(u64, usize)> {
+        self.0.borrow().positions(text)
+    }
+
+    pub(crate) fn restore_positions(&mut self, positions: Vec<(u64, usize)>, text: &Rope) {
+        self.0.borrow_mut().restore_positions(positions, text)
+    }
+
+    fn remove(&self, anchor: Anchor) {
+        self.0.borrow_mut().entries.remove(&anchor.0);
+    }
+
+    /// The anchor's start, unless its line is deleted, clamped to `len`.
+    fn start(&self, anchor: Anchor, len: usize) -> Option<usize> {
+        let table = self.0.borrow();
+        let entry = table.entries.get(&anchor.0)?;
+        (!entry.deleted).then_some(entry.start.min(len))
+    }
+
+    fn ids(&self) -> Vec<u64> {
+        self.0.borrow().entries.keys().copied().collect()
+    }
+
+    /// Whether `other` is the same table.
+    pub(crate) fn shares(&self, other: &Self) -> bool {
+        std::rc::Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 /// The byte range of 0-based `row` with its newline.
 fn line_range(text: &Rope, row: usize) -> (usize, usize) {
     let start = text.line_start_offset(row);
@@ -224,14 +284,13 @@ impl EditorState {
     }
 
     pub fn remove_anchor(&mut self, anchor: Anchor) {
-        self.anchors.entries.remove(&anchor.0);
+        self.anchors.remove(anchor);
     }
 
     /// The anchor's offset (a line anchor's line start), or `None` while its
     /// line is deleted or after it was removed.
     pub fn anchor_offset(&self, anchor: Anchor) -> Option<usize> {
-        let entry = self.anchors.entries.get(&anchor.0)?;
-        (!entry.deleted).then_some(entry.start.min(self.text.len()))
+        self.anchors.start(anchor, self.text.len())
     }
 
     /// The anchor's 0-based row, or `None` while its line is deleted.
@@ -243,9 +302,9 @@ impl EditorState {
     /// Every anchor's row, in the order they were created.
     pub fn anchor_rows(&self) -> Vec<AnchorRow> {
         self.anchors
-            .entries
-            .keys()
-            .map(|&id| AnchorRow {
+            .ids()
+            .into_iter()
+            .map(|id| AnchorRow {
                 anchor: Anchor(id),
                 row: self.anchor_row(Anchor(id)),
             })

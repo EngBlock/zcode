@@ -190,6 +190,10 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) read_only_ranges: crate::edits::ReadOnlyRanges,
     /// Set while a programmatic API edits, so read-only ranges let it.
     pub(crate) programmatic_edit: bool,
+    /// The other editors showing this buffer, and whether this one is
+    /// applying an edit one of them made (`linked.rs`).
+    pub(crate) linked_views: Vec<gpui::WeakEntity<Self>>,
+    pub(crate) applying_linked_edit: bool,
     pub(super) inline_tokens: Option<Box<super::inline_tokens::InlineTokenStore>>,
     pub(super) pending_token: Option<super::InlineToken>,
     pub(super) replaying_history: bool,
@@ -605,6 +609,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             extra_key_context: None,
             read_only_ranges: Default::default(),
             programmatic_edit: false,
+            linked_views: Vec::new(),
+            applying_linked_edit: false,
             inline_tokens: None,
             pending_token: None,
             replaying_history: false,
@@ -2743,7 +2749,8 @@ impl<M: InputModeKind> InputBaseState<M> {
     ) -> bool {
         self.document_revision = self.document_revision.wrapping_add(1);
         let token_delta = self.edit_tokens(range, new_text.len());
-        if self.undo_manager.is_ignoring() {
+        // A linked view's edit is in the shared history already.
+        if self.applying_linked_edit || self.undo_manager.is_ignoring() {
             return false;
         }
 
@@ -3725,9 +3732,11 @@ impl<M: InputModeKind> InputBaseState<M> {
             self.mode.adjust_auto_closed_pair(range, new_text.len());
             self.text.replace(range.clone(), new_text);
 
-            self.anchors.adjust_for_edit(range, new_text.len());
+            if !self.applying_linked_edit {
+                self.anchors.adjust_for_edit(range, new_text.len());
+            }
             self.read_only_ranges.adjust_for_edit(range, new_text.len());
-            cx.emit(crate::BufferEdit { range: range.clone(), new_text: new_text.to_string() });
+            self.buffer_edited(range, new_text, window, cx);
             self.highlight_layers.adjust_for_edit(range, new_text.len());
             M::adjust_annotations(self, range, new_text.len());
             recorded |= self.push_history(
@@ -4120,9 +4129,11 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             // the old text no longer point at anything.
             M::reset_annotations(self);
         } else {
-            self.anchors.adjust_for_edit(&range, new_text.len());
+            if !self.applying_linked_edit {
+                self.anchors.adjust_for_edit(&range, new_text.len());
+            }
             self.read_only_ranges.adjust_for_edit(&range, new_text.len());
-            cx.emit(crate::BufferEdit { range: range.clone(), new_text: new_text.to_string() });
+            self.buffer_edited(&range, &new_text, window, cx);
             self.highlight_layers.adjust_for_edit(&range, new_text.len());
             M::adjust_annotations(self, &range, new_text.len());
         }
@@ -4271,9 +4282,11 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             }
         }
 
-        self.anchors.adjust_for_edit(&range, new_text.len());
+        if !self.applying_linked_edit {
+            self.anchors.adjust_for_edit(&range, new_text.len());
+        }
         self.read_only_ranges.adjust_for_edit(&range, new_text.len());
-        cx.emit(crate::BufferEdit { range: range.clone(), new_text: new_text.to_string() });
+        self.buffer_edited(&range, new_text, window, cx);
         self.highlight_layers.adjust_for_edit(&range, new_text.len());
         M::adjust_annotations(self, &range, new_text.len());
         if let Some(diagnostics) = self.mode.diagnostics_mut() {

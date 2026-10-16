@@ -90,6 +90,7 @@ mod gutter;
 mod highlights;
 mod edits;
 mod history;
+mod linked;
 mod modal;
 pub mod multibuffer;
 #[cfg(test)]
