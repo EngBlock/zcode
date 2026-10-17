@@ -533,6 +533,20 @@ impl TerminalView {
         while end < term.bottommost_line() && wraps(end) {
             end += 1;
         }
+        // A link a program marked (OSC 8) is its cells with that link.
+        if let Some(hyperlink) = grid[point].hyperlink() {
+            let marked: Vec<GridPoint> = (first.0..=end.0)
+                .flat_map(|line| (0..term.columns()).map(move |column| GridPoint::new(Line(line), Column(column))))
+                .filter(|cell| grid[*cell].hyperlink().as_ref() == Some(&hyperlink))
+                .collect();
+            let uri = hyperlink.uri();
+            let target = match uri.strip_prefix("file://") {
+                // file://host/path: the path.
+                Some(rest) => Target::File { path: PathBuf::from(&rest[rest.find('/').unwrap_or(0)..]), line: None, column: None },
+                None => Target::Url(uri.to_string()),
+            };
+            return Some(HoveredLink { start: *marked.first()?, end: *marked.last()?, target });
+        }
         let mut text = String::new();
         let mut cells = vec![];
         let mut at = None;

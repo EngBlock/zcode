@@ -2892,6 +2892,12 @@ def terminal_checks(samples):
         z.run(f"cmd-click {x} {y}", "wait 500")
         a = z.dump()["active"]
         assert a["path"] == greeter and a["line"] == 3 and a["column"] == 5, (a["path"], a["line"], a["column"])
+        # A link a program marks (OSC 8) over other text.
+        s = run_in(0, "clear; printf '\\033]8;;file://%s\\033\\\\the greeter\\033]8;;\\033\\\\ ok\\012' \"$PWD/Sources/ZKit/Greeter.swift\"; echo marker-5b", "marker-5b")
+        row = row_of(0, lambda l: l.startswith("the greeter ok"), s)
+        z.run(f"open {os.path.join(project, 'Package.swift')}", "wait 300")
+        assert json.loads(z.run(f"terminal link 0 {row} 4")[-1]) == {"opened": True}
+        assert z.dump()["active"]["path"] == greeter, z.dump()["active"]["path"]
         # A missing file isn't a link.
         s = run_in(0, "echo Sources/Gone.swift:3; echo marker-6", "marker-6")
         row = row_of(0, lambda l: l.startswith("Sources/Gone"), s)
@@ -3012,7 +3018,7 @@ def terminal_checks(samples):
         check("Terminal: ⌃C, ⌃\\ and ⌃6 go to the shell, ↑ is its history; ⌘K clears", keys_go_to_the_shell)
         check("Terminal: drag to select, ⌘C copies, double-click a word, ⌘V pastes", selection_and_copy)
         check("Terminal: scrollback through the wheel; typing comes back to the bottom", scrollback)
-        check("Terminal: ⌘-click on file:line:column opens the editor there; missing files aren't links", links_open_in_the_editor)
+        check("Terminal: ⌘-click on file:line:column or a program's OSC 8 link opens the editor there; missing files aren't links", links_open_in_the_editor)
         check("Terminal: a bigger font gives the shell fewer columns (SIGWINCH, stty size)", resizing)
         check("Terminal: several in the debug area, one in an editor tab, Open Terminal at Location", several_terminals)
         check("Terminal: `yes` flooding a terminal doesn't slow typing in an editor pane", flood_keeps_typing_fast)
