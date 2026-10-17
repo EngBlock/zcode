@@ -3,14 +3,15 @@
 
 use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::os::unix::process::CommandExt as _;
-use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use futures::AsyncBufReadExt as _;
+use futures::future::Either;
 use smol::channel;
 use smol::io::BufReader;
 
@@ -37,6 +38,17 @@ impl ProcessHandle {
         if pgid > 0 {
             unsafe {
                 libc::killpg(pgid, libc::SIGKILL);
+            }
+        }
+    }
+
+    /// SIGINT the process group, as Ctrl-C in a terminal does (xctrace
+    /// then saves its recording and exits; `xcrun` before it gets it too).
+    pub fn interrupt(&self) {
+        let pgid = self.pgid.load(Ordering::SeqCst);
+        if pgid > 0 {
+            unsafe {
+                libc::killpg(pgid, libc::SIGINT);
             }
         }
     }
@@ -146,29 +158,29 @@ pub async fn run_streaming_tty(
         .stderr(Stdio::from(slave))
         .env("NSUnbufferedIO", "YES");
     let program = format!("{:?}", cmd.get_program());
-    let child = cmd.spawn().with_context(|| format!("failed to start {program}"))?;
-    // Only the child may hold the terminal open, so reading ends with it.
+    let mut child = cmd.spawn().with_context(|| format!("failed to start {program}"))?;
     drop(cmd);
     handle.pgid.store(child.id() as i32, Ordering::SeqCst);
-    let mut child = Reaped(Some(child));
+    // Waited for on a thread of its own, so it's reaped even when the run
+    // is dropped (Stop cancels it) rather than staying a zombie.
+    let (exited, exit) = futures::channel::oneshot::channel();
+    std::thread::spawn(move || exited.send(child.wait()).ok());
     let output = smol::Unblock::new(std::fs::File::from(master));
-    pump(Some(Box::new(output)), lines).await;
-    let mut waited = child.0.take().expect("waited once");
-    let status = smol::unblock(move || waited.wait()).await?;
+    let pump = pump(Some(Box::new(output)), lines);
+    futures::pin_mut!(pump);
+    // Output ends when the last program holding the terminal closes it,
+    // which can be one the child started and left running (xctrace's
+    // app); the run ends with the child, once what it printed last is read.
+    let status = match futures::future::select(pump, exit).await {
+        Either::Left(((), exit)) => exit.await,
+        Either::Right((status, pump)) => {
+            futures::future::select(pump, smol::Timer::after(Duration::from_millis(300))).await;
+            status
+        }
+    };
+    let status = status.context("the program's wait ended")??;
     handle.pgid.store(0, Ordering::SeqCst);
     Ok(status.code())
-}
-
-/// A child that is waited for even when the run is dropped (Stop cancels
-/// it), so it doesn't stay a zombie holding its pid.
-struct Reaped(Option<Child>);
-
-impl Drop for Reaped {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.0.take() {
-            std::thread::spawn(move || child.wait().ok());
-        }
-    }
 }
 
 /// A process zcode started that may not be its child or in a group it
@@ -222,6 +234,22 @@ impl AppProcess {
     }
 }
 
+/// This user's processes running `executable`.
+pub fn processes_running(executable: &Path) -> Vec<AppProcess> {
+    let mut pids = vec![0i32; 8192];
+    let bytes = unsafe {
+        libc::proc_listallpids(pids.as_mut_ptr() as *mut libc::c_void, (pids.len() * std::mem::size_of::<i32>()) as i32)
+    };
+    if bytes <= 0 {
+        return vec![];
+    }
+    pids.truncate(bytes as usize / std::mem::size_of::<i32>());
+    pids.into_iter()
+        .filter_map(AppProcess::find)
+        .filter(|p| p.executable == executable)
+        .collect()
+}
+
 /// A live process's executable (a zombie has none).
 pub fn executable_of(pid: i32) -> Option<PathBuf> {
     if pid <= 0 {
@@ -264,6 +292,23 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(1500), "arrived at exit");
         assert_eq!(smol::block_on(rx.recv()).unwrap(), "second");
         assert_eq!(run.join().unwrap().unwrap(), Some(3));
+    }
+
+    #[test]
+    fn a_run_ends_with_its_program_when_another_holds_the_terminal() {
+        // Like xctrace leaving the app it launched: the terminal stays open.
+        let pid_file = std::env::temp_dir().join(format!("zcode-tty-holder-{}", std::process::id()));
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c").arg(format!("echo started; /bin/sleep 30 & echo $! > '{}'; exit 4", pid_file.display()));
+        let (tx, rx) = channel::unbounded();
+        let started = Instant::now();
+        let code = smol::block_on(run_streaming_tty(cmd, tx, ProcessHandle::default())).unwrap();
+        let holder: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        unsafe { libc::kill(holder, libc::SIGKILL) };
+        std::fs::remove_file(&pid_file).ok();
+        assert_eq!(code, Some(4));
+        assert!(started.elapsed() < Duration::from_secs(5), "waited for the terminal to close");
+        assert_eq!(smol::block_on(rx.recv()).unwrap(), "started");
     }
 
     fn gone(pid: i32) -> bool {
@@ -318,5 +363,16 @@ mod tests {
         child.wait().unwrap();
         assert!(!app.is_running());
         assert!(AppProcess::find(pid).is_none());
+    }
+
+    #[test]
+    fn processes_are_found_by_executable() {
+        let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let pid = child.id() as i32;
+        let found = processes_running(Path::new("/bin/sleep"));
+        assert!(found.iter().any(|p| p.pid == pid), "{found:?}");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!processes_running(Path::new("/bin/sleep")).iter().any(|p| p.pid == pid));
     }
 }
