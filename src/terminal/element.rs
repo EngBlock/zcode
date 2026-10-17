@@ -5,8 +5,6 @@
 //! terminal's lock (blank cells skipped) and laid out after it's released,
 //! so the reader thread waits for a copy, never for shaping.
 
-use std::sync::Arc;
-
 use alacritty_terminal::grid::Dimensions as _;
 use alacritty_terminal::index::{Column, Line, Point as GridPoint};
 use alacritty_terminal::term::cell::Flags;
@@ -16,7 +14,7 @@ use gpui_kit::*;
 
 use super::colors::Palette;
 use super::view::{GridLayout, HoveredLink, TerminalView};
-use super::{Listener, Terminal};
+use super::Terminal;
 
 /// Room around the grid.
 const PADDING: f32 = 6.;
@@ -57,8 +55,17 @@ pub(super) struct Painted {
     layout: GridLayout,
     backgrounds: Vec<(Bounds<Pixels>, Hsla)>,
     texts: Vec<(Point<Pixels>, ShapedLine)>,
-    cursor: Option<(Bounds<Pixels>, Hsla, bool, Option<(Point<Pixels>, ShapedLine)>)>,
+    cursor: Option<CursorPaint>,
     underlines: Vec<(Bounds<Pixels>, Hsla)>,
+}
+
+struct CursorPaint {
+    bounds: Bounds<Pixels>,
+    color: Hsla,
+    /// A filled block, bar or underline; else a hollow block.
+    filled: bool,
+    /// The character under a block, in the background color.
+    text: Option<(Point<Pixels>, ShapedLine)>,
 }
 
 impl IntoElement for TerminalElement {
@@ -120,7 +127,7 @@ impl Element for TerminalElement {
         }
         let view = self.view.read(cx);
         let hovered = view.hovered_link.clone();
-        let snapshot = view.terminal().cloned().map(|terminal| snapshot(&terminal, &palette, rows));
+        let snapshot = view.terminal().map(|terminal| snapshot(terminal, &palette, rows));
         let focused = self.focus.is_focused(window);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         let mut painted =
@@ -152,14 +159,14 @@ impl Element for TerminalElement {
             for (bounds, color) in &painted.underlines {
                 window.paint_quad(fill(*bounds, *color));
             }
-            if let Some((bounds, color, filled, text)) = &painted.cursor {
-                if *filled {
-                    window.paint_quad(fill(*bounds, *color));
-                    if let Some((origin, line)) = text {
+            if let Some(cursor) = &painted.cursor {
+                if cursor.filled {
+                    window.paint_quad(fill(cursor.bounds, cursor.color));
+                    if let Some((origin, line)) = &cursor.text {
                         line.paint(*origin, line_height, TextAlign::Left, None, window, cx).ok();
                     }
                 } else {
-                    window.paint_quad(outline(*bounds, *color, BorderStyle::Solid));
+                    window.paint_quad(outline(cursor.bounds, cursor.color, BorderStyle::Solid));
                 }
             }
         });
@@ -204,8 +211,8 @@ impl Element for TerminalElement {
 
 /// The screen's cells worth painting, the selection and the cursor, copied
 /// out under the lock.
-fn snapshot(terminal: &Arc<Terminal>, palette: &Palette, rows: usize) -> Snapshot {
-    let term: parking_lot::MutexGuard<'_, alacritty_terminal::Term<Listener>> = terminal.lock();
+fn snapshot(terminal: &Terminal, palette: &Palette, rows: usize) -> Snapshot {
+    let term = terminal.lock();
     let content = term.renderable_content();
     let offset = content.display_offset as i32;
     let colors = *content.colors;
@@ -410,6 +417,6 @@ fn lay_out(
             }
             CursorShape::HollowBlock | CursorShape::Hidden => (false, None),
         };
-        painted.cursor = Some((bounds, palette.cursor, filled, text));
+        painted.cursor = Some(CursorPaint { bounds, color: palette.cursor, filled, text });
     }
 }
