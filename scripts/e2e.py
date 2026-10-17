@@ -2382,11 +2382,12 @@ def git_checks(samples):
         z.run("keys cmd-down", "type // review", "wait 400")
         d = z.wait_for(lambda s: len(g(s)["diff"]["hunks"]) == 4, timeout=10, interval=0.3)["git"]["diff"]
         assert "Greeter.swift" in z.dump()["buffers"]
-        # Inline: deleted lines are blocks under the line before them (the
-        # deleted first line, and the modified line's old text).
+        # Inline: deleted lines are blocks under the line before them, or
+        # above the first line (the deleted first line, then the modified
+        # line's old text under the new first line).
         z.run("action zcode::InlineComparison", "wait 300")
         d = g()["diff"]
-        assert not d["side_by_side"] and d["current_blocks"] == [[1, 1], [1, 1]], d["current_blocks"]
+        assert not d["side_by_side"] and d["current_blocks"] == [[1, 1, True], [1, 1, False]], d["current_blocks"]
         z.run("screenshot " + os.path.join(WORK, "git-diff-inline.png"))
         z.run("action zcode::SideBySideComparison", "keys cmd-z", "keys alt-shift-cmd-enter", "wait 400")
         s = z.dump()

@@ -8,7 +8,7 @@
 //! `HEAD`'s version is a read-only editor on the left; blank blocks pad
 //! whichever side has fewer lines in a change so the two stay row for row,
 //! and they scroll together. Inline, deleted lines are blocks under the
-//! line before them.
+//! line before them, or above the first line for lines deleted at the top.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -146,17 +146,28 @@ impl DiffView {
             if let Some(range) = rows_range(&base_rope, &hunk.old) {
                 base_fills.push(fill(range, deleted));
             }
-            // Pads go under the change's last row (or the row before it).
-            let below = |rows: &std::ops::Range<u32>| rows.end.max(1) - 1;
+            // Pads go under the change's last row (or the row before it),
+            // above the first row for a change at the top.
+            let pad = |rows: &std::ops::Range<u32>, n: u32| {
+                let lines = vec![""; n as usize];
+                match rows.end.checked_sub(1) {
+                    Some(row) => Block::new(row, lines),
+                    None => Block::new(0, lines).above(),
+                }
+                .background(padding)
+            };
             if new > old {
-                base_pads.push(Block::new(below(&hunk.old), vec![""; (new - old) as usize]).background(padding));
+                base_pads.push(pad(&hunk.old, new - old));
             } else if old > new {
-                current_pads.push(Block::new(below(&hunk.new), vec![""; (old - new) as usize]).background(padding));
+                current_pads.push(pad(&hunk.new, old - new));
             }
             if old > 0 {
                 let lines = base_lines[(hunk.old.start as usize).min(base_lines.len())..(hunk.old.end as usize).min(base_lines.len())].to_vec();
-                let row = hunk.new.start.max(1) - 1;
-                deleted_blocks.push(Block::new(row, lines).color(deleted_text).background(deleted));
+                let block = match hunk.new.start.checked_sub(1) {
+                    Some(row) => Block::new(row, lines),
+                    None => Block::new(0, lines).above(),
+                };
+                deleted_blocks.push(block.color(deleted_text).background(deleted));
             }
         }
         let side_by_side = self.side_by_side;
@@ -217,8 +228,9 @@ impl DiffView {
             "side_by_side": self.side_by_side,
             "hunks": self.hunks.iter().map(|h| [h.old.start + 1, h.old.end, h.new.start + 1, h.new.end]).collect::<Vec<_>>(),
             "base_text": (self.base_text.len() < 8000).then(|| self.base_text.clone()),
-            "current_blocks": self.current.read(cx).blocks(if self.side_by_side { PAD_KEY } else { DELETED_KEY }).iter().map(|b| (b.row + 1, b.lines.len())).collect::<Vec<_>>(),
-            "base_blocks": self.base.read(cx).blocks(PAD_KEY).iter().map(|b| (b.row + 1, b.lines.len())).collect::<Vec<_>>(),
+            // 1-based row, lines, and whether they're above the row.
+            "current_blocks": self.current.read(cx).blocks(if self.side_by_side { PAD_KEY } else { DELETED_KEY }).iter().map(|b| (b.row + 1, b.lines.len(), b.above)).collect::<Vec<_>>(),
+            "base_blocks": self.base.read(cx).blocks(PAD_KEY).iter().map(|b| (b.row + 1, b.lines.len(), b.above)).collect::<Vec<_>>(),
             "current_rows": rows(&self.current),
             "base_rows": rows(&self.base),
             "current_scroll": f32::from(self.current.read(cx).scroll_offset().y),
