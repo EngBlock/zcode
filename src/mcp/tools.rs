@@ -220,7 +220,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "OpenFile",
         title: "Open File",
-        description: "Opens a file in zcode's focused editor pane, at a line and column if given, so the user sees it.",
+        description: "Opens a file in zcode's focused editor pane, at a line and column if given, so the user sees it. An .xcassets folder, or a set in one, opens in the asset catalog editor.",
         read_only: false,
         asks: false,
         schema: || {

@@ -1503,6 +1503,20 @@ def asset_catalog_checks(samples):
 
         check("Asset catalog: New Image Set and New Color Set written as Xcode writes them, renamed by typing, files dropped on the outline become a set by scale, Delete removes a set; project.pbxproj untouched; ⌘Z all the way back", sets_added_renamed_removed)
 
+        def mcp_open_file():
+            from mcp_client import McpClient
+            c = McpClient([BINARY, "mcp"], cwd=project)
+            try:
+                c.initialize()
+                r = c.call("OpenFile", {"path": "HelloClassic/Assets.xcassets/Icons/Star.symbolset"})
+                assert not r.get("isError"), r
+                a = wait_assets(z, lambda a: a["selected_name"] == "Star")
+                assert a["type"] == "Symbol Image Set", a
+            finally:
+                c.close()
+
+        check("Asset catalog: MCP's OpenFile on a set opens the catalog on it", mcp_open_file)
+
         def reopened_after_relaunch():
             z.run(f"open {os.path.join(catalog, 'Brand.colorset')}", "wait 300")
             z.quit()

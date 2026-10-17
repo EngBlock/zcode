@@ -87,7 +87,8 @@ impl Workspace {
     /// line and column.
     pub fn mcp_open(&mut self, path: &str, line: Option<u32>, column: Option<u32>, window: &mut Window, cx: &mut Context<Self>) -> Result<PathBuf, String> {
         let path = self.mcp_path(path);
-        if !path.is_file() {
+        // An asset catalog or a set in it opens the catalog's editor.
+        if !path.is_file() && crate::xcassets::locate(&path).is_none() {
             return Err(format!("No file at {}", path.display()));
         }
         let target = line.map(|l| Target::Line { line: l.saturating_sub(1), column: column.unwrap_or(1).saturating_sub(1) });
