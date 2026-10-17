@@ -102,7 +102,9 @@ impl Editor {
         let theme = cx.theme();
         let status = &theme.highlight_theme.style.status;
         InputEditorStyle {
-            foreground: theme.foreground,
+            // A theme's editor text color, when it has one (Xcode's
+            // themes do), else the window's.
+            foreground: theme.highlight_theme.style.editor_foreground.unwrap_or(theme.foreground),
             muted_foreground: theme.muted_foreground,
             background: editor_background(cx),
             border: theme.border,

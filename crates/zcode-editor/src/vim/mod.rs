@@ -1209,6 +1209,13 @@ impl EditorState {
     fn vim_keystroke(&mut self, keystroke: &Keystroke, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(mut vim) = self.extras.vim.take() else { return false };
         let before = vim.status();
+        // A key binding made for a Vim mode (`"context": "vim_mode ==
+        // normal"` in the app's keymap) wins over Vim's own use of the key,
+        // as do the keys that finish one: Vim only takes what's left.
+        if before.pending.is_empty() && before.command_line.is_none() && keymap_wants(keystroke, window, cx) {
+            self.extras.vim = Some(vim);
+            return false;
+        }
         let handled = vim.keystroke(self, keystroke, window, cx);
         vim.capture(self);
         if vim.status() != before {
@@ -1280,4 +1287,17 @@ impl EditorState {
         use gpui::EntityInputHandler as _;
         self.replace_text_in_range(None, text, window, cx);
     }
+}
+
+/// Whether the keymap has a binding for a Vim mode that `keystroke` is (or
+/// starts), or a binding of several keys is underway.
+fn keymap_wants(keystroke: &Keystroke, window: &Window, cx: &gpui::App) -> bool {
+    if window.has_pending_keystrokes() {
+        return true;
+    }
+    let for_vim = |binding: &gpui::KeyBinding| binding.predicate().is_some_and(|p| p.to_string().contains("vim_mode"));
+    let input = [keystroke.clone()];
+    let keymap = cx.key_bindings();
+    let (matched, _) = keymap.borrow().bindings_for_input(&input, &window.context_stack());
+    matched.iter().any(for_vim) || window.possible_bindings_for_input(&input).iter().any(for_vim)
 }

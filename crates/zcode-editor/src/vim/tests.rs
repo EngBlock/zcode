@@ -553,3 +553,25 @@ fn the_apps_control_keys_still_reach_the_keymap(cx: &mut TestAppContext) {
     assert!(handled(&mut t, "ctrl-d"));
     assert!(!handled(&mut t, "cmd-s"));
 }
+
+gpui::actions!(vim_keymap_test, [OpenSomething]);
+
+#[gpui::test]
+fn a_binding_made_for_a_vim_mode_wins_over_vims_own_keys(cx: &mut TestAppContext) {
+    let mut t = VimTest::new(cx, "|one two\nthree\n");
+    let hits = Rc::new(std::cell::Cell::new(0));
+    t.cx.update(|_, cx| {
+        cx.bind_keys([gpui::KeyBinding::new("space f", OpenSomething, Some("Editor && vim_mode == normal"))]);
+        let hits = hits.clone();
+        cx.on_action(move |_: &OpenSomething, _| hits.set(hits.get() + 1));
+    });
+    t.cx.run_until_parked();
+    t.keys("space f");
+    assert_eq!(hits.get(), 1, "the keymap's binding ran");
+    t.assert("|one two\nthree\n");
+    // Keys no such binding starts with are still Vim's.
+    t.keys("w").assert("one |two\nthree\n");
+    // Not in insert mode, where the binding's context doesn't match.
+    t.keys("i space").mode(VimMode::Insert);
+    assert_eq!(t.text(), "one  two\nthree\n");
+}

@@ -198,7 +198,8 @@ impl InputModeKind for EditorMode {
         window: &mut Window,
     ) -> Stateful<Div> {
         element
-            .key_context("Input mode=editor")
+            // `Editor` for keymaps written as Zed's are.
+            .key_context("Input Editor mode=editor")
             .on_action(window.listener_for(entity, InputBaseState::on_action_toggle_code_actions))
             .on_action(window.listener_for(entity, InputBaseState::on_action_show_completions))
             .on_action(window.listener_for(entity, InputBaseState::on_action_go_to_definition))

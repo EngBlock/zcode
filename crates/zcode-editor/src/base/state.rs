@@ -1083,6 +1083,10 @@ impl<M: InputModeKind> InputBaseState<M> {
         self
     }
 
+    pub fn shows_whitespaces(&self) -> bool {
+        self.show_whitespaces
+    }
+
     /// Update whether to show whitespace characters.
     pub fn set_show_whitespaces(&mut self, show: bool, _: &mut Window, cx: &mut Context<Self>) {
         self.show_whitespaces = show;
@@ -4634,7 +4638,7 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
         // `Self` is concrete enough to name its own entity type.
         let element = M::register_actions(element, &entity, window);
         match (&self.extra_key_context, M::CODE_EDITOR) {
-            (Some(extra), true) => element.key_context(format!("Input mode=editor {extra}").as_str()),
+            (Some(extra), true) => element.key_context(format!("Input Editor mode=editor {extra}").as_str()),
             _ => element,
         }
     }
@@ -10927,6 +10931,10 @@ impl<M: crate::MultiLineMode> InputBaseState<M> {
         self
     }
 
+    pub fn is_soft_wrapped(&self) -> bool {
+        self.soft_wrap
+    }
+
     /// Update the soft wrap mode, default is true.
     pub fn set_soft_wrap(&mut self, wrap: bool, _: &mut Window, cx: &mut Context<Self>) {
         self.soft_wrap = wrap;
@@ -11141,6 +11149,10 @@ impl InputBaseState<crate::EditorMode> {
             *l = line_number;
         }
         self
+    }
+
+    pub fn shows_line_numbers(&self) -> bool {
+        self.mode.line_number()
     }
 
     /// Set line number.

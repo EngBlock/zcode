@@ -501,6 +501,14 @@ impl<M: crate::MultiLineMode> InputBaseState<M> {
         self
     }
 
+    /// The tab size, and whether Tab types a tab.
+    pub fn current_tab_size(&self) -> Option<TabSize> {
+        match &self.mode {
+            LayoutMode::PlainText { tab, .. } | LayoutMode::CodeEditor { tab, .. } => Some(*tab),
+            _ => None,
+        }
+    }
+
     pub fn set_tab_size(&mut self, tab: TabSize, cx: &mut Context<Self>) {
         match &mut self.mode {
             LayoutMode::PlainText { tab: value, .. }
