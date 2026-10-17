@@ -35,7 +35,7 @@ fn parse_args() -> Args {
             }
             "--help" | "-h" => {
                 println!(
-                    "zcode {}\n\nUSAGE:\n    zcode [PATH] [--startup-bench] [--background] [--perf-log FILE]\n\nPATH may be a folder, .xcodeproj, .xcworkspace, Package.swift or a file.\nWhen zcode is already running, PATH opens in that instance (~70 ms).\n\n--startup-bench    print startup timings and memory as JSON, then quit\n--background       start the resident instance without a window (login item)\n--perf-log FILE    append a JSON memory sample every 2 s to FILE",
+                    "zcode {}\n\nUSAGE:\n    zcode [PATH] [--startup-bench] [--background] [--perf-log FILE]\n    zcode mcp\n\nPATH may be a folder, .xcodeproj, .xcworkspace, Package.swift or a file.\nWhen zcode is already running, PATH opens in that instance (~70 ms).\n\n--startup-bench    print startup timings and memory as JSON, then quit\n--background       start the resident instance without a window (login item)\n--perf-log FILE    append a JSON memory sample every 2 s to FILE\n\nzcode mcp          the MCP server for coding agents, on stdio (zcode must be running)",
                     env!("CARGO_PKG_VERSION")
                 );
                 std::process::exit(0);
@@ -51,6 +51,11 @@ fn parse_args() -> Args {
 #[derive(Default)]
 struct Workspaces(Vec<WeakEntity<Workspace>>);
 impl Global for Workspaces {}
+
+/// The open project windows' workspaces.
+pub fn workspaces(cx: &mut App) -> Vec<Entity<Workspace>> {
+    cx.default_global::<Workspaces>().0.iter().filter_map(|w| w.upgrade()).collect()
+}
 
 fn window_options(title: &str, window_size: Size<Pixels>, cx: &App) -> WindowOptions {
     let bounds = Bounds::centered(None, window_size, cx);
@@ -259,6 +264,10 @@ fn quit(cx: &mut App) {
 }
 
 pub fn run() {
+    // `zcode mcp`: the MCP server on stdio, relayed to the running zcode.
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        std::process::exit(crate::mcp::bridge::run());
+    }
     // Lets a sampling profiler attach before startup work begins
     // (`ZCODE_PAUSE_AT_START=1500 zcode & sample <pid> 3`).
     if let Some(ms) = std::env::var("ZCODE_PAUSE_AT_START").ok().and_then(|v| v.parse().ok()) {
@@ -329,7 +338,9 @@ pub fn run() {
                 }
             })
             .detach();
-            if single_instance {
+            // A scripted zcode with a configuration folder of its own
+            // listens there, for `zcode mcp` (never on the user's socket).
+            if single_instance || (crate::paths::has_config_override() && !args.startup_bench) {
                 crate::instance::listen(cx);
             }
 

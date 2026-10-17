@@ -74,7 +74,11 @@
     // The agent a new thread starts with: "claude", "codex", "gemini" or
     // one of yours.
     "default_agent": "claude",
-    // Allow every tool call an agent asks permission for, without asking.
-    "always_allow_tool_actions": false
+    // Allow every tool call an agent asks permission for, without asking
+    // (zcode's own tools included).
+    "always_allow_tool_actions": false,
+    // Give agents zcode's MCP server: build, run, test, issues, the build
+    // log, the editor, the debugger and screenshots (`zcode mcp`).
+    "zcode_mcp_server": true
   }
 }

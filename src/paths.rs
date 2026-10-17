@@ -14,6 +14,11 @@ fn config_override() -> Option<PathBuf> {
     std::env::var_os("ZCODE_CONFIG_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from)
 }
 
+/// Whether `ZCODE_CONFIG_DIR` stands in for the user's folders.
+pub fn has_config_override() -> bool {
+    config_override().is_some()
+}
+
 /// Settings, key bindings and themes, as Zed keeps them: `~/.config/zcode`.
 pub fn config_dir() -> PathBuf {
     config_override().unwrap_or_else(|| home().join(".config/zcode"))

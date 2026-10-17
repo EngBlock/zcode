@@ -41,6 +41,8 @@ pub struct Settings {
     pub default_agent: String,
     /// Answer agents' permission requests with Allow without asking.
     pub always_allow_tool_actions: bool,
+    /// Hand agents in the panel zcode's own MCP server (`crate::mcp`).
+    pub zcode_mcp_server: bool,
 }
 
 pub const DEFAULT_FONT_SIZE: f32 = 13.;
@@ -69,6 +71,7 @@ impl Default for Settings {
             agent_servers: crate::acp::agents::builtins(),
             default_agent: "claude".into(),
             always_allow_tool_actions: false,
+            zcode_mcp_server: true,
         }
     }
 }
@@ -184,6 +187,7 @@ pub struct TerminalContent {
 pub struct AgentContent {
     pub default_agent: Option<String>,
     pub always_allow_tool_actions: Option<bool>,
+    pub zcode_mcp_server: Option<bool>,
 }
 
 /// Every key a settings file may have, with the keys of its objects: what
@@ -207,7 +211,7 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("terminal", &["shell"]),
     // Any name: Zed's built-ins (claude, codex, gemini) or an agent of yours.
     ("agent_servers", &[]),
-    ("agent", &["default_agent", "always_allow_tool_actions"]),
+    ("agent", &["default_agent", "always_allow_tool_actions", "zcode_mcp_server"]),
 ];
 
 /// Settings a project's file can't change: they're the app's, not a window's.
@@ -259,6 +263,7 @@ impl Settings {
             if let Some(agent) = &content.agent {
                 self.default_agent = agent.default_agent.clone().unwrap_or(self.default_agent);
                 self.always_allow_tool_actions = agent.always_allow_tool_actions.unwrap_or(self.always_allow_tool_actions);
+                self.zcode_mcp_server = agent.zcode_mcp_server.unwrap_or(self.zcode_mcp_server);
             }
             if let Some(family) = &content.buffer_font_family {
                 self.buffer_font_family = Some(family.clone()).filter(|f| !f.trim().is_empty());
@@ -482,16 +487,19 @@ mod tests {
         let user: SettingsContent = jsonc::parse(
             r#"{
             "agent_servers": { "claude": { "env": { "A": "1" } }, "Mine": { "command": "/opt/mine", "args": ["--acp"] } },
-            "agent": { "default_agent": "Mine", "always_allow_tool_actions": true },
+            "agent": { "default_agent": "Mine", "always_allow_tool_actions": true, "zcode_mcp_server": false },
         }"#,
         )
         .unwrap();
-        let project: SettingsContent = jsonc::parse(r#"{ "agent_servers": { "Evil": { "command": "/tmp/evil" } }, "agent": { "always_allow_tool_actions": false } }"#).unwrap();
+        let project: SettingsContent =
+            jsonc::parse(r#"{ "agent_servers": { "Evil": { "command": "/tmp/evil" } }, "agent": { "always_allow_tool_actions": false, "zcode_mcp_server": true } }"#).unwrap();
         let settings = Settings::default().merged(&user, false).merged(&project, true);
         let ids: Vec<&str> = settings.agent_servers.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(ids, ["claude", "codex", "gemini", "Mine"]);
         assert_eq!(settings.agent_servers[0].env.get("A").map(String::as_str), Some("1"));
         assert_eq!((settings.default_agent.as_str(), settings.always_allow_tool_actions), ("Mine", true));
+        assert!(!settings.zcode_mcp_server, "a project can't hand agents zcode's tools either");
+        assert!(Settings::default().zcode_mcp_server);
         let warnings = unknown_keys(&serde_json::json!({ "agent_servers": {}, "agent": { "default_agent": "x", "follow": true } }), true);
         assert_eq!(
             warnings,

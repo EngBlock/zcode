@@ -26,6 +26,7 @@ mod hunk_popover;
 mod inlay_hints;
 mod issues;
 mod line_anchors;
+mod mcp;
 mod multibuffer;
 mod navigation;
 mod navigator;
@@ -67,7 +68,9 @@ use crate::project::{self, ProjectInfo};
 use crate::search::SearchOptions;
 use crate::session::{ProjectSession, Session};
 
+pub use agent::McpPermission;
 pub use buffers::Buffer;
+pub use mcp::issue_json;
 pub use find::FindState;
 pub use navigator::NavigatorTab;
 pub use multibuffer::{MultiBufferKind, MultiBufferView};
@@ -97,6 +100,8 @@ struct Modal {
 
 pub struct Workspace {
     focus_handle: FocusHandle,
+    /// The project's window.
+    pub window: AnyWindowHandle,
     pub project: ProjectInfo,
     /// zcode's cache folder for the project (index, logs).
     cache_dir: PathBuf,
@@ -251,6 +256,7 @@ impl Workspace {
 
         let mut this = Self {
             focus_handle: cx.focus_handle(),
+            window: window.window_handle(),
             project: project.clone(),
             cache_dir: cache_dir.clone(),
             files: Arc::new(vec![]),

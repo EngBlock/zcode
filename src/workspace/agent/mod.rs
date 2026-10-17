@@ -13,6 +13,11 @@
 //! goes through the workspace's buffers (`files.rs`), @-mentions come from
 //! a picker of the project's files and symbols (`mentions.rs`), and the
 //! thread is drawn by `render.rs`.
+//!
+//! Each session is handed zcode's own MCP server (`crate::mcp`), so the
+//! agent can build, run, test and read issues through zcode. The server
+//! knows the panel by a token in its environment; tools that change things
+//! ask in the thread first, like the agent's own tool calls.
 
 mod files;
 mod mentions;
@@ -34,6 +39,7 @@ use crate::acp::schema::{
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse, ResourceLink, SelectedPermissionOutcome, SessionId,
     SessionNotification, StopReason, TextContent, TextResourceContents, WriteTextFileRequest,
 };
+use crate::acp::schema::ToolCallStatus;
 use crate::acp::{AgentConnection, AgentServer, Change, Entry, Incoming, RpcError, Thread, ToolContent, UserMessage};
 
 pub use mentions::MentionDelegate;
@@ -113,7 +119,42 @@ pub struct AgentPanel {
     /// The message field's length, to tell a character typed from a deletion.
     composer_len: usize,
     turn: Option<Task<()>>,
+    /// What zcode's MCP server knows this panel's agent by.
+    pub mcp_token: String,
+    zcode_mcp_server: bool,
+    /// zcode's own tools waiting for an answer, by tool call id: the tool
+    /// and who waits.
+    mcp_permissions: HashMap<String, (String, futures::channel::oneshot::Sender<bool>)>,
+    /// zcode's tools Always Allowed in this thread.
+    allowed_tools: HashSet<String>,
+    next_mcp_call: u64,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Marks a permission request as one of zcode's own tools (answered to
+/// zcode's MCP server rather than to the agent).
+const MCP_REQUEST: &str = "zcode_mcp";
+
+/// The user's answer to one of zcode's tools that an agent called.
+pub struct McpPermission {
+    panel: WeakEntity<AgentPanel>,
+    /// The thread entry asking; `None` when it was allowed without asking.
+    id: Option<String>,
+    pub answer: futures::channel::oneshot::Receiver<bool>,
+}
+
+impl McpPermission {
+    /// The tool ran: its entry shows whether it succeeded.
+    pub fn finish(&self, ok: bool, cx: &mut App) {
+        let Some(id) = self.id.clone() else { return };
+        self.panel.update(cx, |panel, cx| panel.set_tool_status(&id, if ok { ToolCallStatus::Completed } else { ToolCallStatus::Failed }, cx)).ok();
+    }
+
+    /// The request was cancelled before the user answered.
+    pub fn withdraw(&self, cx: &mut App) {
+        let Some(id) = self.id.clone() else { return };
+        self.panel.update(cx, |panel, cx| panel.answer_permission(&id, None, cx)).ok();
+    }
 }
 
 impl EventEmitter<DismissEvent> for AgentPanel {}
@@ -172,6 +213,11 @@ impl AgentPanel {
             last_stop: None,
             composer_len: 0,
             turn: None,
+            mcp_token: crate::mcp::new_token(),
+            zcode_mcp_server: settings.zcode_mcp_server,
+            mcp_permissions: HashMap::new(),
+            allowed_tools: HashSet::new(),
+            next_mcp_call: 0,
             _subscriptions: subscriptions,
         }
     }
@@ -195,6 +241,8 @@ impl AgentPanel {
     /// The settings changed: the agents, and whether to ask before tools run.
     pub fn set_settings(&mut self, settings: &crate::settings::Settings, cx: &mut Context<Self>) {
         self.always_allow = settings.always_allow_tool_actions;
+        // Taken by the next session.
+        self.zcode_mcp_server = settings.zcode_mcp_server;
         if self.agents != settings.agent_servers {
             self.agents = settings.agent_servers.clone();
             // A changed command takes effect with the next agent started.
@@ -253,6 +301,9 @@ impl AgentPanel {
         self.expanded.clear();
         self.diff_cache.clear();
         self.last_stop = None;
+        // Tools still waiting are refused (their answers dropped).
+        self.mcp_permissions.clear();
+        self.allowed_tools.clear();
         let opened = std::mem::take(&mut self.opened_buffers);
         if let Some(workspace) = self.workspace.upgrade() {
             cx.defer(move |cx| workspace.update(cx, |ws, cx| ws.release_agent_buffers(&opened, cx)));
@@ -371,7 +422,9 @@ impl AgentPanel {
             // A session for the thread.
             let has_session = this.update(cx, |this, _| this.session.as_ref().is_some_and(|s| s.id.is_some())).unwrap_or(false);
             if !has_session {
-                match connection.request_as::<NewSessionResponse, _>("session/new", NewSessionRequest::new(root.clone())).await {
+                let Ok(mcp_servers) = this.update(cx, |this, _| this.mcp_servers()) else { return };
+                let request = NewSessionRequest::new(root.clone()).mcp_servers(mcp_servers);
+                match connection.request_as::<NewSessionResponse, _>("session/new", request).await {
                     Ok(response) => {
                         let ok = this.update(cx, |this, cx| {
                             if let Some(session) = &mut this.session {
@@ -652,6 +705,17 @@ impl AgentPanel {
     /// The user's answer to a tool call's permission request (`None`: cancelled).
     pub fn answer_permission(&mut self, call: &str, option: Option<String>, cx: &mut Context<Self>) {
         let Some((ix, request)) = self.thread.resolve_permission(call, option.clone()) else { return };
+        if request.get(MCP_REQUEST).is_some() {
+            let allowed = matches!(option.as_deref(), Some("allow" | "always"));
+            if let Some((tool, answer)) = self.mcp_permissions.remove(call) {
+                if option.as_deref() == Some("always") {
+                    self.allowed_tools.insert(tool);
+                }
+                answer.send(allowed).ok();
+            }
+            self.set_tool_status(call, if allowed { ToolCallStatus::InProgress } else { ToolCallStatus::Failed }, cx);
+            return;
+        }
         let outcome = match option {
             Some(option) => RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option)),
             None => RequestPermissionOutcome::Cancelled,
@@ -660,6 +724,51 @@ impl AgentPanel {
             session.connection.respond(request, serde_json::to_value(RequestPermissionResponse::new(outcome)).map_err(|e| RpcError::internal(e.to_string())));
         }
         self.list_changed(Change::Updated(ix), cx);
+    }
+
+    /// The MCP servers a new session gets: zcode's own, unless turned off
+    /// (`agent.zcode_mcp_server`) or zcode isn't listening for it.
+    fn mcp_servers(&self) -> Vec<crate::acp::schema::McpServer> {
+        if !self.zcode_mcp_server {
+            return vec![];
+        }
+        crate::mcp::agent_server(&self.mcp_token).into_iter().collect()
+    }
+
+    /// One of zcode's MCP tools that changes things (a build, a run, the
+    /// debugger), called by this panel's agent: asked about in the thread
+    /// as the agent's own tool calls are, unless Always Allowed (in this
+    /// thread, or by `always_allow_tool_actions`).
+    pub fn ask_tool_permission(&mut self, tool: &str, title: String, input: Value, cx: &mut Context<Self>) -> McpPermission {
+        let (tx, answer) = futures::channel::oneshot::channel();
+        let panel = cx.entity().downgrade();
+        if self.always_allow || self.allowed_tools.contains(tool) {
+            tx.send(true).ok();
+            return McpPermission { panel, id: None, answer };
+        }
+        self.next_mcp_call += 1;
+        let id = format!("zcode-mcp-{}", self.next_mcp_call);
+        let call: crate::acp::schema::ToolCallUpdate =
+            serde_json::from_value(json!({ "toolCallId": id, "title": title, "kind": "execute", "status": "pending", "rawInput": input })).expect("a valid tool call");
+        let options: Vec<crate::acp::schema::PermissionOption> = serde_json::from_value(json!([
+            { "optionId": "allow", "name": "Allow", "kind": "allow_once" },
+            { "optionId": "always", "name": "Always Allow", "kind": "allow_always" },
+            { "optionId": "reject", "name": "Reject", "kind": "reject_once" },
+        ]))
+        .expect("valid options");
+        let change = self.thread.request_permission(json!({ MCP_REQUEST: id }), call, options);
+        self.list_changed(change, cx);
+        self.scroller.update(cx, |scroller, cx| scroller.scroll_to_end(cx));
+        self.mcp_permissions.insert(id.clone(), (tool.to_string(), tx));
+        McpPermission { panel, id: Some(id), answer }
+    }
+
+    fn set_tool_status(&mut self, id: &str, status: ToolCallStatus, cx: &mut Context<Self>) {
+        let update: crate::acp::schema::ToolCallUpdate = serde_json::from_value(json!({ "toolCallId": id, "status": status })).expect("a valid update");
+        if self.thread.tool_call_index(id).is_some() {
+            let change = self.thread.update_call(update);
+            self.list_changed(change, cx);
+        }
     }
 
     fn follow_to(&mut self, path: &Path, line: Option<u32>, window: &mut Window, cx: &mut Context<Self>) {
@@ -1075,6 +1184,7 @@ impl Workspace {
         let workspace = cx.weak_entity();
         let root = self.project.root.clone();
         let panel = cx.new(|cx| AgentPanel::new(workspace, root, &settings, restored.as_ref(), window, cx));
+        crate::mcp::register_agent(panel.read(cx).mcp_token.clone(), cx.weak_entity(), cx);
         self._subscriptions.push(cx.observe(&panel, |_, _, cx| cx.notify()));
         self.agent.panel = Some(panel.clone());
         panel
@@ -1139,6 +1249,13 @@ impl Workspace {
                 panel.update(cx, |panel, cx| panel.command(command, window, cx))
             }
         }
+    }
+
+    /// Asks about one of zcode's MCP tools the panel's agent called (see
+    /// `AgentPanel::ask_tool_permission`); `None` without a panel.
+    pub fn ask_agent_tool_permission(&mut self, tool: &str, title: String, input: Value, cx: &mut Context<Self>) -> Option<McpPermission> {
+        let panel = self.agent.panel.clone()?;
+        Some(panel.update(cx, |panel, cx| panel.ask_tool_permission(tool, title, input, cx)))
     }
 
     pub(super) fn agent_summary(&self, window: &Window, cx: &App) -> Value {

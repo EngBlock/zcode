@@ -13,6 +13,7 @@ pub mod git;
 pub mod instance;
 pub mod languages;
 pub mod lsp;
+pub mod mcp;
 pub mod packages;
 pub mod paths;
 pub mod perf;
