@@ -129,7 +129,7 @@ pub use highlights::HighlightPriority;
 pub use history::{HistoryRequest, TransactionId};
 pub use modal::{CursorShape, KeystrokeInterceptor};
 pub use viewport::ViewportChanged;
-pub use vim::{VimCommand, VimMode, VimStatus};
+pub use vim::{VimCommand, VimMode, VimStatus, VimStatusChanged};
 pub use multibuffer_editor::{EXPAND_LINES, HeaderStyle, MultiBufferEditor, MultiBufferEvent};
 pub use decorations::{
     RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, TextDecoration,

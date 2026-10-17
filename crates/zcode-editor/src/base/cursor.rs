@@ -162,6 +162,10 @@ impl Selections {
         self.selections.iter()
     }
 
+    pub(super) fn as_slice(&self) -> &[CursorSelection] {
+        &self.selections
+    }
+
     /// Returns the number of selections (always `>= 1`).
     pub(super) fn len(&self) -> usize {
         self.selections.len()

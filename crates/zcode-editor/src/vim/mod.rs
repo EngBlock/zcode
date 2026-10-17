@@ -108,7 +108,7 @@ pub enum VimCommand {
     /// `gt`, `gT`
     NextTab,
     PreviousTab,
-    /// `⌃O`, `⌃I`: the navigation history.
+    /// `⌃O`, Tab (Vim's `⌃I`): the navigation history.
     GoBack,
     GoForward,
     /// `=`: re-indent these bytes (whole lines).
@@ -116,6 +116,13 @@ pub enum VimCommand {
 }
 
 impl<M: InputModeKind> EventEmitter<VimCommand> for InputBaseState<M> {}
+
+/// The mode, the pending keys, the command line or the message changed
+/// (what the status bar shows: [`EditorState::vim_status`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VimStatusChanged;
+
+impl<M: InputModeKind> EventEmitter<VimStatusChanged> for InputBaseState<M> {}
 
 /// A cursor: in normal mode `anchor == head`; in visual modes the
 /// selection runs between them, both characters included.
@@ -346,10 +353,15 @@ impl Vim {
                 let cursor = self.primary();
                 heads.push(cursor.head.min(len));
                 let rows = block_rows(&text, cursor, self.block_to_end);
-                let mut selections: Vec<(usize, usize, bool)> =
-                    rows.into_iter().filter(|r| !r.is_empty()).map(|r| (r.start, r.end, false)).collect();
-                // The head's row first: it's the one the view follows.
+                // Rows too short to reach the block have no selection, except
+                // the head's, which comes first: the view and the status bar
+                // follow it.
                 let head_row = text::row(&text, cursor.head);
+                let mut selections: Vec<(usize, usize, bool)> = rows
+                    .into_iter()
+                    .filter(|r| !r.is_empty() || text::row(&text, r.start) == head_row)
+                    .map(|r| (r.start, r.end, false))
+                    .collect();
                 if let Some(ix) = selections.iter().position(|(s, _, _)| text::row(&text, *s) == head_row) {
                     let row = selections.remove(ix);
                     selections.insert(0, row);
@@ -1139,6 +1151,7 @@ impl EditorState {
             self.set_extra_key_context(None, cx);
             self.caret_heads = None;
             self.clear_highlight_layer(SEARCH_LAYER, cx);
+            cx.emit(VimStatusChanged);
             cx.notify();
             return;
         }
@@ -1154,6 +1167,7 @@ impl EditorState {
             Some(Rc::new(|state: &mut EditorState, keystroke, window, cx| state.vim_keystroke(keystroke, window, cx))),
             cx,
         );
+        cx.emit(VimStatusChanged);
         cx.notify();
     }
 
@@ -1164,6 +1178,16 @@ impl EditorState {
     /// The mode and what the status bar shows, when Vim mode is on.
     pub fn vim_status(&self) -> Option<VimStatus> {
         self.extras.vim.as_ref().map(|vim| vim.status())
+    }
+
+    /// Shows a message where the command line is (the host refusing a
+    /// command: `:q` on unsaved changes).
+    pub fn set_vim_message(&mut self, message: impl Into<SharedString>, error: bool, cx: &mut Context<Self>) {
+        if let Some(vim) = &mut self.extras.vim {
+            vim.message = Some((message.into(), error));
+            cx.emit(VimStatusChanged);
+            cx.notify();
+        }
     }
 
     /// How the matches of a search are highlighted.
@@ -1180,15 +1204,23 @@ impl EditorState {
 
     fn vim_keystroke(&mut self, keystroke: &Keystroke, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(mut vim) = self.extras.vim.take() else { return false };
+        let before = vim.status();
         let handled = vim.keystroke(self, keystroke, window, cx);
         vim.capture(self);
+        if vim.status() != before {
+            cx.emit(VimStatusChanged);
+        }
         self.extras.vim = Some(vim);
         handled
     }
 
     fn vim_sync(&mut self, cx: &mut Context<Self>) {
         let Some(mut vim) = self.extras.vim.take() else { return };
+        let mode = vim.mode;
         vim.sync(self, cx);
+        if vim.mode != mode {
+            cx.emit(VimStatusChanged);
+        }
         self.extras.vim = Some(vim);
     }
 

@@ -844,16 +844,20 @@ impl<M: InputModeKind> TextElement<M> {
         // Vim's visual modes draw the cursor on a character inside the
         // selection rather than at its end, and one cursor for a block.
         let len = state.text.len();
-        let carets: Vec<CursorSelection> = match &state.caret_heads {
-            Some(heads) => heads
-                .iter()
-                .enumerate()
-                .map(|(i, &head)| {
-                    let id = if i == 0 { active_id } else { CursorId::new(usize::MAX - i) };
-                    CursorSelection::new(id, head.min(len), head.min(len))
-                })
-                .collect(),
-            None => state.selections.iter().copied().collect(),
+        let heads: Vec<CursorSelection>;
+        let carets: &[CursorSelection] = match &state.caret_heads {
+            Some(caret_heads) => {
+                heads = caret_heads
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &head)| {
+                        let id = if i == 0 { active_id } else { CursorId::new(usize::MAX - i) };
+                        CursorSelection::new(id, head.min(len), head.min(len))
+                    })
+                    .collect();
+                &heads
+            }
+            None => state.selections.as_slice(),
         };
         for selection in carets.iter() {
             let is_active = selection.id == active_id;

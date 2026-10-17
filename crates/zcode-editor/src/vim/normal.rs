@@ -60,6 +60,10 @@ pub(super) enum Prefix {
     Bracket,
 }
 
+/// The ⌃ keys normal and visual mode take; the others (⌃I is Xcode's
+/// Re-Indent, ⌃6 Document Items, ⌃/ the next placeholder) stay the app's.
+const CONTROL_KEYS: &str = "rdufbeyvaxonphjmc";
+
 fn simple_motion(key: Key) -> Option<Motion> {
     Some(match key {
         Key::Char('h') | Key::Left | Key::Backspace | Key::Ctrl('h') => Motion::Left,
@@ -104,6 +108,13 @@ impl Vim {
     ) -> bool {
         if matches!(key, Key::Escape | Key::Ctrl('c')) {
             return self.escape(state, cx);
+        }
+        if let Key::Ctrl(c) = key
+            && !CONTROL_KEYS.contains(c)
+        {
+            self.pending = Default::default();
+            self.apply_mode(state, cx);
+            return false;
         }
         if self.pending.is_empty() && self.mode.is_visual() {
             self.pending.visual = Some(self.visual_extent(state));
@@ -750,15 +761,15 @@ impl Vim {
                 cx.emit(VimCommand::GoBack);
                 self.pending = Default::default();
             }
-            Key::Ctrl('i') => {
-                cx.emit(VimCommand::GoForward);
-                self.pending = Default::default();
-            }
             Key::Tab => {
                 self.pending = Default::default();
-                // Tab still jumps to a placeholder on the line (Xcode's).
+                // Tab still jumps to a placeholder on the line (Xcode's);
+                // otherwise it's Vim's ⌃I.
                 let row = line_of(self.primary().head);
-                return !text::line_text(&text, row).contains("<#");
+                if text::line_text(&text, row).contains("<#") {
+                    return false;
+                }
+                cx.emit(VimCommand::GoForward);
             }
             _ => self.pending = Default::default(),
         }

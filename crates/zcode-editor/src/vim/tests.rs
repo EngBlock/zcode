@@ -538,3 +538,18 @@ fn escape_closes_signature_help_before_leaving_insert_mode(cx: &mut TestAppConte
     t.cx.run_until_parked();
     assert!(!shown(&t));
 }
+
+#[gpui::test]
+fn the_apps_control_keys_still_reach_the_keymap(cx: &mut TestAppContext) {
+    let mut t = VimTest::new(cx, "|one\n");
+    let editor = t.editor.clone();
+    // ⌃6 (Document Items) and ⌃I (Re-Indent) aren't Vim's; ⌃D is.
+    let handled = |t: &mut VimTest, key: &str| {
+        let keystroke = gpui::Keystroke::parse(key).unwrap();
+        t.cx.update(|window, cx| editor.update(cx, |state, cx| state.vim_keystroke(&keystroke, window, cx)))
+    };
+    assert!(!handled(&mut t, "ctrl-6"));
+    assert!(!handled(&mut t, "ctrl-i"));
+    assert!(handled(&mut t, "ctrl-d"));
+    assert!(!handled(&mut t, "cmd-s"));
+}
