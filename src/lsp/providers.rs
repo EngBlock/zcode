@@ -10,7 +10,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::Result;
-use zcode_editor::{CodeActionProvider, CompletionProvider, DefinitionProvider, EditorState, HoverProvider, Rope, RopeExt as _};
+use zcode_editor::{
+    CodeActionProvider, CompletionProvider, DefinitionProvider, EditorState, HoverProvider, Rope, RopeExt as _,
+    SignatureHelpProvider,
+};
 use gpui_kit::{App, AppContext as _, Entity, SharedString, Task, WeakEntity, Window};
 use lsp_types::{
     CodeAction, CodeActionOrCommand, CompletionContext, CompletionItem, CompletionResponse,
@@ -45,7 +48,8 @@ impl DocumentProviders {
         }
     }
 
-    /// Installs completion, hover, definition and code-action providers.
+    /// Installs completion, hover, definition, signature help and code-action
+    /// providers.
     pub fn install(self, editor: &Entity<EditorState>, cx: &mut App) {
         let this = Rc::new(self);
         editor.update(cx, |state, cx| {
@@ -53,6 +57,7 @@ impl DocumentProviders {
             lsp.completion_provider = Some(this.clone());
             lsp.hover_provider = Some(this.clone());
             lsp.definition_provider = Some(this.clone());
+            lsp.signature_help_provider = Some(this.clone());
             lsp.code_action_providers = vec![this];
             cx.notify();
         });
@@ -234,6 +239,38 @@ impl DefinitionProvider for DocumentProviders {
             });
             Ok(definition_links(response, origin))
         })
+    }
+}
+
+impl SignatureHelpProvider for DocumentProviders {
+    fn trigger_characters(&self, cx: &App) -> (Vec<String>, Vec<String>) {
+        self.store
+            .upgrade()
+            .and_then(|store| store.read(cx).features().signature_help.clone())
+            .map(|triggers| (triggers.triggers, triggers.retriggers))
+            .unwrap_or_default()
+    }
+
+    fn signature_help(
+        &self,
+        text: &Rope,
+        offset: usize,
+        context: lsp_types::SignatureHelpContext,
+        cx: &mut App,
+    ) -> Task<Result<Option<lsp_types::SignatureHelp>>> {
+        let supported = self.store.upgrade().is_some_and(|store| store.read(cx).features().signature_help.is_some());
+        let Some(server) = self.server_for(text, cx).filter(|_| supported) else {
+            return Task::ready(Ok(None));
+        };
+        let request = server.request_raw(
+            "textDocument/signatureHelp",
+            json!({
+                "textDocument": self.text_document(),
+                "position": offset_to_lsp(text, offset),
+                "context": context,
+            }),
+        );
+        cx.background_spawn(async move { Ok(serde_json::from_value(request.await?)?) })
     }
 }
 

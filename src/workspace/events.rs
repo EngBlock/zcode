@@ -38,13 +38,24 @@ impl Workspace {
         match event {
             LspStoreEvent::DiagnosticsChanged(path) => {
                 self.refresh_diagnostics_for(path, cx);
+                self.semantic_tokens_diagnosed(path, cx);
                 cx.notify();
             }
-            LspStoreEvent::StatusChanged => cx.notify(),
+            LspStoreEvent::StatusChanged => {
+                // Ready (again, after a restart): what it offers may have changed.
+                let ready = *self.lsp.read(cx).status() == crate::lsp::LspStatus::Ready;
+                if ready && !self.lsp_ready {
+                    self.refresh_semantic_tokens(cx);
+                    self.refresh_inlay_hints(cx);
+                }
+                self.lsp_ready = ready;
+                cx.notify();
+            }
             LspStoreEvent::ApplyEdit(edit) => {
                 self.apply_workspace_edit(edit.clone(), window, cx);
             }
-            LspStoreEvent::RefreshInlayHints | LspStoreEvent::RefreshSemanticTokens => {}
+            LspStoreEvent::RefreshInlayHints => self.refresh_inlay_hints(cx),
+            LspStoreEvent::RefreshSemanticTokens => self.refresh_semantic_tokens(cx),
         }
     }
 

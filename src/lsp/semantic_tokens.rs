@@ -72,6 +72,11 @@ pub fn decode(text: &Rope, data: &[u32], legend: &Legend) -> Vec<(Range<usize>, 
             cursor = LineCursor::at(text, line);
         }
         let begin = cursor.offset_of(start);
+        // sourcekit-lsp marks an operator as the function it calls (`*` as
+        // `Double.*`); operators keep tree-sitter's color, as in Xcode.
+        if !cursor.at_identifier() {
+            continue;
+        }
         let end = cursor.offset_of(start + length);
         if begin < end {
             out.push((begin..end, *name));
@@ -94,6 +99,12 @@ impl LineCursor {
     fn at(text: &Rope, row: usize) -> Self {
         let chars = text.slice_line(row).chars().take_while(|&c| c != '\n' && c != '\r').collect();
         Self { row: Some(row), chars, line_start: text.line_start_offset(row), at: (0, 0, 0) }
+    }
+
+    /// Whether the character the last conversion stopped at starts an
+    /// identifier (or a backquoted one, or `$0`).
+    fn at_identifier(&self) -> bool {
+        self.chars.get(self.at.0).is_some_and(|&c| c.is_alphanumeric() || matches!(c, '_' | '`' | '$'))
     }
 
     fn offset_of(&mut self, column: u32) -> usize {
@@ -165,6 +176,14 @@ mod tests {
         // `x` starts after a surrogate pair: UTF-16 column 6, byte 8.
         let data = [0, 6, 1, 8, 0, 4, 0, 3, 8, 0, 0, 2, 0, 99, 0];
         assert_eq!(decode(&text, &data, &sourcekit_legend()), [(8..9, "variable")]);
+    }
+
+    #[test]
+    fn operators_keep_tree_sitters_color() {
+        // `side * side`: sourcekit-lsp sends `*` as a method (`Double.*`).
+        let text = Rope::from("side * side\n");
+        let data = [0, 0, 4, 9, 0, 0, 5, 1, 13, 0, 0, 2, 4, 9, 0];
+        assert_eq!(decode(&text, &data, &sourcekit_legend()), [(0..4, "property"), (7..11, "property")]);
     }
 
     #[test]

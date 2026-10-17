@@ -39,6 +39,11 @@
 //!   hover                      log the editor's hover (Quick Help or a data tip) at the cursor
 //!   type-latency <text>        type `text`, logging keystroke-to-frame times as JSON
 //!   editor <probe>             the editor's extension points (see `Workspace::editor_probe`)
+//!   hierarchy <command>        the call or type hierarchy in the Find navigator: kind callers|callees|
+//!                              supertypes|subtypes, expand / collapse / open / reroot <row>, close
+//!                              (see `Workspace::hierarchy_command`)
+//!   signature-help             ask for signature help at the active editor's cursor
+//!   inlay-hints on|off         Editor ▸ Inlay Hints (a setting kept in the session)
 //!   git <command>              source control: hunks, the hunk popover, the commit, Push… and Pull…
 //!                              sheets, branches, comparisons (see `Workspace::git_command`)
 //!   dump                       log workspace state as JSON
@@ -387,6 +392,28 @@ fn run_command(
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.pane_command(arg, window, cx)))
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
+        }
+        "hierarchy" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.hierarchy_command(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
+        }
+        "inlay-hints" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            workspace.update(cx, |ws, cx| {
+                if ws.inlay_hints.enabled != (arg == "on") {
+                    ws.toggle_inlay_hints(cx);
+                }
+            });
+            Ok(String::new())
+        }
+        "signature-help" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            let editor = workspace.read(cx).active_editor().ok_or("no editor")?;
+            editor.update(cx, |state, cx| state.show_signature_help(cx));
+            Ok(String::new())
         }
         "git" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;

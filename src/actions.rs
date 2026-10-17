@@ -51,6 +51,10 @@ gpui_kit::actions!(
         // Find
         FindInWorkspace,
         FindSelectedSymbol,
+        FindCallHierarchy,
+        FindAncestorTypes,
+        FindDescendentTypes,
+        FindConformingTypes,
         FindInFile,
         FindAndReplaceInFile,
         // Navigate
@@ -107,6 +111,8 @@ gpui_kit::actions!(
         InlineComparison,
         ShowAuthors,
         ToggleInlineBlame,
+        ToggleInlayHints,
+        ShowCallers,
         // Editor (property lists)
         AddPlistItem,
         DeletePlistItem,
@@ -233,6 +239,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-f", FindInWorkspace, None),
         KeyBinding::new("cmd-shift-f", FindInWorkspace, Some(INPUT)),
         KeyBinding::new("ctrl-shift-cmd-f", FindSelectedSymbol, None),
+        KeyBinding::new("ctrl-shift-cmd-h", FindCallHierarchy, None),
         KeyBinding::new("cmd-alt-f", FindAndReplaceInFile, Some(EDITOR)),
         // The editor handles ⌘F itself; this binding gives the Find menu its
         // shortcut and works when focus is elsewhere.
@@ -449,6 +456,10 @@ pub fn commands() -> Vec<Command> {
         cmd!("Find", "-", Quit),
         cmd!("Find", "Find in Workspace…", FindInWorkspace),
         cmd!("Find", "Find Selected Symbol in Workspace", FindSelectedSymbol),
+        cmd!("Find", "Find Call Hierarchy", FindCallHierarchy),
+        cmd!("Find", "Find Ancestor Types", FindAncestorTypes),
+        cmd!("Find", "Find Descendent Types", FindDescendentTypes),
+        cmd!("Find", "Find Conforming Types", FindConformingTypes),
         cmd!("Navigate", "Jump to Definition", JumpToDefinition),
         cmd!("Navigate", "Jump to Definition in Assistant", JumpToDefinitionInNextPane),
         cmd!("Navigate", "Jump to Line…", JumpToLine),
@@ -482,12 +493,14 @@ pub fn commands() -> Vec<Command> {
         cmd!("Editor", "-", Quit),
         cmd!("Editor", "Authors", ShowAuthors),
         cmd!("Editor", "Inline Blame", ToggleInlineBlame),
+        cmd!("Editor", "Inlay Hints", ToggleInlayHints),
         cmd!("Editor", "Side by Side Comparison", SideBySideComparison),
         cmd!("Editor", "Inline Comparison", InlineComparison),
         cmd!("Editor", "-", Quit),
         cmd!("Editor", "Show Completions", ShowCompletions),
         cmd!("Editor", "Show Code Actions", ToggleCodeActions),
         cmd!("Editor", "Fix Issue", FixIssue),
+        cmd!("Editor", "Show Callers…", ShowCallers),
         cmd!("Editor", "-", Quit),
         cmd!("Editor", "Rename…", Rename),
         cmd!("Editor", "Edit All in Scope", EditAllInScope),

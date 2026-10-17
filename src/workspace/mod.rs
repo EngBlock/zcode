@@ -20,7 +20,9 @@ mod inspector;
 mod editor_probe;
 mod events;
 mod find;
+mod hierarchy;
 mod hunk_popover;
+mod inlay_hints;
 mod issues;
 mod line_anchors;
 mod navigation;
@@ -36,6 +38,7 @@ mod plist_editor;
 mod project_files;
 mod project_settings;
 mod remote_sheet;
+mod semantic_tokens;
 mod source_control;
 mod test_gutter;
 mod testing;
@@ -141,6 +144,12 @@ pub struct Workspace {
     pub debug_tab: DebugTab,
     pub raw_log: bool,
     pub find: FindState,
+    /// Find Call Hierarchy and the type hierarchies, in the Find navigator.
+    pub hierarchy: hierarchy::HierarchyState,
+    pub inlay_hints: inlay_hints::InlayHints,
+    /// Whether the language server was ready last time it said anything,
+    /// so its features are asked for again once it is (again).
+    lsp_ready: bool,
     pub outline: Vec<pickers::OutlineEntry>,
     outline_path: Option<PathBuf>,
     /// The repository, its status, and git's state in the editors.
@@ -210,6 +219,8 @@ impl Workspace {
                 this.refresh_scm(cx);
             }
         }));
+        // Semantic token colors come from the theme, which follows the appearance.
+        subscriptions.push(cx.observe_window_appearance(window, |this, _, cx| this.refresh_semantic_tokens(cx)));
         // Only redraw when the displayed memory figure changes.
         subscriptions.push(cx.observe_global::<crate::perf::Perf>(|this, cx| {
             let shown = crate::perf::Perf::global(cx).status_label();
@@ -270,6 +281,9 @@ impl Workspace {
                 cancel: Arc::new(AtomicBool::new(false)),
                 _task: None,
             },
+            hierarchy: Default::default(),
+            inlay_hints: inlay_hints::InlayHints::new(session.inlay_hints.unwrap_or(false)),
+            lsp_ready: false,
             outline: vec![],
             outline_path: None,
             git: source_control::GitState::new(&session),
@@ -612,6 +626,7 @@ impl Workspace {
         self.session.inline_blame = Some(self.git.inline_blame);
         self.session.show_authors = Some(self.git.show_authors);
         self.session.side_by_side_comparison = Some(self.git.side_by_side);
+        self.session.inlay_hints = Some(self.inlay_hints.enabled);
         self.session.save();
     }
 
@@ -795,6 +810,13 @@ impl Workspace {
         state["console"] = self.console_summary(cx);
         state["panes"] = self.panes_summary(cx);
         state["git"] = self.git_summary(cx);
+        state["language_features"] = serde_json::json!({
+            "server": self.lsp.read(cx).features().summary(),
+            "inlay_hints": self.inlay_hints_summary(cx),
+            "semantic_tokens": self.semantic_tokens_summary(cx),
+            "signature_help": self.signature_help_summary(cx),
+            "hierarchy": self.hierarchy_summary(),
+        });
         state["last_log"] = serde_json::json!(build.reports.first().map(|r| r.log_path.clone()));
         state["scheme_options"] = serde_json::json!(build.scheme_options.as_ref().map(edit_scheme::options_summary));
         state["edit_scheme"] =

@@ -53,7 +53,8 @@ impl HierarchyKind {
 #[derive(Clone, Debug, PartialEq)]
 pub struct HierarchyItem {
     pub name: String,
-    pub kind: lsp_types::SymbolKind,
+    /// The LSP `SymbolKind` (12 a function, 5 a class…).
+    pub kind: u64,
     /// The module, for types (sourcekit-lsp's `detail`).
     pub detail: Option<String>,
     pub path: PathBuf,
@@ -71,7 +72,7 @@ impl HierarchyItem {
         let path = uri_to_path(&serde_json::from_value(raw.get("uri")?.clone()).ok()?)?;
         Some(Self {
             name: raw.get("name")?.as_str()?.to_string(),
-            kind: serde_json::from_value(raw.get("kind")?.clone()).ok()?,
+            kind: raw.get("kind")?.as_u64()?,
             detail: raw.get("detail").and_then(Value::as_str).filter(|d| !d.is_empty()).map(str::to_string),
             path,
             selection: serde_json::from_value(raw.get("selectionRange").or(raw.get("range"))?.clone()).ok()?,
@@ -145,7 +146,7 @@ mod tests {
         let items = parse_children(HierarchyKind::Callers, response);
         assert_eq!(items.len(), 1);
         let item = &items[0];
-        assert_eq!((item.name.as_str(), item.kind, item.path.as_path()), ("report()", lsp_types::SymbolKind::FUNCTION, std::path::Path::new("/p/Shapes.swift")));
+        assert_eq!((item.name.as_str(), item.kind, item.path.as_path()), ("report()", 12, std::path::Path::new("/p/Shapes.swift")));
         assert_eq!(item.selection.start, lsp_types::Position::new(21, 5));
         assert_eq!(item.call_sites, [lsp_types::Range::new(lsp_types::Position::new(23, 12), lsp_types::Position::new(23, 12))]);
         // The item goes back to the server as it came, `data` included.
@@ -173,7 +174,7 @@ mod tests {
             "range": { "start": { "line": 0, "character": 9 }, "end": { "line": 0, "character": 9 } },
             "selectionRange": { "start": { "line": 0, "character": 9 }, "end": { "line": 0, "character": 9 } } }]);
         let items = parse_children(HierarchyKind::Supertypes, response);
-        assert_eq!((items[0].name.as_str(), items[0].detail.as_deref(), items[0].kind), ("Shape", Some("ZKit"), lsp_types::SymbolKind::INTERFACE));
+        assert_eq!((items[0].name.as_str(), items[0].detail.as_deref(), items[0].kind), ("Shape", Some("ZKit"), 11));
         assert!(items[0].interface_module().is_none());
         assert!(parse_children(HierarchyKind::Subtypes, Value::Null).is_empty());
         assert!(parse_items(Value::Null).is_empty());

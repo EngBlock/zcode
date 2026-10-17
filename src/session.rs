@@ -105,6 +105,8 @@ pub struct Session {
     pub inline_blame: Option<bool>,
     pub show_authors: Option<bool>,
     pub side_by_side_comparison: Option<bool>,
+    /// Editor ▸ Inlay Hints.
+    pub inlay_hints: Option<bool>,
 }
 
 fn session_path() -> PathBuf {

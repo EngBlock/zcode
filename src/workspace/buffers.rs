@@ -44,6 +44,8 @@ pub struct Buffer {
     pub plist_format: Option<crate::plist::Format>,
     /// The file against git: its versions, change hunks, blame.
     pub git: super::change_bars::BufferGit,
+    /// The language server's semantic tokens for it.
+    pub(super) tokens: super::semantic_tokens::BufferTokens,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -190,7 +192,7 @@ impl Workspace {
         };
         let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         let language = Self::language_for(path);
-        let read_only = crate::packages::location::is_package_checkout(path);
+        let read_only = crate::packages::location::is_package_checkout(path) || crate::toolchain::is_in_developer_dir(path);
         let soft_wrap = self.soft_wrap;
         let editor = cx.new(|cx| Self::new_editor(soft_wrap, language, window, cx).default_value(text));
         if let Some(language_id) = lsp::language_id_for(path) {
@@ -212,8 +214,10 @@ impl Workspace {
             bookmark_anchors: Default::default(),
             plist_format,
             git: Default::default(),
+            tokens: Default::default(),
             _subscriptions: vec![subscription],
         });
+        self.schedule_semantic_tokens(path, Duration::ZERO, cx);
         self.anchor_breakpoints(path, false, cx);
         self.anchor_bookmarks(path, false, cx);
         if !read_only {
@@ -245,6 +249,8 @@ impl Workspace {
                 this.track_breakpoints(&path, cx);
                 this.track_bookmarks(&path, cx);
                 this.buffer_edited_for_git(&path, cx);
+                this.semantic_tokens_edited(&path, cx);
+                this.inlay_hints_edited(&path, cx);
             }
         })
     }
@@ -299,7 +305,15 @@ impl Workspace {
 
         let view = editor.entity_id();
         let focus = editor.read(cx).focus_handle(cx);
+        // A view linked to an open buffer starts without its tokens.
+        if !self.views_of(path).is_empty() {
+            self.schedule_semantic_tokens(path, Duration::ZERO, cx);
+        }
         let mut subscriptions = vec![
+            // Inlay hints are asked for the rows each view shows.
+            cx.subscribe(&editor, |this, editor, event: &zcode_editor::ViewportChanged, cx| {
+                this.inlay_hints_viewport_changed(&editor, &event.rows, cx);
+            }),
             cx.observe(&editor, |this, _, cx| {
                 // Inline blame follows the focused editor's cursor.
                 this.refresh_inline_blame(cx);
@@ -329,6 +343,7 @@ impl Workspace {
     /// After a tab closed: the buffer closes with its last view, or hands
     /// its events to a view still open.
     pub(super) fn view_closed(&mut self, path: &Path, view: EntityId, cx: &mut Context<Self>) {
+        self.inlay_hints_view_closed(view);
         let remaining = self
             .views_of(path)
             .first()

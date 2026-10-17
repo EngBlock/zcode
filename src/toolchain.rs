@@ -35,6 +35,14 @@ pub fn find_tool(name: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Whether `path` is inside an Xcode's developer folder (the SDKs'
+/// `.swiftinterface` files and headers a jump or a call hierarchy reaches):
+/// shown, never edited.
+pub fn is_in_developer_dir(path: &std::path::Path) -> bool {
+    let path = path.to_string_lossy();
+    path.contains(".app/Contents/Developer/") || path.starts_with("/Library/Developer/CommandLineTools/")
+}
+
 /// `xcrun --sdk <sdk> --show-sdk-path`.
 pub fn sdk_path(sdk: &str) -> Result<PathBuf> {
     let output = Command::new("/usr/bin/xcrun")
@@ -77,4 +85,17 @@ pub fn developer_dir() -> Option<PathBuf> {
     let output = Command::new("/usr/bin/xcode-select").arg("-p").output().ok()?;
     let developer = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
     (output.status.success() && developer.is_dir()).then_some(developer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn developer_files_are_told_apart() {
+        assert!(is_in_developer_dir(std::path::Path::new(
+            "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/lib/swift/Swift.swiftmodule/arm64e-apple-macos.swiftinterface"
+        )));
+        assert!(!is_in_developer_dir(std::path::Path::new("/Users/me/Developer/App/Sources/App.swift")));
+    }
 }

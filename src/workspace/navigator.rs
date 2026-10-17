@@ -161,7 +161,7 @@ impl Workspace {
             NavigatorTab::Project => self.render_project_navigator(cx).into_any_element(),
             NavigatorTab::SourceControl => self.render_scm_navigator(cx).into_any_element(),
             NavigatorTab::Bookmarks => self.render_bookmark_navigator(window, cx).into_any_element(),
-            NavigatorTab::Find => self.render_find_navigator(window, cx).into_any_element(),
+            NavigatorTab::Find => self.render_find_navigator(window, cx),
             NavigatorTab::Issues => self.render_issue_navigator(cx).into_any_element(),
             NavigatorTab::Tests => self.render_test_navigator(cx).into_any_element(),
             NavigatorTab::Debug => self.render_debug_navigator(cx).into_any_element(),
@@ -401,7 +401,10 @@ impl Workspace {
             )
     }
 
-    fn render_find_navigator(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_find_navigator(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if self.hierarchy.shown {
+            return self.render_hierarchy(cx);
+        }
         let theme = cx.theme().clone();
         let options = self.find.options.clone();
         let toggle = |id: &'static str, label: &'static str, on: bool, tooltip: &'static str| {
@@ -549,6 +552,7 @@ impl Workspace {
             )
             .child(div().h(px(1.)).bg(theme.border))
             .child(list)
+            .into_any_element()
     }
 
     fn render_issue_navigator(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

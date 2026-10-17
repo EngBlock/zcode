@@ -187,7 +187,7 @@ impl LanguageServer {
         &self,
         method: &str,
         params: Value,
-    ) -> impl std::future::Future<Output = Result<Value>> + Send + 'static {
+    ) -> impl std::future::Future<Output = Result<Value>> + Send + 'static + use<> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().insert(id, tx);

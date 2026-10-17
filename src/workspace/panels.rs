@@ -23,6 +23,7 @@ use crate::build::log::{LineStyle, Severity};
 use crate::build::{BuildAction, Phase};
 use crate::debugger::DebugState;
 use crate::lsp::LspStatus;
+use crate::lsp::hierarchy::HierarchyKind;
 use crate::perf::Perf;
 use crate::picker::Picker;
 
@@ -1049,6 +1050,12 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &InlineComparison, _, cx| this.set_comparison(false, cx)))
             .on_action(cx.listener(|this, _: &ShowAuthors, _, cx| this.toggle_authors(cx)))
             .on_action(cx.listener(|this, _: &ToggleInlineBlame, _, cx| this.toggle_inline_blame(cx)))
+            .on_action(cx.listener(|this, _: &ToggleInlayHints, _, cx| this.toggle_inlay_hints(cx)))
+            .on_action(cx.listener(|this, _: &ShowCallers, window, cx| this.show_callers(window, cx)))
+            .on_action(cx.listener(|this, _: &FindCallHierarchy, window, cx| this.find_hierarchy(HierarchyKind::Callers, window, cx)))
+            .on_action(cx.listener(|this, _: &FindAncestorTypes, window, cx| this.find_hierarchy(HierarchyKind::Supertypes, window, cx)))
+            .on_action(cx.listener(|this, _: &FindDescendentTypes, window, cx| this.find_hierarchy(HierarchyKind::Subtypes, window, cx)))
+            .on_action(cx.listener(|this, _: &FindConformingTypes, window, cx| this.find_hierarchy(HierarchyKind::Subtypes, window, cx)))
             .on_action(cx.listener(|this, _: &Commit, window, cx| this.show_commit_sheet(window, cx)))
             .on_action(cx.listener(|this, _: &Push, window, cx| this.show_remote_sheet(RemoteAction::Push, window, cx)))
             .on_action(cx.listener(|this, _: &Pull, window, cx| this.show_remote_sheet(RemoteAction::Pull, window, cx)))
