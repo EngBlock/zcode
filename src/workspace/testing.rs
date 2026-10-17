@@ -322,34 +322,45 @@ impl Workspace {
 
     /// Runs test items (functions, classes or suites).
     pub fn run_test_items(&mut self, items: Vec<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        match self.request_for_items(&items, cx) {
+            Ok(Some(request)) => self.run_tests(request, window, cx),
+            Ok(None) => {}
+            Err(message) => self.notify_error(message, window, cx),
+        }
+    }
+
+    /// What running test items takes; `None` for no items.
+    fn request_for_items(&self, items: &[usize], cx: &App) -> Result<Option<TestRequest>, String> {
         let index = &self.tests.index;
         let mut only = vec![];
-        for &ix in &items {
+        for &ix in items {
             let Some(item) = index.items.get(ix) else { continue };
             let target = index.targets.get(ix).cloned().flatten();
             let destination_is_simulator = self.build.read(cx).destination.as_ref().is_some_and(|d| d.platform.is_simulator());
             if target.is_none() && self.project.kind.is_xcode() && !destination_is_simulator {
                 let name = item.file.file_name().unwrap_or_default().to_string_lossy().to_string();
-                self.notify_error(format!("Couldn’t tell which test target builds {name}."), window, cx);
-                return;
+                return Err(format!("Couldn’t tell which test target builds {name}."));
             }
             only.push(TestSpec::for_item(item, target));
         }
         if only.is_empty() {
-            return;
+            return Ok(None);
         }
-        let serial = self.needs_serial(Some(&items));
-        self.run_tests(TestRequest { only, serial }, window, cx);
+        Ok(Some(TestRequest { only, serial: self.needs_serial(Some(items)) }))
     }
 
     /// Runs a whole test target.
     fn run_test_target(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let request = self.request_for_target(name);
+        self.run_tests(request, window, cx);
+    }
+
+    fn request_for_target(&self, name: &str) -> TestRequest {
         let index = &self.tests.index;
         let target = index.targets.iter().flatten().find(|t| t.name == name).cloned();
         let only = vec![TestSpec { target, components: vec![], framework: None }];
         let items: Vec<usize> = (0..index.items.len()).filter(|&ix| index.targets[ix].as_ref().is_some_and(|t| t.name == name)).collect();
-        let serial = self.needs_serial(Some(&items));
-        self.run_tests(TestRequest { only, serial }, window, cx);
+        TestRequest { only, serial: self.needs_serial(Some(&items)) }
     }
 
     /// The innermost test (or else class or suite) around the cursor.
@@ -768,21 +779,38 @@ impl Workspace {
     /// Runs the test the harness names (`Target/Class/test` or
     /// `Class/test`), as its Test navigator play button does.
     pub fn run_test_named(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        let request = self.test_request_named(&[name.to_string()], cx)?;
+        self.run_tests(request, window, cx);
+        Ok(())
+    }
+
+    /// The tests named `Target/Class/test`, `Class/test`, `Suite/test()`, a
+    /// class or suite, or a whole target, as one run.
+    pub fn test_request_named(&self, names: &[String], cx: &App) -> Result<TestRequest, String> {
         let index = &self.tests.index;
-        let found = (0..index.items.len()).find(|&ix| {
-            let components = index.items[ix].components().join("/");
-            let full = index.targets[ix].as_ref().map(|t| format!("{}/{components}", t.name));
-            components == name || full.as_deref() == Some(name)
-        });
-        if let Some(ix) = found {
-            self.run_test_items(vec![ix], window, cx);
-            return Ok(());
+        let mut items = vec![];
+        let mut request = TestRequest::default();
+        for name in names {
+            let found = (0..index.items.len()).find(|&ix| {
+                let components = index.items[ix].components().join("/");
+                let full = index.targets[ix].as_ref().map(|t| format!("{}/{components}", t.name));
+                components == *name || full.as_deref() == Some(name.as_str())
+            });
+            match found {
+                Some(ix) => items.push(ix),
+                None if index.targets.iter().flatten().any(|t| t.name == *name) => {
+                    let target = self.request_for_target(name);
+                    request.serial |= target.serial;
+                    request.only.extend(target.only);
+                }
+                None => return Err(format!("no test named {name}")),
+            }
         }
-        if index.targets.iter().flatten().any(|t| t.name == name) {
-            self.run_test_target(name, window, cx);
-            return Ok(());
+        if let Some(selected) = self.request_for_items(&items, cx)? {
+            request.serial |= selected.serial;
+            request.only.extend(selected.only);
         }
-        Err(format!("no test named {name}"))
+        Ok(request)
     }
 }
 
