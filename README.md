@@ -30,6 +30,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | The assistant (Editor ▸ Assistant) opens beside the focused editor in Counterparts mode, following it with the `.h` / `.m` (`.c`, `.cpp`, `.mm`) counterpart of its file, or in Manual mode with what was opened in it. ⌥-click in the project navigator, ⌥-Return (or ⌥-click) in Open Quickly, Jump to Definition and Jump to Next Counterpart with ⌥ open in the assistant (or the next pane, or a new assistant). Show Editor Only closes it. | ⌃⌥⌘↩, ⌘↩, ⌃⌥⌘J, ⌃⌥⌘↑ |
 | **Terminal** (from Zed) | Terminals in the debug area's Terminal tab, beside the console (several at once, each with its tab and + for another), and in editor panes (File ▸ New ▸ Terminal Tab): the login shell on a pseudo-terminal, started in the project's folder. File ▸ Open Terminal at Location (also on the navigator's context menu) opens one in the selected item's folder. The editor's font and size, the 16 ANSI colors from the theme (so light and dark both read), 256 and 24-bit color, bold, italic, underlines; 10,000 lines of scrollback (the wheel, ⇧PageUp/PageDown); drag to select (double-click a word, triple-click a line, ⇧-click to extend), ⌘C, ⌘V (bracketed when the program asks), ⌘A; ⌘K clears it. ⌘-click a `file:line:column` (compiler errors, `grep -n`, test failures) to open the editor there, a URL to open the browser, or a link a program marks (OSC 8). Programs that ask get the mouse (`vim`, `htop`), and full-screen ones get the wheel as arrows. Plain and ⌃ keys go to the shell (⌃C, ⌃\\, ⌃6 included), ⌘ keys stay zcode's (⌘W closes the terminal). A tab is named after what's running in it. Closing a terminal, its tab or the window ends its processes; the session reopens terminals as fresh shells in the folder each was in. | ⌃⌘\`, ⌘K, ⌘W |
 | **Coding assistant** (ACP, from Zed) | View ▸ Show Coding Assistant (⌘0, as in Xcode 27) opens the agent panel beside the inspector: a conversation with Claude Code, Codex or Gemini CLI (their Agent Client Protocol adapters, run with `npx`) or any agent you add to `agent_servers` in `settings.json`. Answers and thinking stream in as Markdown; tool calls show what they read and run, their output and their diffs; an agent that asks permission waits for Allow, Always Allow or Reject. Agents read files through zcode, so they see unsaved edits; what they write lands in the file's buffer as one undoable edit and is saved (⌘Z in any pane takes it back), and a change an agent makes on disk itself is taken into the buffer the same way. The files a conversation changed are listed with their lines added and removed: Review compares one with what it was before (as Code Review does with `HEAD`), Reject puts it back, Keep stops listing it. `@` (or the @ button) mentions a file or a symbol from sourcekit-lsp, sent with its text from the buffer. Follow Agent opens the files the agent reads and changes at the line, leaving the keyboard in the panel. The agent's plan, its modes (Always Ask, Plan…), Stop, signing in, and File ▸ New ▸ Conversation (⌃⌘H). Nothing loads until the panel is opened, and no agent starts until a message is sent. Show/Hide Navigator, which had ⌘0, has no key now, as in Xcode 27 (`keymap.json` can give it one). | ⌘0, ⌃⌘H, Return, ⇧Return |
+| **MCP server** (for coding agents) | `zcode mcp` is a Model Context Protocol server on stdio for Claude Code, Codex, Gemini CLI, Cursor, Zed or any MCP client: it connects to the running zcode and acts on the open project, so an agent builds, runs and tests with your scheme and destination, reads the Issue navigator, the build log and the console, opens files, reads the editor's selection (unsaved edits included), evaluates in the paused debugger and takes screenshots of the window or a simulator. Results come back structured (each test's result, each error's file and line); builds and tests report progress and stop when the request is cancelled. The tools have Xcode 27's names where its own MCP server has the tool (`BuildProject`, `RunAllTests`, `GetBuildLog`…). The agent panel hands every agent it starts this server; the tools that build, run, stop, test or evaluate ask in the panel first, like the agent's own tool calls. See [zcode as an MCP server](#zcode-as-an-mcp-server). | — |
 | **Editing** | Rope-based editor with tree-sitter highlighting (Swift, C/ObjC, C++, JSON, YAML, Markdown…), multiple cursors, folding, indent guides and find/replace. | ⌘F, ⌥⌘F |
 | **Multibuffers** (from Zed) | One editor showing excerpts of many files, edited in place: Find ▸ Show Find Results in Editor (or the Find navigator's button) for Find in Workspace's results or Find Selected Symbol's references, Navigate ▸ Show Issues in Editor (or the Issue navigator's button) for every issue with its lines around it and its message under it, and a rename's changes. Each file has a header with its name and folder; the gutter shows each line's number in its file, its change bars and breakpoints (click one to toggle it), and the excerpts show the file's diagnostics. Typing in an excerpt edits the file itself (unsaved, as in its tab, which shows the change at once, and the other way around); ⌘S saves the files the tab changed, and one ⌘Z undoes one edit across every file it touched, in step with each file's own undo. Click a header or a line number, or ⌥↩, to open the file there; ⇧↩ or a header's ↕ shows three more lines around an excerpt. Find ▸ Find and Replace in Workspace adds a Replace field whose Replace All edits the results this way. A search over thousands of files opens a page of files at a time as the tab scrolls. | ⌥⇧⌘F, ⌥↩, ⇧↩ |
 | | Comment selection, duplicate, move line, select next occurrence, soft wrap and font size. | ⌘/, ⌘D, ⌥⌘[ ⌥⌘], ⌥⌘E, ⌃⇧⌘L, ⌘+ ⌘- ⌃⌘0 |
@@ -76,6 +77,92 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 The full Xcode 27 menu and shortcut inventory this was matched against is in
 [`docs/xcode-inventory.md`](docs/xcode-inventory.md), and remaining gaps are in
 [`docs/parity.md`](docs/parity.md).
+
+## zcode as an MCP server
+
+`zcode mcp` speaks the [Model Context Protocol](https://modelcontextprotocol.io)
+on stdin and stdout. It connects to the running zcode over its Unix socket
+(the one `zcode <path>` hands paths to) and relays messages; the protocol is
+answered inside zcode, where the project is. zcode has to be running (a
+window, or `zcode --background`); without it `zcode mcp` says so and exits.
+
+Add it to Claude Code (the `zcode` binary on your `PATH`, or its full path):
+
+```
+claude mcp add zcode -- zcode mcp                  # this project only
+claude mcp add --scope user zcode -- zcode mcp     # every project
+```
+
+Other clients take the same command and argument:
+
+* Codex: `codex mcp add zcode -- zcode mcp`, or in `~/.codex/config.toml`
+  `[mcp_servers.zcode]` with `command = "zcode"` and `args = ["mcp"]`.
+* Gemini CLI: `gemini mcp add zcode zcode mcp`, or `"mcpServers": { "zcode":
+  { "command": "zcode", "args": ["mcp"] } }` in `~/.gemini/settings.json`.
+* Cursor: the same `mcpServers` entry in `~/.cursor/mcp.json` (or a
+  project's `.cursor/mcp.json`).
+* Zed: `"context_servers": { "zcode": { "command": "zcode", "args": ["mcp"] } }`
+  in its `settings.json`.
+* Anything else: run `zcode mcp` as a stdio server.
+
+zcode's own agent panel needs none of this: every agent it starts gets the
+server in its session (`session/new`'s `mcpServers`), unless
+`"agent": { "zcode_mcp_server": false }` in `settings.json`.
+
+Which project: the one the client started `zcode mcp` in (its working
+folder inside a project zcode has open), else the frontmost window; every
+tool also takes `project` (a path in the project). The agent panel's agent
+always works on its own window's project.
+
+| Tool | What it does |
+|---|---|
+| `XcodeListSchemes`, `XcodeSwitchScheme` | The schemes, configurations and test plans, and which are chosen; choose a scheme as the toolbar does |
+| `XcodeListRunDestinations`, `XcodeSwitchRunDestination` | My Mac, simulators (booted or not) and devices for the scheme; choose one |
+| `BuildProject` | Product ▸ Build: waits, then success, the errors and warnings (file, line, column) and the log's file |
+| `RunProject` | Product ▸ Run (under the debugger when breakpoints are set): returns once it's running, with its first console output |
+| `StopProject` | Product ▸ Stop: the build, the app and the debugger |
+| `RunAllTests`, `RunSomeTests` | Product ▸ Test, or some tests by the Test navigator's names: every test's result and duration, the failures at their lines |
+| `GetTestList` | The tests found in source, with where they are and their latest results |
+| `XcodeListNavigatorIssues` | The Issue navigator: live sourcekit-lsp diagnostics and the last build's issues, for a file or all |
+| `GetBuildLog` | The build log, condensed or raw, filtered; the last builds' reports and log files |
+| `GetConsoleOutput` | The app's and the debugger's console |
+| `XcodeGetCurrentFile` | The focused editor's file, cursor, selection and selected text, unsaved changes, and its text if asked |
+| `OpenFile` | Opens a file at a line and column, so you see it |
+| `EvaluateInDebugger` | An LLDB command (`po`, `p`, `v`, `bt`, `expr`) in the paused frame, shown in the console |
+| `TakeScreenshot` | A PNG of the project window (a pixel per point) or of a simulator's screen (`simctl io screenshot`); never a device |
+
+Xcode 27 has an MCP server too (`xcrun mcpbridge`, for a running Xcode);
+where it has the tool, zcode's has its name, so instructions written for
+Xcode's tools find zcode's. The arguments are zcode's own.
+
+The protocol: zcode answers the handshake revisions (`initialize` in
+2025-11-25, 2025-06-18 or 2025-03-26) and the current one, 2026-07-28 (the
+revision in every request's `_meta`, `server/discover`, `resultType`;
+an unknown revision is refused with the versions zcode speaks). Tool
+results carry `structuredContent` and the same JSON as text; screenshots
+are `image` content. A request with a `progressToken` gets
+`notifications/progress` while a build or test runs (the step it's on,
+tests run and failed); `notifications/cancelled` stops the build, run or
+test (and the request gets no answer, as the spec says); a client that
+disconnects stops what it started.
+
+Security: the socket is in zcode's own cache folder (mode 0700), created
+readable and writable by its owner alone (0600), and zcode checks every
+connection's peer (`getpeereid`) and refuses other users before reading
+anything; `zcode mcp` checks that the socket's other end is the same user
+too. The control channel (`ZCODE_DEBUG_DIR`) is a separate test hook and
+isn't reachable through MCP. Tools that start, stop or evaluate something
+(`BuildProject`, `RunProject`, `StopProject`, `RunAllTests`,
+`RunSomeTests`, `EvaluateInDebugger`) called by the agent panel's agent
+ask in the panel's thread first, with Allow, Always Allow (for the
+conversation) and Reject, unless `agent.always_allow_tool_actions` is on;
+the panel knows its agent by a random token in the server's environment.
+Other clients ask their users themselves, as Claude Code does before
+running an MCP tool.
+
+`scripts/mcp_client.py` is a small client for trying it:
+`python3 scripts/mcp_client.py tools`, `python3 scripts/mcp_client.py call
+BuildProject`, `--modern` for 2026-07-28.
 
 ## Performance
 
@@ -181,6 +268,13 @@ if zcode is not faster.
   in a virtual list. Cold launch, alternating runs against `master`: the
   welcome window's first pixels at 242.5 ms against 249.9 ms (median of 9).
   The binary grows by 1.9 MB (the protocol's types).
+* The MCP server costs nothing until a client connects: the socket was
+  already there for `zcode <path>`, and a connection's reading and writing
+  are on threads of their own. `zcode mcp` itself is a relay that checks
+  its first argument before anything else starts, so it starts in a few
+  milliseconds. Cold launch, alternating with `master` (load average
+  ~9.6): the welcome window's first pixels at 254.8 ms against 254.6 ms
+  (median of 12).
 * Settings cost nothing measurable at startup: the user's settings,
   keymap and the theme they name are read and parsed on a thread of their
   own started at the top of `main()`, and the first window takes what it
@@ -235,6 +329,12 @@ src/
   acp/              the Agent Client Protocol's client side: JSON-RPC to an agent on stdio (its requests
                     to zcode included), the agents and how to start them, a conversation built from
                     session updates
+  mcp/              zcode as an MCP server: `zcode mcp`'s relay (bridge.rs), a connection served on the
+                    main thread with cancellation and progress (server.rs), both protocol eras
+                    (protocol.rs), the tools (tools.rs; workspace/mcp.rs is their side of the window),
+                    the agent panel's tokens
+  instance.rs       the Unix socket: `zcode <path>` handed to the running zcode, `zcode mcp`'s connections;
+                    the same user only
   debugger/         DAP client, debugger model, breakpoints and their options, data tips (lldb-dap)
   terminal/         the integrated terminal: a PTY and its grid (alacritty_terminal), keystrokes and
                     mouse reports as bytes, links, theme colors, the view and how its grid is painted
@@ -252,6 +352,7 @@ src/
                     converted (plist/ reads XML, binary and old-style property lists)
   perf.rs           startup timing and memory sampling (proc_pid_rusage)
   debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR)
+  screenshot.rs     zcode's own windows and simulators as PNGs (the control channel, startup bench, MCP)
 crates/
   zcode-editor/     the code editor: rope buffer, display map (soft wrap, folding), highlighting,
                     undo, multiple cursors, linked views of one buffer, multibuffers (excerpts of many
@@ -262,7 +363,9 @@ vendor/
   gpui-component/   gpui-component 0.7.3 plus small patches (ZCODE-PATCH.md)
 scripts/
   e2e.py            end-to-end UI tests
-  fake_acp_agent.py a scripted ACP agent for the agent panel's tests (no network or account)
+  fake_acp_agent.py a scripted ACP agent for the agent panel's tests (no network or account); it also
+                    calls the MCP servers it's handed
+  mcp_client.py     a stdio MCP client for the MCP server's tests and for trying it
   appkit_floor.swift  minimal native AppKit app, the cold-launch reference
 ```
 
@@ -324,6 +427,11 @@ Follow, @-mentions, Review / Reject / Keep) follows Zed's public
 documentation of its agent panel (Zed's code is GPL; none of it was read);
 ⌘0 and File ▸ New ▸ Conversation (⌃⌘H) are Xcode 27's, whose Coding
 Assistant also runs Claude Code, Codex and ACP agents.
+The MCP server is written from the Model Context Protocol's specification
+(modelcontextprotocol.io; 2025-11-25 and 2026-07-28) without an SDK: its
+transport, sessions and tools are zcode's own. Its tool names are those of
+Xcode 27's MCP server (`xcrun mcpbridge`), read from the names Xcode's
+coding assistant lists; their arguments and results are zcode's.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -471,7 +579,22 @@ themes or session. It covers:
   cancelled); a crash explained and the next message starting another
   agent; signing in, then the waiting message; New Conversation letting go
   of the conversation's buffers; the agent ended with zcode and the panel
-  and Follow back after a relaunch, without an agent
+  and Follow back after a relaunch, without an agent; zcode's MCP server
+  in the session it starts
+* zcode as an MCP server on a copy of ZKit, through `zcode mcp` and
+  `scripts/mcp_client.py`: no zcode running; the socket private (0600) and
+  not held up by a client that says nothing; `initialize` in two revisions,
+  2026-07-28 with `server/discover` and an unknown revision refused; the
+  tools and their hints; schemes and destinations listed and switched; a
+  test run cancelled while it builds (stopped, no answer); a build with an
+  error (progress, the error's file and line, the Issue navigator, the
+  raw log), then fixed; every test's result, one test, a failing test at
+  its line, the test list; run and the console; Open File and the current
+  file's selection and unsaved edit; LLDB at a breakpoint; a window
+  screenshot; the agent panel's (fake) agent calling the tools, asked
+  before building and stopping (Allow, Reject, Always Allow for the
+  conversation); with `--simulator`, a screenshot of the simulator the
+  sample runs in
 * bookmarks on a copy of ZKit: Bookmark Line and File, ribbons, edits and
   undo (a deleted line's bookmark back with ⌘Z), next and previous in the file and the workspace, descriptions
   edited in place, completion, the filter, drag and drop (real mouse
@@ -642,6 +765,17 @@ The control channel also takes window screenshots
   terminal); the panel offers the agent's sign-in methods and a terminal.
   Agents' own files written outside `agent_servers`' commands (their
   configuration, credentials) are theirs; zcode never changes them.
+* The MCP server needs zcode running and acts on projects zcode has open;
+  it has no tools to open or close projects, edit files (agents have their
+  own), search, or read build settings, and `zcode mcp` doesn't start zcode.
+  It serves stdio only (no HTTP). Tools run one project's builds at a
+  time, as the Product menu does: a build started by the user or another
+  client replaces one a tool is waiting for (the tool says so). An agent
+  in the panel that asks its own permission before an MCP tool (Claude
+  Code does) is followed by zcode's prompt for the tools that change
+  things. Checked with scripts/mcp_client.py and the fake ACP agent; not
+  run against Claude Code, Codex, Gemini CLI or Cursor here (that would
+  change their configuration on this machine).
 * No Interface Builder, asset-catalog editor, SwiftUI canvas or Instruments.
 * Devices: there's no Devices and Simulators window (⇧⌘2), so pairing a new
   device, turning on Developer Mode and copying a device's system symbols

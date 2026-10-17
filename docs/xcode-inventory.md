@@ -225,6 +225,22 @@ Invisibles is Xcode's `toggleInvisibleCharactersShown:`.
     area, as Zed's agent panel does, so the project navigator stays in view
     while an agent works; Show/Hide Navigator, which zcode had on ⌘0, has no
     key, as in Xcode 27.
+    Xcode 27 is also an MCP server for agents: `xcrun mcpbridge` relays
+    stdio to a running Xcode's tool service (`MCP_XCODE_PID` picks one; it
+    exits when no Xcode runs). Its tools, as `IDEIntelligenceChat` lists
+    them: `BuildProject`, `RunProject`, `StopProject`, `RunAllTests`,
+    `RunSomeTests`, `GetTestList`, `GetBuildLog`, `GetConsoleOutput`,
+    `XcodeListNavigatorIssues`, `XcodeRefreshCodeIssuesInFile`,
+    `XcodeListSchemes`, `XcodeSwitchScheme`, `XcodeListRunDestinations`,
+    `XcodeSwitchRunDestination`, `XcodeGetCurrentFile`, `XcodeListWindows`,
+    `XcodeListWorkspaces`, `XcodeOpenWorkspace`, `XcodeCloseWorkspace`,
+    file tools (`XcodeRead`, `XcodeWrite`, `XcodeUpdate`, `XcodeInsertFile`,
+    `XcodeGlob`, `XcodeGrep`, `XcodeLS`, `XcodeMakeDir`, `XcodeMV`,
+    `XcodeRM`), `RenderPreview`, `RunCodeSnippet`, `GetFileCompilerFlags`,
+    `GetTargetBuildSettings` and Organizer crash and performance logs.
+    `zcode mcp` (Phase 3.2) works the same way and uses these names for the
+    tools it shares; it adds `OpenFile`, `EvaluateInDebugger` and
+    `TakeScreenshot`.
 
 **Inspectors (general, not Interface Builder):** File, History (source control log), Quick Help, Source Control. Interface Builder and other editors add Identity, Attributes, Size, Connections, Bindings and so on. The view and memory debuggers add Object, Size and Memory.
 
