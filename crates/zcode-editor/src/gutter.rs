@@ -63,6 +63,8 @@ pub struct GutterPaint {
     pub cell: Bounds<Pixels>,
     /// The line number's column on this row.
     pub numbers: Bounds<Pixels>,
+    /// The number the row shows (its own, or a multibuffer line's in its file).
+    pub number: Option<u32>,
     pub line_height: Pixels,
     pub hovered: bool,
     /// The gutter's background, to cover what an item replaces.
@@ -75,7 +77,8 @@ impl GutterPaint {
     /// Paints this row's line number in `color`, right-aligned in the number
     /// column as the editor paints it.
     pub fn paint_line_number(&self, color: Hsla, window: &mut Window, cx: &mut App) {
-        let number: SharedString = (self.row + 1).to_string().into();
+        let Some(number) = self.number else { return };
+        let number: SharedString = number.to_string().into();
         let run = TextRun {
             len: number.len(),
             font: self.font.clone(),
@@ -308,15 +311,34 @@ pub struct GutterGeometry {
     pub rows: Vec<(u32, Pixels, Pixels)>,
 }
 
+/// The number a row shows in the gutter (1-based), from its 0-based row
+/// and the editor's text; `None` shows none.
+pub type LineNumberLabels = Rc<dyn Fn(u32, &Rope, &App) -> Option<u32>>;
+
 #[derive(Default)]
 pub(crate) struct Gutter {
     lanes: Vec<GutterLane>,
     pub(crate) hovered: Option<(SharedString, u32)>,
     pub(crate) painted: Vec<PaintedGutterItem>,
     pub(crate) geometry: GutterGeometry,
+    line_numbers: Option<LineNumberLabels>,
 }
 
 impl Gutter {
+    /// The number row `row` shows: its own (1-based) unless the editor was
+    /// given other numbers.
+    pub(crate) fn line_number(&self, row: u32, text: &Rope, cx: &App) -> Option<u32> {
+        match &self.line_numbers {
+            Some(labels) => labels(row, text, cx),
+            None => Some(row + 1),
+        }
+    }
+
+    /// Digits the number column needs at least, beyond the row count's.
+    pub(crate) fn min_number_digits(&self) -> usize {
+        if self.line_numbers.is_some() { 5 } else { 0 }
+    }
+
     /// Width of the lanes placed before and after the numbers.
     pub(crate) fn column_widths(&self) -> (Pixels, Pixels) {
         let mut before = px(0.);
@@ -342,6 +364,7 @@ pub(crate) struct LaidOutItem {
     pub(crate) item: GutterItem,
     pub(crate) cell: Bounds<Pixels>,
     pub(crate) numbers: Bounds<Pixels>,
+    pub(crate) number: Option<u32>,
     pub(crate) bounds: Bounds<Pixels>,
 }
 
@@ -415,7 +438,8 @@ impl GutterLayout {
                 let cell = Bounds::new(point(column.start, top), size(column.end - column.start, line_height));
                 let numbers = Bounds::new(point(numbers.start, top), size(numbers.end - numbers.start, line_height));
                 let item_bounds = item.bounds.as_ref().map_or(cell, |f| f(cell, line_height));
-                items.push(LaidOutItem { lane: ix, item, cell, numbers, bounds: item_bounds });
+                let number = gutter.line_number(item.row, text, cx);
+                items.push(LaidOutItem { lane: ix, item, cell, numbers, number, bounds: item_bounds });
             }
         }
         Self { lanes, lane_columns, items, line_height, rows, font, font_size, background, bounds }
@@ -441,6 +465,7 @@ impl GutterLayout {
                 bounds: laid.bounds,
                 cell: laid.cell,
                 numbers: laid.numbers,
+                number: laid.number,
                 line_height: self.line_height,
                 hovered: hovered.as_ref() == Some(&(lane.id.clone(), laid.item.row)),
                 background: self.background,
@@ -535,6 +560,14 @@ impl EditorState {
             Some(existing) => *existing = lane,
             None => lanes.push(lane),
         }
+        cx.notify();
+    }
+
+    /// Shows `labels`' numbers in the gutter instead of the rows' own (a
+    /// multibuffer shows each excerpt line's number in its file); `None`
+    /// goes back to counting rows. Asked for the visible rows only.
+    pub fn set_line_number_labels(&mut self, labels: Option<LineNumberLabels>, cx: &mut gpui::Context<Self>) {
+        self.gutter.line_numbers = labels;
         cx.notify();
     }
 
@@ -663,6 +696,33 @@ mod tests {
         press(&mut cx, one, MouseButton::Right, 1);
         press(&mut cx, one, MouseButton::Left, 1);
         assert_eq!(*log.borrow(), ["ribbon menu", "item click 1"]);
+    }
+
+    #[gpui::test]
+    fn rows_can_show_other_numbers(cx: &mut TestAppContext) {
+        let (editor, mut cx) = open_editor(cx, "zero\none\ntwo\n");
+        let numbers: Rc<RefCell<Vec<(u32, Option<u32>)>>> = Default::default();
+        let lane_numbers = numbers.clone();
+        cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                // Row 1 shows no number, the others ten times theirs.
+                state.set_line_number_labels(Some(Rc::new(|row, _, _| (row != 1).then_some(row * 10 + 10))), cx);
+                let lane = GutterLane::new("numbers", move |rows, _| {
+                    let numbers = lane_numbers.clone();
+                    rows.rows
+                        .clone()
+                        .map(|row| {
+                            let numbers = numbers.clone();
+                            GutterItem::new(row, move |paint, _, _| numbers.borrow_mut().push((paint.row, paint.number)))
+                        })
+                        .collect()
+                });
+                state.set_gutter_lane(lane, cx);
+            })
+        });
+        cx.run_until_parked();
+        let painted: Vec<(u32, Option<u32>)> = numbers.borrow().iter().take(3).copied().collect();
+        assert_eq!(painted, [(0, Some(10)), (1, None), (2, Some(30))]);
     }
 
     #[gpui::test]

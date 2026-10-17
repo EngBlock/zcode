@@ -1411,7 +1411,7 @@ impl<M: InputModeKind> TextElement<M> {
         let mut numbers_width = px(0.);
         // Reserve three digits for small documents, then follow the actual
         // line count up to seven digits.
-        let line_number_len = line_number_len(total_lines);
+        let line_number_len = line_number_len(total_lines).max(state.gutter.min_number_digits());
 
         let mut line_number_width = if state.mode.line_number() {
             let empty_line_number = window.text_system().shape_line(
@@ -3312,7 +3312,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
             cx,
         );
 
-        let state = self.state.read(cx);
+        let app: &App = cx;
+        let state = self.state.read(app);
         let line_numbers = if state.mode.line_number() {
             let mut line_numbers = Vec::with_capacity(last_layout.visible_buffer_lines.len());
             let other_line_runs = vec![TextRun {
@@ -3338,11 +3339,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 .iter()
                 .zip(last_layout.visible_buffer_lines.iter())
             {
-                let line_no: SharedString = format!(
-                    "{:>width$}",
-                    displayed_line_number(buffer_line + 1),
-                    width = line_number_len
-                )
+                let number = state.gutter.line_number(buffer_line as u32, &state.text, app);
+                let line_no: SharedString = match number {
+                    Some(number) => format!("{:>width$}", displayed_line_number(number as usize), width = line_number_len),
+                    None => " ".repeat(line_number_len),
+                }
                 .into();
 
                 let runs = if current_row == Some(buffer_line) {

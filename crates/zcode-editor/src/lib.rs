@@ -119,7 +119,7 @@ pub use anchors::{Anchor, AnchorBias, AnchorRow};
 pub use annotations::{Block, BlockClicked, Inlay};
 pub use gutter::{
     GutterEvent, GutterGeometry, GutterItem, GutterLane, GutterPaint, GutterPlacement, GutterRows,
-    PaintedGutterItem,
+    LineNumberLabels, PaintedGutterItem,
 };
 pub use cursor::Selection;
 pub use edits::BufferEdit;
