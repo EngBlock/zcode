@@ -271,6 +271,14 @@ pub const TOOLS: &[Tool] = &[
             schema(properties, &[])
         },
     },
+    Tool {
+        name: "ArchiveProject",
+        title: "Archive",
+        description: "Product ▸ Archive: builds the scheme with its Archive configuration (Release) for a generic device of the run destination's platform (any Mac for My Mac) into Xcode's Archives folder, where the Organizer lists it. Returns the archive's path, app, version and team, or the errors (signing errors say where to fix them). Never distributes, exports or uploads: Distribute App in the Organizer does that.",
+        read_only: false,
+        asks: true,
+        schema: || schema(selection_properties(), &[]),
+    },
 ];
 
 pub fn tool(name: &str) -> Option<&'static Tool> {
@@ -325,6 +333,7 @@ pub async fn call(name: &str, args: &Value, call: &Rc<Call>, cx: &mut AsyncApp) 
         "RunProject" => product(BuildAction::Run, name, args, &workspace, call, cx).await,
         "RunAllTests" | "RunSomeTests" => product(BuildAction::Test, name, args, &workspace, call, cx).await,
         "ProfileProject" => profile(args, &workspace, call, cx).await,
+        "ArchiveProject" => archive(args, &workspace, call, cx).await,
         "StopProject" => {
             let permission = permit(call, &workspace, name, "Stop".into(), args, cx).await?;
             let stopped = cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(cx)));
@@ -819,6 +828,73 @@ async fn profile(args: &Value, workspace: &Entity<Workspace>, call: &Call, cx: &
     Ok(ToolOutput::json(value))
 }
 
+async fn archive(args: &Value, workspace: &Entity<Workspace>, call: &Call, cx: &mut AsyncApp) -> Result<ToolOutput> {
+    let scheme = string(args, "scheme")?;
+    let destination = string(args, "destination")?;
+    wait_for_schemes(workspace, call, cx).await?;
+    cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_select(scheme.as_deref(), destination.as_deref(), cx)))?;
+    let scheme_name = cx.update(|cx| workspace.read(cx).build.read(cx).scheme.clone()).unwrap_or_default();
+    let permission = permit(call, workspace, "ArchiveProject", format!("Archive “{scheme_name}”"), args, cx).await?;
+    let window = cx.update(|cx| workspace.read(cx).window);
+    let started = Instant::now();
+    let generation = cx
+        .update(|cx| window.update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.mcp_archive(window, cx))))
+        .map_err(|e| e.to_string())
+        .and_then(|started| started);
+    let generation = match generation {
+        Ok(generation) => generation,
+        Err(message) => {
+            finish(&permission, false, cx);
+            return Err(message.into());
+        }
+    };
+    loop {
+        cx.background_executor().timer(Duration::from_millis(250)).await;
+        let (current, busy) = cx.update(|cx| {
+            let build = workspace.read(cx).build.read(cx);
+            (build.generation, build.phase.is_busy())
+        });
+        if current != generation {
+            finish(&permission, false, cx);
+            return Err(ToolError::Failed("Another build, run or test started in zcode and replaced this one.".into()));
+        }
+        if call.cancelled() {
+            cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(cx)));
+            finish(&permission, false, cx);
+            return Err(ToolError::Cancelled);
+        }
+        if !busy {
+            break;
+        }
+        call.progress("Archiving");
+    }
+    let value = cx.update(|cx| {
+        let ws = workspace.read(cx);
+        let build = ws.build.read(cx);
+        let (status, success) = match &build.phase {
+            Phase::Finished { success, .. } => (if *success { "succeeded" } else { "failed" }, *success),
+            Phase::Stopped => ("stopped", false),
+            _ => ("unknown", false),
+        };
+        let issues = ws.mcp_build_issues(cx);
+        let outcome = build.last_archive.clone().unwrap_or_default();
+        json!({
+            "action": "archive",
+            "status": status,
+            "success": success,
+            "scheme": build.scheme,
+            "duration_seconds": round(started.elapsed().as_secs_f64()),
+            "archive": outcome.archive.as_ref().map(crate::workspace::archive_json),
+            "error": outcome.error,
+            "errors": issues.iter().filter(|i| i.severity == Severity::Error).map(issue_json).collect::<Vec<_>>(),
+            "warnings": issues.iter().filter(|i| i.severity == Severity::Warning).count(),
+            "log": build.reports.first().map(|r| r.log_path.clone()),
+        })
+    });
+    finish(&permission, value["success"] == true, cx);
+    Ok(ToolOutput::json(value))
+}
+
 fn test_summary<'a>(tests: impl Iterator<Item = &'a crate::build::log::TestResult>) -> Value {
     let tests: Vec<_> = tests.collect();
     let count = |status| tests.iter().filter(|t| t.status == status).count();
@@ -842,6 +918,8 @@ fn phase_label(phase: &Phase) -> &'static str {
         Phase::Preparing(_) => "preparing",
         Phase::Building { action: BuildAction::Test, .. } => "testing",
         Phase::Building { action: BuildAction::Clean, .. } => "cleaning",
+        Phase::Building { action: BuildAction::Archive, .. } => "archiving",
+        Phase::Building { action: BuildAction::Distribute, .. } => "exporting",
         Phase::Building { .. } => "building",
         Phase::Launching => "launching",
         Phase::Running { .. } => "running",
@@ -963,7 +1041,7 @@ mod tests {
             [
                 "XcodeListSchemes", "XcodeSwitchScheme", "XcodeListRunDestinations", "XcodeSwitchRunDestination", "BuildProject", "RunProject",
                 "StopProject", "RunAllTests", "RunSomeTests", "GetTestList", "XcodeListNavigatorIssues", "GetBuildLog", "GetConsoleOutput",
-                "XcodeGetCurrentFile", "OpenFile", "EvaluateInDebugger", "TakeScreenshot", "ProfileProject",
+                "XcodeGetCurrentFile", "OpenFile", "EvaluateInDebugger", "TakeScreenshot", "ProfileProject", "ArchiveProject",
             ]
         );
         for definition in &definitions {
@@ -974,7 +1052,7 @@ mod tests {
             assert_eq!(definition["annotations"]["readOnlyHint"], tool(name).unwrap().read_only);
         }
         let asking: Vec<&str> = TOOLS.iter().filter(|t| t.asks).map(|t| t.name).collect();
-        assert_eq!(asking, ["BuildProject", "RunProject", "StopProject", "RunAllTests", "RunSomeTests", "EvaluateInDebugger", "ProfileProject"]);
+        assert_eq!(asking, ["BuildProject", "RunProject", "StopProject", "RunAllTests", "RunSomeTests", "EvaluateInDebugger", "ProfileProject", "ArchiveProject"]);
         assert!(TOOLS.iter().all(|t| !t.asks || !t.read_only));
         assert_eq!((tool("OpenFile").unwrap().schema)()["required"], json!(["path"]));
         assert_eq!((tool("RunSomeTests").unwrap().schema)()["required"], json!(["tests"]));
