@@ -62,5 +62,19 @@
     // "system" (your login shell), a program, or
     // { "program": "/bin/zsh", "args": ["-l"] }.
     "shell": "system"
+  },
+  // The agents the agent panel (View ▸ Show Coding Assistant, ⌘0) runs
+  // through the Agent Client Protocol. Claude Code, Codex and Gemini CLI
+  // are built in (their ACP adapters, run with npx); change one by its id,
+  // or add your own by name. Yours only.
+  //   "claude": { "env": { "ANTHROPIC_MODEL": "…" } },
+  //   "My Agent": { "command": "/path/to/agent", "args": ["--acp"], "env": {} }
+  "agent_servers": {},
+  "agent": {
+    // The agent a new thread starts with: "claude", "codex", "gemini" or
+    // one of yours.
+    "default_agent": "claude",
+    // Allow every tool call an agent asks permission for, without asking.
+    "always_allow_tool_actions": false
   }
 }

@@ -87,6 +87,8 @@ const MENU_COMMANDS: &[(&str, bool, &str)] = &[
     ("toggleBreakpointsNavigator:", false, "zcode::ShowBreakpointNavigator"),
     ("toggleLogsNavigator:", false, "zcode::ShowReportNavigator"),
     ("toggleNavigator:", false, "zcode::ToggleNavigator"),
+    ("toggleCodingAssistantNavigator:", false, "zcode::ShowCodingAssistant"),
+    ("newCodingAssistant:", false, "zcode::NewConversation"),
     ("toggleDebuggerVisibility:", false, "zcode::ToggleDebugArea"),
     ("toggleInspectorArea:", false, "zcode::ToggleInspector"),
     ("activateConsole:", false, "zcode::ActivateConsole"),

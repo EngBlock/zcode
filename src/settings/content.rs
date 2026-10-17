@@ -35,6 +35,12 @@ pub struct Settings {
     pub side_by_side_comparison: bool,
     /// A program and its arguments; `None` is the login shell.
     pub terminal_shell: Option<(String, Vec<String>)>,
+    /// The agents the agent panel can run (`crate::acp::agents`).
+    pub agent_servers: Vec<crate::acp::AgentServer>,
+    /// The agent a new panel starts with, by id.
+    pub default_agent: String,
+    /// Answer agents' permission requests with Allow without asking.
+    pub always_allow_tool_actions: bool,
 }
 
 pub const DEFAULT_FONT_SIZE: f32 = 13.;
@@ -60,6 +66,9 @@ impl Default for Settings {
             show_authors: false,
             side_by_side_comparison: true,
             terminal_shell: None,
+            agent_servers: crate::acp::agents::builtins(),
+            default_agent: "claude".into(),
+            always_allow_tool_actions: false,
         }
     }
 }
@@ -142,6 +151,9 @@ pub struct SettingsContent {
     pub vim_mode: Option<bool>,
     pub git: Option<GitContent>,
     pub terminal: Option<TerminalContent>,
+    #[serde(deserialize_with = "agent_servers")]
+    pub agent_servers: Option<Vec<(String, crate::acp::agents::AgentServerContent)>>,
+    pub agent: Option<AgentContent>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -167,6 +179,13 @@ pub struct TerminalContent {
     pub shell: Option<Option<(String, Vec<String>)>>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct AgentContent {
+    pub default_agent: Option<String>,
+    pub always_allow_tool_actions: Option<bool>,
+}
+
 /// Every key a settings file may have, with the keys of its objects: what
 /// isn't here is reported as unknown (and otherwise ignored, as in Zed).
 pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
@@ -186,10 +205,15 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("vim_mode", &[]),
     ("git", &["inline_blame", "show_authors", "side_by_side_comparison"]),
     ("terminal", &["shell"]),
+    // Any name: Zed's built-ins (claude, codex, gemini) or an agent of yours.
+    ("agent_servers", &[]),
+    ("agent", &["default_agent", "always_allow_tool_actions"]),
 ];
 
 /// Settings a project's file can't change: they're the app's, not a window's.
-pub const USER_ONLY_KEYS: &[&str] = &["theme", "buffer_font_family", "vim_mode"];
+/// A project's file can't name programs to run or skip the permission
+/// prompts either: a cloned repository could carry it.
+pub const USER_ONLY_KEYS: &[&str] = &["theme", "buffer_font_family", "vim_mode", "agent_servers", "agent"];
 
 /// What to say about the keys of a settings file zcode doesn't know
 /// (`git.inline_blam`), and those a project's file sets that only the
@@ -229,6 +253,13 @@ impl Settings {
         if !project {
             take!(theme);
             take!(vim_mode);
+            if let Some(servers) = &content.agent_servers {
+                self.agent_servers = crate::acp::agents::resolve(servers);
+            }
+            if let Some(agent) = &content.agent {
+                self.default_agent = agent.default_agent.clone().unwrap_or(self.default_agent);
+                self.always_allow_tool_actions = agent.always_allow_tool_actions.unwrap_or(self.always_allow_tool_actions);
+            }
             if let Some(family) = &content.buffer_font_family {
                 self.buffer_font_family = Some(family.clone()).filter(|f| !f.trim().is_empty());
             }
@@ -353,6 +384,26 @@ fn enabled<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<bool>, D
     }
 }
 
+/// `{ "name": { "command", "args", "env" }, … }` in the order written.
+fn agent_servers<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Vec<(String, crate::acp::agents::AgentServerContent)>>, D::Error> {
+    match read(deserializer)? {
+        Value::Null => Ok(None),
+        Value::Object(object) => object
+            .into_iter()
+            .map(|(name, value)| {
+                if value.is_null() {
+                    return Ok((name, Default::default()));
+                }
+                serde_json::from_value(value.clone())
+                    .map(|content| (name.clone(), content))
+                    .map_err(|_| expected::<D::Error>(&format!(r#"{{ "command", "args", "env" }} for "{name}""#), &value))
+            })
+            .collect::<Result<_, _>>()
+            .map(Some),
+        other => Err(expected(r#"{ "Agent Name": { "command", "args", "env" } }"#, &other)),
+    }
+}
+
 fn shell<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Option<(String, Vec<String>)>>, D::Error> {
     let program_and_args = |object: &serde_json::Map<String, Value>| -> Result<(String, Vec<String>), D::Error> {
         let program = object.get("program").and_then(Value::as_str).ok_or_else(|| D::Error::custom("expected a \"program\" for the shell"))?;
@@ -424,6 +475,30 @@ mod tests {
             unknown_keys(&serde_json::json!({ "theme": "Dusk", "tab_szie": 3, "git": { "inline_blam": true } }), true),
             ["unknown setting “tab_szie”", "unknown setting “git.inline_blam”", "“theme” is only read from your own settings file"]
         );
+    }
+
+    #[test]
+    fn agents_from_the_users_file_only() {
+        let user: SettingsContent = jsonc::parse(
+            r#"{
+            "agent_servers": { "claude": { "env": { "A": "1" } }, "Mine": { "command": "/opt/mine", "args": ["--acp"] } },
+            "agent": { "default_agent": "Mine", "always_allow_tool_actions": true },
+        }"#,
+        )
+        .unwrap();
+        let project: SettingsContent = jsonc::parse(r#"{ "agent_servers": { "Evil": { "command": "/tmp/evil" } }, "agent": { "always_allow_tool_actions": false } }"#).unwrap();
+        let settings = Settings::default().merged(&user, false).merged(&project, true);
+        let ids: Vec<&str> = settings.agent_servers.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["claude", "codex", "gemini", "Mine"]);
+        assert_eq!(settings.agent_servers[0].env.get("A").map(String::as_str), Some("1"));
+        assert_eq!((settings.default_agent.as_str(), settings.always_allow_tool_actions), ("Mine", true));
+        let warnings = unknown_keys(&serde_json::json!({ "agent_servers": {}, "agent": { "default_agent": "x", "follow": true } }), true);
+        assert_eq!(
+            warnings,
+            ["unknown setting “agent.follow”", "“agent_servers” is only read from your own settings file", "“agent” is only read from your own settings file"]
+        );
+        let err = jsonc::parse::<SettingsContent>(r#"{ "agent_servers": { "Mine": { "command": 3 } } }"#).unwrap_err();
+        assert!(err.message.contains(r#"{ "command", "args", "env" } for "Mine""#), "{err}");
     }
 
     #[test]
