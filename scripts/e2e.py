@@ -71,6 +71,7 @@ XCODE_SHORTCUTS = [
     ("cmd-alt-e", "zcode::SelectNextOccurrence", "Find ▸ Select Next Occurrence"),
     ("cmd-shift-f", "zcode::FindInWorkspace", "Find ▸ Find in Workspace…"),
     ("ctrl-shift-cmd-f", "zcode::FindSelectedSymbol", "Find ▸ Find Selected Symbol in Workspace"),
+    ("ctrl-shift-cmd-h", "zcode::FindCallHierarchy", "Find ▸ Find Call Hierarchy"),
     ("ctrl-cmd-j", "zcode::JumpToDefinition", "Navigate ▸ Jump to Definition"),
     ("ctrl-alt-cmd-j", "zcode::JumpToDefinitionInNextPane", "Navigate ▸ Jump to Definition (⌥, in the assistant)"),
     ("ctrl-alt-cmd-up", "zcode::JumpToCounterpartInNextPane", "Navigate ▸ Jump to Next Counterpart (⌥, in the assistant)"),
