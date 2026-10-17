@@ -143,6 +143,9 @@ gpui_kit::actions!(
         ToggleVimMode,
         ToggleInvisibles,
         ShowCallers,
+        ExpandAbbreviation,
+        WrapWithAbbreviation,
+        RestartLanguageServers,
         // Editor (property lists)
         AddPlistItem,
         DeletePlistItem,
@@ -368,6 +371,8 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("alt-cmd-enter", ShowInXcodeCanvas, None),
         KeyBinding::new("ctrl-alt-cmd-enter", ShowAssistant, None),
         KeyBinding::new("ctrl-shift-i", FormatFile, Some(EDITOR)),
+        // Emmet (Xcode has none of its own on ⌃⌥E).
+        KeyBinding::new("ctrl-alt-e", ExpandAbbreviation, Some(EDITOR)),
         KeyBinding::new("ctrl-i", ReIndent, Some(EDITOR)),
         KeyBinding::new("f2", Rename, Some(EDITOR)),
         KeyBinding::new("ctrl-cmd-e", EditAllInScope, Some(EDITOR)),
@@ -632,6 +637,9 @@ pub fn commands() -> Vec<Command> {
         cmd!("Editor", "-", Quit),
         cmd!("Editor", "Re-Indent", ReIndent),
         cmd!("Editor", "Format File", FormatFile),
+        cmd!("Editor ▸ Emmet", "Expand Abbreviation", ExpandAbbreviation),
+        cmd!("Editor ▸ Emmet", "Wrap with Abbreviation…", WrapWithAbbreviation),
+        cmd!("Editor", "Restart Language Servers", RestartLanguageServers),
         cmd!("Editor", "Wrap Lines", ToggleSoftWrap),
         cmd!("Editor", "Invisibles", ToggleInvisibles),
         cmd!("Editor", "-", Quit),

@@ -12,6 +12,7 @@ exclude = ["vendor/gpui-component"]
 
 [dependencies]
 zcode-editor = { path = "crates/zcode-editor" }
+zcode-emmet = { path = "crates/zcode-emmet" }
 # The integrated terminal's VT parser, grid and PTY (Apache-2.0).
 alacritty_terminal = { version = "0.26", default-features = false }
 # The Agent Client Protocol's message types (Apache-2.0); zcode has its own

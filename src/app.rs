@@ -515,11 +515,21 @@ pub fn run() {
         });
 }
 
+/// zcode's log on stderr: its own messages at `info` (`debug` with
+/// `ZCODE_LOG=debug`), others' warnings and errors.
 fn init_logging() {
     struct Logger;
+    fn level() -> log::Level {
+        static LEVEL: std::sync::OnceLock<log::Level> = std::sync::OnceLock::new();
+        *LEVEL.get_or_init(|| match std::env::var("ZCODE_LOG").as_deref() {
+            Ok("debug") => log::Level::Debug,
+            Ok("trace") => log::Level::Trace,
+            _ => log::Level::Info,
+        })
+    }
     impl log::Log for Logger {
         fn enabled(&self, metadata: &log::Metadata) -> bool {
-            metadata.level() <= log::Level::Info
+            metadata.level() <= level()
                 && (metadata.target().starts_with("zcode") || metadata.level() <= log::Level::Warn)
         }
         fn log(&self, record: &log::Record) {
@@ -531,5 +541,5 @@ fn init_logging() {
     }
     static LOGGER: Logger = Logger;
     log::set_logger(&LOGGER).ok();
-    log::set_max_level(log::LevelFilter::Info);
+    log::set_max_level(level().to_level_filter());
 }

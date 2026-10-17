@@ -9166,6 +9166,7 @@ dependencies = [
  "tree-sitter-swift",
  "ureq",
  "zcode-editor",
+ "zcode-emmet",
 ]
 
 [[package]]

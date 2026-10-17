@@ -163,7 +163,10 @@ impl LanguageServer {
         }
     }
 
-    pub async fn initialize(&self, root: &Path, initialization_options: Value) -> Result<Value> {
+    /// `pull_diagnostics`: say the client asks for diagnostics
+    /// (`textDocument/diagnostic`), which servers that can push them then
+    /// do instead.
+    pub async fn initialize(&self, root: &Path, initialization_options: Value, pull_diagnostics: bool) -> Result<Value> {
         let root_uri = super::path_to_uri(root);
         let params = json!({
             "processId": std::process::id(),
@@ -175,7 +178,7 @@ impl LanguageServer {
                 "name": root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
             }],
             "initializationOptions": initialization_options,
-            "capabilities": client_capabilities(),
+            "capabilities": client_capabilities(pull_diagnostics),
         });
         let result = self.request_raw("initialize", params).await?;
         *self.capabilities.lock() = result.get("capabilities").cloned().unwrap_or(Value::Null);
@@ -332,8 +335,8 @@ async fn dispatch(message: Value, pending: &PendingMap, events: &channel::Sender
     }
 }
 
-fn client_capabilities() -> Value {
-    json!({
+fn client_capabilities(pull_diagnostics: bool) -> Value {
+    let mut capabilities = json!({
         "general": { "positionEncodings": ["utf-16"] },
         "window": { "workDoneProgress": true, "showMessage": {} },
         "workspace": {
@@ -411,5 +414,10 @@ fn client_capabilities() -> Value {
                 "overlappingTokenSupport": false,
             },
         },
-    })
+    });
+    if pull_diagnostics {
+        capabilities["textDocument"]["diagnostic"] = json!({ "dynamicRegistration": false, "relatedDocumentSupport": false });
+        capabilities["workspace"]["diagnostics"] = json!({ "refreshSupport": true });
+    }
+    capabilities
 }

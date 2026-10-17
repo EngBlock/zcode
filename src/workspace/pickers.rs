@@ -773,6 +773,83 @@ impl PickerDelegate for RenameDelegate {
 }
 
 // ---------------------------------------------------------------------------
+// Emmet ▸ Wrap with Abbreviation.
+
+pub struct WrapDelegate {
+    workspace: WeakEntity<Workspace>,
+    editor: Entity<zcode_editor::EditorState>,
+    range: std::ops::Range<usize>,
+    content: String,
+    syntax: zcode_emmet::Syntax,
+    options: zcode_emmet::Options,
+    indent: String,
+    snippet: Option<String>,
+    items: Vec<PickerItem>,
+}
+
+impl WrapDelegate {
+    pub fn new(
+        workspace: WeakEntity<Workspace>,
+        editor: Entity<zcode_editor::EditorState>,
+        range: std::ops::Range<usize>,
+        text: zcode_editor::Rope,
+        syntax: zcode_emmet::Syntax,
+        options: zcode_emmet::Options,
+        indent: String,
+    ) -> Self {
+        let content = text.slice(range.clone()).to_string();
+        Self { workspace, editor, range, content, syntax, options, indent, snippet: None, items: vec![] }
+    }
+}
+
+impl PickerDelegate for WrapDelegate {
+    fn placeholder(&self) -> SharedString {
+        "Abbreviation (ul>li*, div.card)".into()
+    }
+
+    fn items(&self) -> &[PickerItem] {
+        &self.items
+    }
+
+    fn update_matches(&mut self, query: String, _: &mut Window, _: &mut Context<Picker<Self>>) {
+        let abbreviation = query.trim();
+        self.snippet = (!abbreviation.is_empty())
+            .then(|| crate::languages::emmet::wrap(abbreviation, &self.content, self.syntax, &self.options, &self.indent))
+            .flatten();
+        self.items = match &self.snippet {
+            Some(snippet) => {
+                let preview = zcode_editor::snippet::to_placeholders(snippet);
+                let first = preview.lines().next().unwrap_or("").trim().to_string();
+                let lines = preview.lines().count();
+                vec![PickerItem {
+                    label: first.into(),
+                    detail: Some(if lines > 1 { format!("{lines} lines") } else { "Wrap the selection".into() }.into()),
+                    icon: Some(IconName::Replace),
+                    ..Default::default()
+                }]
+            }
+            None => vec![],
+        };
+    }
+
+    fn empty_message(&self) -> SharedString {
+        "Type an Emmet abbreviation to wrap the selection in".into()
+    }
+
+    fn confirm(&mut self, _: usize, window: &mut Window, cx: &mut Context<Picker<Self>>) -> bool {
+        let Some(snippet) = self.snippet.clone() else { return false };
+        let (editor, range) = (self.editor.clone(), self.range.clone());
+        self.workspace
+            .update(cx, |ws, cx| {
+                ws.dismiss_modal(window, cx);
+                editor.update(cx, |state, cx| state.transact(window, cx, |state, window, cx| state.insert_snippet(range, &snippet, window, cx)));
+            })
+            .ok();
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Rename file or folder (Project navigator).
 
 pub struct RenameFileDelegate {

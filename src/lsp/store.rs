@@ -165,8 +165,16 @@ struct Server {
     features: Features,
     /// What it's answered from for `workspace/configuration`.
     settings: Value,
+    /// It takes ranged changes (`textDocumentSync.change` 2), not only the
+    /// whole text.
+    incremental: bool,
     progress: BTreeMap<String, String>,
     diagnostics: BTreeMap<PathBuf, Vec<lsp_types::Diagnostic>>,
+    /// It answers `textDocument/diagnostic` (ESLint only does): asked after
+    /// each change, each file's last answer's id sent back.
+    pull_diagnostics: bool,
+    result_ids: HashMap<PathBuf, String>,
+    pulls: HashMap<PathBuf, Task<()>>,
     _start_task: Option<Task<()>>,
     _event_task: Option<Task<()>>,
 }
@@ -181,6 +189,8 @@ impl Server {
 struct DocumentServer {
     id: usize,
     synced_version: i32,
+    /// The text it has, which the next change is a range of.
+    synced_text: Rope,
     opened: bool,
 }
 
@@ -213,6 +223,9 @@ pub struct LspStore {
     /// Every server's diagnostics, file by file.
     diagnostics: BTreeMap<PathBuf, Vec<lsp_types::Diagnostic>>,
     packages: PackageCache,
+    /// Documents edited since their diagnostics were last asked for (a
+    /// request may have sent the edit already).
+    edited: std::collections::HashSet<PathBuf>,
     flush_task: Option<Task<()>>,
 }
 
@@ -228,6 +241,7 @@ impl LspStore {
             documents: HashMap::new(),
             diagnostics: BTreeMap::new(),
             packages: PackageCache::default(),
+            edited: Default::default(),
             flush_task: None,
         }
     }
@@ -358,6 +372,8 @@ impl LspStore {
         server.status = LspStatus::Idle;
         server.features = Features::default();
         server.progress.clear();
+        server.result_ids.clear();
+        server.pulls.clear();
         server._start_task = None;
         server._event_task = None;
         let paths: Vec<PathBuf> = std::mem::take(&mut server.diagnostics).into_keys().collect();
@@ -408,8 +424,12 @@ impl LspStore {
                         status: LspStatus::Idle,
                         features: Features::default(),
                         settings: Value::Null,
+                        incremental: false,
                         progress: BTreeMap::new(),
                         diagnostics: BTreeMap::new(),
+                        pull_diagnostics: false,
+                        result_ids: HashMap::new(),
+                        pulls: HashMap::new(),
                         _start_task: None,
                         _event_task: None,
                     });
@@ -434,7 +454,7 @@ impl LspStore {
             for id in &wanted {
                 match doc.servers.iter().position(|s| s.id == *id) {
                     Some(ix) => kept.push(doc.servers.remove(ix)),
-                    None => kept.push(DocumentServer { id: *id, synced_version: version, opened: false }),
+                    None => kept.push(DocumentServer { id: *id, synced_version: version, synced_text: Rope::new(), opened: false }),
                 }
             }
             doc.servers = kept;
@@ -448,7 +468,10 @@ impl LspStore {
             }
             for id in wanted {
                 match self.servers[id].status {
-                    LspStatus::Ready => self.send_did_open(&path, id),
+                    LspStatus::Ready => {
+                        self.send_did_open(&path, id);
+                        self.pull_diagnostics(&path, Some(id), cx);
+                    }
                     _ => self.ensure_started(id, cx),
                 }
             }
@@ -525,7 +548,8 @@ impl LspStore {
                         program.args.append(&mut args);
                         let log = crate::paths::logs_dir().join(format!("{}.log", spec.id));
                         let server = LanguageServer::spawn(spec.id, &program.path, &program.args, &program.env, &root, Some(log), events_tx)?;
-                        server.initialize(&root, options).await?;
+                        // sourcekit-lsp pushes its diagnostics, as it always has.
+                        server.initialize(&root, options, !spec.is_sourcekit()).await?;
                         if !server_settings.as_object().is_none_or(|o| o.is_empty()) {
                             server.notify_raw("workspace/didChangeConfiguration", json!({ "settings": server_settings }));
                         }
@@ -555,7 +579,10 @@ impl LspStore {
         match started {
             Ok((running, settings)) => {
                 log::info!("{} ready for {} (pid {})", server.spec.id, server.root.display(), running.pid());
-                server.features = Features::from_capabilities(&running.capabilities());
+                let capabilities = running.capabilities();
+                server.features = Features::from_capabilities(&capabilities);
+                server.pull_diagnostics = capabilities.get("diagnosticProvider").is_some_and(|p| !p.is_null() && *p != Value::Bool(false));
+                server.incremental = matches!(capabilities.get("textDocumentSync"), Some(sync) if sync.as_u64() == Some(2) || sync.pointer("/change").and_then(Value::as_u64) == Some(2));
                 server.settings = settings;
                 server.server = Some(running);
                 server.status = LspStatus::Ready;
@@ -563,6 +590,7 @@ impl LspStore {
                     self.documents.iter().filter(|(_, d)| d.servers.iter().any(|s| s.id == id && !s.opened)).map(|(p, _)| p.clone()).collect();
                 for path in paths {
                     self.send_did_open(&path, id);
+                    self.pull_diagnostics(&path, Some(id), cx);
                 }
                 self.update_perf(cx);
                 cx.emit(LspStoreEvent::StatusChanged);
@@ -648,10 +676,19 @@ impl LspStore {
                 // Vue's server asks TypeScript (vtsls, with Vue's plugin) about
                 // the script and the template's expressions through the client.
                 "tsserver/request" => self.forward_to_tsserver(id, params, cx),
-                _ => {}
+                "window/showMessage" | "window/logMessage" => {
+                    let message = params.get("message").and_then(Value::as_str).unwrap_or("");
+                    // 1: error, 2: warning.
+                    match params.get("type").and_then(Value::as_u64) {
+                        Some(1) => log::warn!("{}: {message}", self.servers[id].spec.id),
+                        _ => log::debug!("{}: {message}", self.servers[id].spec.id),
+                    }
+                }
+                _ => log::debug!("{}: {method} {}", self.servers[id].spec.id, params.to_string().chars().take(300).collect::<String>()),
             },
             ServerEvent::Request { id: request, method, params } => {
                 let Some(server) = self.servers[id].server.clone() else { return };
+                log::debug!("{} asks {method} {}", self.servers[id].spec.id, params.to_string().chars().take(300).collect::<String>());
                 let result = match method.as_str() {
                     "workspace/configuration" => {
                         let settings = &self.servers[id].settings;
@@ -680,6 +717,14 @@ impl LspStore {
                     }
                     "workspace/semanticTokens/refresh" => {
                         cx.emit(LspStoreEvent::RefreshSemanticTokens);
+                        Value::Null
+                    }
+                    "workspace/diagnostic/refresh" => {
+                        let paths: Vec<PathBuf> =
+                            self.documents.iter().filter(|(_, d)| d.servers.iter().any(|s| s.id == id && s.opened)).map(|(p, _)| p.clone()).collect();
+                        for path in paths {
+                            self.pull_diagnostics(&path, Some(id), cx);
+                        }
                         Value::Null
                     }
                     // Older ESLint servers ask before running the project's
@@ -731,6 +776,7 @@ impl LspStore {
                 continue;
             };
             let args = request.get(2).cloned().unwrap_or(Value::Null);
+            log::debug!("tsserver/request {request_id} {command}");
             let vue = vue.clone();
             let Some(tsserver) = tsserver.clone() else {
                 vue.notify_raw("tsserver/response", json!([[request_id, null]]));
@@ -741,7 +787,11 @@ impl LspStore {
                 json!({ "command": "typescript.tsserverRequest", "arguments": [command, args, { "isAsync": true, "lowPriority": true }] }),
             );
             cx.background_spawn(async move {
-                let body = answer.await.ok().and_then(|result| result.get("body").cloned()).unwrap_or(Value::Null);
+                let answer = answer.await;
+                if let Err(err) = &answer {
+                    log::debug!("tsserver/request {request_id}: {err:#}");
+                }
+                let body = answer.ok().and_then(|result| result.get("body").cloned()).unwrap_or(Value::Null);
                 vue.notify_raw("tsserver/response", json!([[request_id, body]]));
             })
             .detach();
@@ -763,19 +813,33 @@ impl LspStore {
     /// Registers an open editor buffer and starts the servers it needs.
     pub fn open_document(&mut self, path: PathBuf, language_id: &'static str, text: Rope, cx: &mut Context<Self>) {
         let ids = self.match_servers(&path, language_id);
-        let servers = ids.iter().map(|&id| DocumentServer { id, synced_version: 1, opened: false }).collect();
+        let servers = ids.iter().map(|&id| DocumentServer { id, synced_version: 1, synced_text: Rope::new(), opened: false }).collect();
         self.documents.insert(path.clone(), Document { language_id, text, version: 1, servers });
         for id in ids {
             match self.servers[id].status {
-                LspStatus::Ready => self.send_did_open(&path, id),
+                LspStatus::Ready => {
+                    self.send_did_open(&path, id);
+                    self.pull_diagnostics(&path, Some(id), cx);
+                }
                 _ => self.ensure_started(id, cx),
             }
         }
         cx.emit(LspStoreEvent::StatusChanged);
     }
 
-    pub fn close_document(&mut self, path: &Path) {
+    pub fn close_document(&mut self, path: &Path, cx: &mut Context<Self>) {
         let Some(doc) = self.documents.remove(path) else { return };
+        // What a server was asked for goes with the file, as a pushing
+        // server clears its own.
+        let mut pulled = false;
+        for server in self.servers.iter_mut().filter(|s| s.pull_diagnostics) {
+            server.result_ids.remove(path);
+            server.pulls.remove(path);
+            pulled |= server.diagnostics.remove(path).is_some();
+        }
+        if pulled {
+            self.merge_diagnostics(path, cx);
+        }
         for s in doc.servers.iter().filter(|s| s.opened) {
             if let Some(server) = self.servers[s.id].ready() {
                 server.notify_raw("textDocument/didClose", json!({ "textDocument": { "uri": path_to_uri(path).as_str() } }));
@@ -806,6 +870,7 @@ impl LspStore {
         );
         entry.opened = true;
         entry.synced_version = doc.version;
+        entry.synced_text = doc.text.clone();
     }
 
     /// Marks a document as edited; changes are flushed after a short pause so
@@ -814,18 +879,23 @@ impl LspStore {
         let Some(doc) = self.documents.get_mut(path) else { return };
         doc.version += 1;
         doc.text = text;
+        self.edited.insert(path.to_path_buf());
         if self.flush_task.is_none() {
             self.flush_task = Some(cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(Duration::from_millis(250)).await;
-                this.update(cx, |this, _| {
+                this.update(cx, |this, cx| {
                     this.flush_task = None;
                     this.flush_all();
+                    for path in std::mem::take(&mut this.edited) {
+                        this.pull_diagnostics(&path, None, cx);
+                    }
                 })
                 .ok();
             }));
         }
     }
 
+    /// Sends every document's pending edits.
     fn flush_all(&mut self) {
         let dirty: Vec<_> = self
             .documents
@@ -833,25 +903,86 @@ impl LspStore {
             .filter(|(_, d)| d.servers.iter().any(|s| s.opened && s.synced_version != d.version))
             .map(|(p, _)| p.clone())
             .collect();
-        for path in dirty {
-            self.flush(&path);
+        for path in &dirty {
+            self.flush(path);
+        }
+    }
+
+    /// Asks `path`'s servers that answer `textDocument/diagnostic` (all of
+    /// them, or `only`) for its diagnostics; a newer ask cancels the one
+    /// before.
+    fn pull_diagnostics(&mut self, path: &Path, only: Option<usize>, cx: &mut Context<Self>) {
+        let Some(doc) = self.documents.get(path) else { return };
+        let ids: Vec<usize> = doc.servers.iter().filter(|s| s.opened && only.is_none_or(|only| only == s.id)).map(|s| s.id).collect();
+        for id in ids {
+            let server = &mut self.servers[id];
+            if !server.pull_diagnostics {
+                continue;
+            }
+            let Some(running) = server.ready().cloned() else { continue };
+            let request = running.request_raw(
+                "textDocument/diagnostic",
+                json!({ "textDocument": { "uri": path_to_uri(path).as_str() }, "previousResultId": server.result_ids.get(path) }),
+            );
+            let path = path.to_path_buf();
+            let key = path.clone();
+            let task = cx.spawn(async move |this, cx| {
+                let report = match request.await {
+                    Ok(report) => report,
+                    Err(err) => {
+                        log::debug!("textDocument/diagnostic {}: {err:#}", path.display());
+                        return;
+                    }
+                };
+                log::debug!("textDocument/diagnostic {}: {}", path.display(), report.to_string().chars().take(300).collect::<String>());
+                this.update(cx, |this, cx| {
+                    let server = &mut this.servers[id];
+                    server.pulls.remove(&path);
+                    if let Some(result) = report.get("resultId").and_then(Value::as_str) {
+                        server.result_ids.insert(path.clone(), result.to_string());
+                    }
+                    // "unchanged": what it said last still holds.
+                    if report.get("kind").and_then(Value::as_str) != Some("full") {
+                        return;
+                    }
+                    let items: Vec<lsp_types::Diagnostic> = report.get("items").cloned().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+                    if items.is_empty() {
+                        server.diagnostics.remove(&path);
+                    } else {
+                        server.diagnostics.insert(path.clone(), items);
+                    }
+                    this.merge_diagnostics(&path, cx);
+                })
+                .ok();
+            });
+            self.servers[id].pulls.insert(key, task);
         }
     }
 
     fn flush(&mut self, path: &Path) {
         let Some(doc) = self.documents.get_mut(path) else { return };
-        let mut text = None;
+        let mut whole = None;
         for entry in doc.servers.iter_mut().filter(|s| s.opened && s.synced_version != doc.version) {
-            let Some(server) = self.servers[entry.id].ready() else { continue };
-            let text = text.get_or_insert_with(|| doc.text.to_string());
-            server.notify_raw(
+            let server = &self.servers[entry.id];
+            let Some(running) = server.ready() else { continue };
+            let change = if server.incremental {
+                let (old, new) = super::changed_range(&entry.synced_text, &doc.text);
+                json!({
+                    "range": { "start": super::offset_to_lsp(&entry.synced_text, old.start), "end": super::offset_to_lsp(&entry.synced_text, old.end) },
+                    "text": doc.text.slice(new).to_string(),
+                })
+            } else {
+                json!({ "text": whole.get_or_insert_with(|| doc.text.to_string()) })
+            };
+            running.notify_raw(
                 "textDocument/didChange",
                 json!({
                     "textDocument": { "uri": path_to_uri(path).as_str(), "version": doc.version },
-                    "contentChanges": [{ "text": text }],
+                    "contentChanges": [change],
                 }),
             );
             entry.synced_version = doc.version;
+            entry.synced_text = doc.text.clone();
         }
     }
 
@@ -874,6 +1005,7 @@ impl LspStore {
         {
             doc.text = text.clone();
             doc.version += 1;
+            self.edited.insert(path.to_path_buf());
         }
         self.flush(path);
     }

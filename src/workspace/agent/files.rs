@@ -190,7 +190,7 @@ impl Workspace {
                 continue;
             }
             let buffer = self.buffers.remove(ix);
-            self.lsp.update(cx, |lsp, _| lsp.close_document(&buffer.path));
+            self.lsp.update(cx, |lsp, cx| lsp.close_document(&buffer.path, cx));
         }
     }
 

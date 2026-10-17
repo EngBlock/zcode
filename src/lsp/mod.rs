@@ -150,6 +150,24 @@ pub fn lsp_to_offset(text: &Rope, position: lsp_types::Position) -> usize {
     offset
 }
 
+/// What changed between `old` and `new`: the byte range of `old` that was
+/// replaced and the byte range of `new` that replaced it (one range around
+/// every edit: what's the same at both ends is left out). Sent as a
+/// ranged `didChange`, which servers keeping a copy of the text (vtsls's
+/// tsserver) apply more reliably than the whole text again.
+pub fn changed_range(old: &Rope, new: &Rope) -> (std::ops::Range<usize>, std::ops::Range<usize>) {
+    let mut prefix = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+    while prefix > 0 && !(old.is_char_boundary(prefix) && new.is_char_boundary(prefix)) {
+        prefix -= 1;
+    }
+    let most = old.len().min(new.len()) - prefix;
+    let mut suffix = old.bytes_at(old.len()).reversed().zip(new.bytes_at(new.len()).reversed()).take(most).take_while(|(a, b)| a == b).count();
+    while suffix > 0 && !(old.is_char_boundary(old.len() - suffix) && new.is_char_boundary(new.len() - suffix)) {
+        suffix -= 1;
+    }
+    (prefix..old.len() - suffix, prefix..new.len() - suffix)
+}
+
 pub fn lsp_range_to_offsets(text: &Rope, range: lsp_types::Range) -> std::ops::Range<usize> {
     lsp_to_offset(text, range.start)..lsp_to_offset(text, range.end)
 }
@@ -198,6 +216,18 @@ mod tests {
         assert_eq!(next_placeholder(text, 0), Some(4..11));
         assert_eq!(next_placeholder(text, 11), Some(13..23));
         assert_eq!(next_placeholder(text, 23), Some(4..11));
+    }
+
+    #[test]
+    fn changes_are_one_range() {
+        let range = |a: &str, b: &str| changed_range(&Rope::from(a), &Rope::from(b));
+        assert_eq!(range("let a = 1\n", "let ab = 1\n"), (5..5, 5..6));
+        assert_eq!(range("abc", "abc"), (3..3, 3..3));
+        assert_eq!(range("aXc\nY", "aZc\nW"), (1..5, 1..5));
+        assert_eq!(range("", "new"), (0..0, 0..3));
+        // Never inside a character.
+        assert_eq!(range("é", "è"), (0..2, 0..2));
+        assert_eq!(range("aaa", "aa"), (2..3, 2..2));
     }
 
     #[test]

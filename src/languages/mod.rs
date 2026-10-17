@@ -1,6 +1,8 @@
 //! Grammar registrations the component library lacks or needs changed, and
 //! the editing rules of the languages zcode edits.
 
+pub mod emmet;
+
 use gpui_kit::App;
 use gpui_kit::component::highlighter::{LanguageConfig, LanguageRegistry};
 use regex::Regex;

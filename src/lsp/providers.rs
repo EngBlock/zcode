@@ -204,8 +204,19 @@ fn rank_completions(text: &Rope, offset: usize, items: Vec<(usize, CompletionIte
             Some((score, order, item))
         })
         .collect();
+    // Local completions (order 0) come above the servers' when they're
+    // `preselect`, below them otherwise.
+    let tier = |order: usize, item: &CompletionItem| match (order, item.preselect) {
+        (0, Some(true)) => 0,
+        (0, _) => 2,
+        _ => 1,
+    };
     ranked.sort_by(|(sa, oa, a), (sb, ob, b)| {
-        sb.cmp(sa).then(oa.cmp(ob)).then_with(|| a.sort_text.as_deref().unwrap_or(&a.label).cmp(b.sort_text.as_deref().unwrap_or(&b.label)))
+        tier(*oa, a)
+            .cmp(&tier(*ob, b))
+            .then(sb.cmp(sa))
+            .then(oa.cmp(ob))
+            .then_with(|| a.sort_text.as_deref().unwrap_or(&a.label).cmp(b.sort_text.as_deref().unwrap_or(&b.label)))
     });
     ranked.truncate(MAX_COMPLETIONS);
     ranked.into_iter().map(|(_, _, item)| item).collect()
@@ -255,7 +266,14 @@ impl CompletionProvider for DocumentProviders {
         cx.background_spawn(async move {
             let mut items: Vec<(usize, CompletionItem)> = local.into_iter().map(|item| (0, item)).collect();
             for (order, (server, answer)) in futures::future::join_all(requests).await.into_iter().enumerate() {
-                let Ok(value) = answer else { continue };
+                let value = match answer {
+                    Ok(value) => value,
+                    Err(err) => {
+                        log::debug!("completion from server {server}: {err:#}");
+                        continue;
+                    }
+                };
+                log::debug!("completion from server {server}: {} bytes", value.to_string().len());
                 let response: Option<CompletionResponse> = serde_json::from_value(value).unwrap_or(None);
                 let list = match response {
                     Some(CompletionResponse::Array(items)) => items,

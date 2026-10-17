@@ -57,6 +57,8 @@ fn is_whole_line(item: &ClipboardItem) -> bool {
         .is_some_and(|m| m[WHOLE_LINE_KEY] == json!(true))
 }
 
+use crate::languages::emmet::MarkupBlock;
+
 /// How a language comments a line out: a prefix, or a pair around it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommentStyle {
@@ -75,36 +77,13 @@ fn comment_style(language: &str, text: &str, offset: usize) -> Option<CommentSty
         "css" => CommentStyle::Block("/*", "*/"),
         // SCSS and Less have line comments.
         "less" => CommentStyle::Line("//"),
-        "html" | "vue" | "svelte" | "astro" | "markdown" => match markup_block_at(text, offset) {
-            Some("script") => CommentStyle::Line("//"),
-            Some("style") => CommentStyle::Block("/*", "*/"),
-            _ => CommentStyle::Block("<!--", "-->"),
+        "html" | "vue" | "svelte" | "astro" | "markdown" => match crate::languages::emmet::markup_block_at(text, offset) {
+            Some(MarkupBlock::Script) => CommentStyle::Line("//"),
+            Some(MarkupBlock::Style) => CommentStyle::Block("/*", "*/"),
+            None => CommentStyle::Block("<!--", "-->"),
         },
         _ => return None,
     })
-}
-
-/// The `<script>` or `<style>` block `offset` is in, if any; for Astro, its
-/// `---` frontmatter is a script.
-fn markup_block_at(text: &str, offset: usize) -> Option<&'static str> {
-    let before = &text[..offset.min(text.len())];
-    let lower = before.to_ascii_lowercase();
-    let last = |tag: &str| lower.rfind(tag);
-    for name in ["script", "style"] {
-        let open = last(&format!("<{name}"));
-        let close = last(&format!("</{name}"));
-        if open.is_some_and(|open| close.is_none_or(|close| close < open)) {
-            // Inside the block once its start tag has ended.
-            let open = open.unwrap_or_default();
-            if lower[open..].contains('>') {
-                return Some(if name == "script" { "script" } else { "style" });
-            }
-        }
-    }
-    if before.starts_with("---") && before.matches("\n---").count() == 0 && before.len() > 3 {
-        return Some("script");
-    }
-    None
 }
 
 /// Comments or uncomments every line of `block` (Xcode's ⌘/): a prefix after
@@ -586,6 +565,54 @@ impl Workspace {
                 });
         })
         .detach();
+    }
+
+    /// Editor ▸ Emmet ▸ Expand Abbreviation (⌃⌥E): the abbreviation before
+    /// the cursor, expanded; Tab visits its tab stops.
+    pub(super) fn expand_abbreviation(&mut self, _: &ExpandAbbreviation, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor() else { return };
+        let language = self.active_buffer().map(|b| b.language.clone()).unwrap_or_default();
+        let options = crate::languages::emmet::options(self.settings.current.tab_size, self.settings.current.hard_tabs);
+        let (text, cursor) = {
+            let state = editor.read(cx);
+            (state.text().clone(), state.cursor())
+        };
+        let Some((range, snippet, _)) = crate::languages::emmet::expansion_at(&language, &text, cursor, &options, false) else {
+            self.notify_error("No Emmet abbreviation before the cursor.".into(), window, cx);
+            return;
+        };
+        self.transact_in_active_editor(window, cx, |state, _, window, cx| state.insert_snippet(range, &snippet, window, cx));
+    }
+
+    /// Editor ▸ Emmet ▸ Wrap with Abbreviation…: the selection (or the
+    /// cursor's line) inside an abbreviation typed in a sheet, which
+    /// previews it.
+    pub(super) fn wrap_with_abbreviation(&mut self, _: &WrapWithAbbreviation, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.active_editor() else { return };
+        let language = self.active_buffer().map(|b| b.language.clone()).unwrap_or_default();
+        let (text, selection) = {
+            let state = editor.read(cx);
+            (state.text().clone(), state.selected_range())
+        };
+        let Some(syntax) = crate::languages::emmet::syntax_at(&language, &text, selection.start).filter(|s| *s != zcode_emmet::Syntax::Css) else {
+            self.notify_error("Wrap with Abbreviation works in HTML and JSX.".into(), window, cx);
+            return;
+        };
+        // Nothing selected: the cursor's line, without its indentation.
+        let range = if selection.is_empty() {
+            let line = whole_line(&text, selection.start);
+            let content = text.slice(line.clone()).to_string();
+            let start = line.start + (content.len() - content.trim_start().len());
+            start..line.start + content.trim_end().len()
+        } else {
+            selection
+        };
+        let line_start = text.line_start_offset(text.offset_to_point(range.start).row);
+        let indent: String = text.slice(line_start..range.start).to_string().chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+        let options = crate::languages::emmet::options(self.settings.current.tab_size, self.settings.current.hard_tabs);
+        let delegate = pickers::WrapDelegate::new(cx.weak_entity(), editor, range, text, syntax, options, indent);
+        let picker = cx.new(|cx| crate::picker::Picker::new(delegate, window, cx));
+        self.show_modal(picker, window, cx);
     }
 
     pub(super) fn format_file(&mut self, _: &FormatFile, window: &mut Window, cx: &mut Context<Self>) {

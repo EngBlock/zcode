@@ -349,7 +349,11 @@ impl Workspace {
                         .ok();
                 })
             };
-            DocumentProviders::new(self.lsp.downgrade(), path.to_path_buf(), apply_edit).install(&editor, cx);
+            let emmet = crate::languages::emmet::syntax_language(language).map(|language| {
+                let options = crate::languages::emmet::options(self.settings.current.tab_size, self.settings.current.hard_tabs);
+                Rc::new(crate::languages::emmet::EmmetCompletions { language, options }) as Rc<dyn crate::lsp::LocalCompletions>
+            });
+            DocumentProviders::new(self.lsp.downgrade(), path.to_path_buf(), apply_edit).with_local(emmet).install(&editor, cx);
             let workspace = cx.weak_entity();
             editor.update(cx, |state, _| {
                 state.lsp_mut().show_document = Some(Rc::new(move |params, window, cx| {
@@ -423,7 +427,7 @@ impl Workspace {
         match remaining {
             None => {
                 let buffer = self.buffers.remove(ix);
-                self.lsp.update(cx, |lsp, _| lsp.close_document(&buffer.path));
+                self.lsp.update(cx, |lsp, cx| lsp.close_document(&buffer.path, cx));
             }
             Some(editor) if self.buffers[ix].editor.entity_id() == view => {
                 let subscription = self.follow_buffer_changes(&editor, path.to_path_buf(), cx);

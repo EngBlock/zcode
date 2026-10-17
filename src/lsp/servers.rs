@@ -310,8 +310,11 @@ impl ServerSpec {
                     "run": "onType",
                     "packageManager": "npm",
                     "useESLintClass": false,
+                    // ESLint 9 and later read a flat config through their
+                    // `ESLint` class; `experimental.useFlatConfig` makes older
+                    // servers look for ESLint 8's `FlatESLint`, which 10 removed.
                     "useFlatConfig": flat,
-                    "experimental": { "useFlatConfig": flat },
+                    "experimental": { "useFlatConfig": false },
                     "codeActionOnSave": { "mode": "all" },
                     "format": false,
                     "quiet": false,
