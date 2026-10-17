@@ -26,8 +26,7 @@ How that engine is built:
 * **Display map.** Two layers: `WrapMap` (soft wrap, per buffer line, in a
   `SumTree` with measured wrap boundaries) and `FoldMap` (folded wrap rows as
   sorted runs). `DisplayMap` maps buffer points to display rows and back.
-  Rows have one height; the only exception is the inline-completion ghost
-  block, which the element shifts by hand.
+  Rows have one height (blocks, added later, give a line extra rows).
 * **Layout and paint.** One custom element (`base/element.rs`, ~2.3k lines
   without tests) lays out the visible lines each frame: shapes each wrapped
   row with the highlight runs, computes selections, search matches, range
@@ -316,9 +315,51 @@ the byte under the pointer, from the shaped line) instead of placing the
 caret, and take the pointing hand. A multibuffer's excerpt headers are
 both; Code Review puts lines deleted at a file's top above its first line.
 
-The engine's LSP inline-completion ghost text predates this
-and still paints over the text after the caret; edit predictions (3.3)
-should use an inlay for the first line and a block for the rest instead.
+Edit predictions (3.3) are drawn with both; see below.
+
+### Edit predictions (`prediction.rs`)
+
+```rust
+let id = editor.set_edit_prediction(EditPrediction::insertion(cursor, "name)"), cx);  // None: can't take it
+editor.update_edit_prediction(id, "name: String)".into(), cx);   // more streamed in; false once it's gone
+editor.edit_prediction();        // Option<&ShownEditPrediction>: range, text, as shown now
+editor.edit_prediction_id();     // the one held (shown, or hidden behind the menu), checked now
+editor.accept_edit_prediction(window, cx);   // Tab: one undo step, the caret after it
+editor.dismiss_edit_prediction(cx);          // Escape, ⌥]
+cx.subscribe(&editor, |_, _, event: &EditPredictionEvent, _| { /* Accepted { id, text }, Discarded { id } */ });
+```
+
+The host asks a provider; the engine shows, keeps and types the answer. A
+prediction is text in place of a range (empty for an insertion), trimmed
+to what differs from the text there (a language server's item that
+repeats the word typed so far becomes an insertion at the caret). It's
+drawn in the editor's muted color: the first line as an inlay where the
+text goes (belonging to the text before it, so the caret is drawn before
+it), the other lines as a block below that line, and replaced text struck
+through by a highlight layer. Nothing is painted over the text after the
+caret: it moves aside. The groups are `edit-prediction`.
+
+It sits on two anchors, the start biased left and the end right, so for an
+insertion `start..end` is what has been typed at it since. After every
+change an observer (there only while there's a prediction, so an editor
+without one runs nothing new per keystroke; a deferred check covers the
+update that set it, before GPUI starts the observer) decides: typed what
+it predicts (backspace included) and the rest shows; anything else drops
+it (other text, the caret away from it, a selection, a second cursor, a
+read-only range or editor, Vim outside insert mode); the completion menu
+hides it until the menu closes. Escape dismisses it before anything else
+(in Vim's insert mode too, which then needs a second Escape), a click or
+losing focus drops it, and Tab (`IndentInline`) accepts it in the engine
+itself. The editor's key context gets `edit_prediction` while one shows,
+so a host binds Tab and other keys to it only then (zcode: Tab accepts,
+⌥] dismisses). `text_revision()` tells a host whether an answer about the
+text it asked about is stale.
+
+The engine's LSP inline completion it replaces painted ghost text over
+the text after the caret and asked its provider after every keystroke
+(a task per keystroke even when the provider had nothing); that path,
+the provider trait's `inline_completion` and the element's ghost-line
+layout are gone.
 
 ### Signature help (`editor/lsp/signature_help.rs`)
 
@@ -567,7 +608,7 @@ against 5.1–5.2 ms in the same file's own tab; the first page of a
 | Vim mode (2.7, done) | the keystroke interceptor, cursor shapes, an extra key context, transactions for one-step undo of a command; carets drawn inside visual selections, an insert's transactions joined at Escape, a mouse-down hook (see above) |
 | Settings, keymap, themes (2.8, done) | `set_tab_size`, `set_soft_wrap`, `set_line_number`, `set_indent_guides`, `set_show_whitespaces` on every open editor when a settings file changes; the `Editor` key context; Vim leaving keys to bindings made for its modes; `edit` for trimming whitespace on save (one undo step) |
 | Agent panel (3.1, done) | nothing new: an agent's write is `edit` in a `transact` on the file's buffer (one undo step, by line, so untouched lines keep their anchors), headless buffers for files no pane shows (a change the agent made on disk starts from the text before it, so ⌘Z gets there), and the diff view against a fixed text instead of `HEAD` |
-| Edit predictions (3.3) | an inlay at the cursor for the first line and a block for the rest; Tab accepts through `edit` in a `transact` |
+| Edit predictions (3.3, done) | an inlay at the cursor for the first line, a block for the rest and a struck-through highlight layer for replaced text, on two anchors checked by an observer after each change; Tab accepts through `edit` in a `transact`; an `edit_prediction` key context (see above) |
 | Minimap (later) | an element beside the editor reading the rope and the highlight styles; the display map already gives row ↔ offset |
 | Read-only views (package sources, generated interfaces) | `set_read_only`, or read-only ranges for parts of a file |
 | Split panes (2.2, done) | linked views: an editor per pane, one text, history and anchor table |
@@ -597,8 +638,9 @@ the next frame).
 * The engine is still generic over the text-field modes it came with; only
   the editor mode is instantiated. Removing the others (masks, number
   stepping, touch selection) would shrink the crate by a few thousand lines.
-* The LSP inline-completion ghost text predates inlays and blocks and still
-  paints over the text after the caret; 3.3 should replace it.
+* An edit prediction's first line is an inlay, so like other inlays it
+  isn't counted in the scroll width without soft wrap; tabs in it show as
+  four spaces.
 * Inlays aren't counted in the scroll width when soft wrap is off, and an
   editor using inline tokens (zcode's doesn't) doesn't wrap around inlays.
 * Clicking a block that isn't clickable puts the caret at the start of the

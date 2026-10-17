@@ -31,11 +31,12 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | **Terminal** (from Zed) | Terminals in the debug area's Terminal tab, beside the console (several at once, each with its tab and + for another), and in editor panes (File ▸ New ▸ Terminal Tab): the login shell on a pseudo-terminal, started in the project's folder. File ▸ Open Terminal at Location (also on the navigator's context menu) opens one in the selected item's folder. The editor's font and size, the 16 ANSI colors from the theme (so light and dark both read), 256 and 24-bit color, bold, italic, underlines; 10,000 lines of scrollback (the wheel, ⇧PageUp/PageDown); drag to select (double-click a word, triple-click a line, ⇧-click to extend), ⌘C, ⌘V (bracketed when the program asks), ⌘A; ⌘K clears it. ⌘-click a `file:line:column` (compiler errors, `grep -n`, test failures) to open the editor there, a URL to open the browser, or a link a program marks (OSC 8). Programs that ask get the mouse (`vim`, `htop`), and full-screen ones get the wheel as arrows. Plain and ⌃ keys go to the shell (⌃C, ⌃\\, ⌃6 included), ⌘ keys stay zcode's (⌘W closes the terminal). A tab is named after what's running in it. Closing a terminal, its tab or the window ends its processes; the session reopens terminals as fresh shells in the folder each was in. | ⌃⌘\`, ⌘K, ⌘W |
 | **Coding assistant** (ACP, from Zed) | View ▸ Show Coding Assistant (⌘0, as in Xcode 27) opens the agent panel beside the inspector: a conversation with Claude Code, Codex or Gemini CLI (their Agent Client Protocol adapters, run with `npx`) or any agent you add to `agent_servers` in `settings.json`. Answers and thinking stream in as Markdown; tool calls show what they read and run, their output and their diffs; an agent that asks permission waits for Allow, Always Allow or Reject. Agents read files through zcode, so they see unsaved edits; what they write lands in the file's buffer as one undoable edit and is saved (⌘Z in any pane takes it back), and a change an agent makes on disk itself is taken into the buffer the same way. The files a conversation changed are listed with their lines added and removed: Review compares one with what it was before (as Code Review does with `HEAD`), Reject puts it back, Keep stops listing it. `@` (or the @ button) mentions a file or a symbol from sourcekit-lsp, sent with its text from the buffer. Follow Agent opens the files the agent reads and changes at the line, leaving the keyboard in the panel. The agent's plan, its modes (Always Ask, Plan…), Stop, signing in, and File ▸ New ▸ Conversation (⌃⌘H). Nothing loads until the panel is opened, and no agent starts until a message is sent. Show/Hide Navigator, which had ⌘0, has no key now, as in Xcode 27 (`keymap.json` can give it one). | ⌘0, ⌃⌘H, Return, ⇧Return |
 | **MCP server** (for coding agents) | `zcode mcp` is a Model Context Protocol server on stdio for Claude Code, Codex, Gemini CLI, Cursor, Zed or any MCP client: it connects to the running zcode and acts on the open project, so an agent builds, runs and tests with your scheme and destination, reads the Issue navigator, the build log and the console, opens files, reads the editor's selection (unsaved edits included), evaluates in the paused debugger and takes screenshots of the window or a simulator. Results come back structured (each test's result, each error's file and line); builds and tests report progress and stop when the request is cancelled. The tools have Xcode 27's names where its own MCP server has the tool (`BuildProject`, `RunAllTests`, `GetBuildLog`…). The agent panel hands every agent it starts this server; the tools that build, run, stop, test or evaluate ask in the panel first, like the agent's own tool calls. See [zcode as an MCP server](#zcode-as-an-mcp-server). | — |
+| **Predictive completion** (from Zed and Xcode) | Code predicted at the cursor, shown in gray as you type: the rest of the line where the text goes and the lines after it below, the text after the caret moved aside; Tab accepts it as one ⌘Z, Escape or ⌥] dismisses it, and typing what it predicts keeps the rest. Editor ▸ Show Predictive Completion (⌃⌥Space, as in Xcode) asks at once. Off until `edit_predictions.provider` in `settings.json` names one: `"claude"`, the Claude API (the model, `claude-haiku-5-5` by default, and the key from the settings or `ANTHROPIC_API_KEY`), streamed, sent the code around the cursor and your latest edits; or `"lsp"`, the language server's `textDocument/inlineCompletion` where it has one (sourcekit-lsp doesn't yet). Asked once typing pauses (`debounce_ms`, or only on ⌃⌥Space with `automatic` off); a newer request or a moved caret cancels the one before. The status bar shows what it's doing, errors included, and its menu turns predicting while typing on and off. Never in Vim's normal mode, read-only files, multibuffers, terminals or files matching `disabled_globs` (`.env`, keys and certificates by default). | ⌃⌥Space, Tab, Esc, ⌥] |
 | **Editing** | Rope-based editor with tree-sitter highlighting (Swift, C/ObjC, C++, JSON, YAML, Markdown…), multiple cursors, folding, indent guides and find/replace. | ⌘F, ⌥⌘F |
 | **Multibuffers** (from Zed) | One editor showing excerpts of many files, edited in place: Find ▸ Show Find Results in Editor (or the Find navigator's button) for Find in Workspace's results or Find Selected Symbol's references, Navigate ▸ Show Issues in Editor (or the Issue navigator's button) for every issue with its lines around it and its message under it, and a rename's changes. Each file has a header with its name and folder; the gutter shows each line's number in its file, its change bars and breakpoints (click one to toggle it), and the excerpts show the file's diagnostics. Typing in an excerpt edits the file itself (unsaved, as in its tab, which shows the change at once, and the other way around); ⌘S saves the files the tab changed, and one ⌘Z undoes one edit across every file it touched, in step with each file's own undo. Click a header or a line number, or ⌥↩, to open the file there; ⇧↩ or a header's ↕ shows three more lines around an excerpt. Find ▸ Find and Replace in Workspace adds a Replace field whose Replace All edits the results this way. A search over thousands of files opens a page of files at a time as the tab scrolls. | ⌥⇧⌘F, ⌥↩, ⇧↩ |
 | | Comment selection, duplicate, move line, select next occurrence, soft wrap and font size. | ⌘/, ⌘D, ⌥⌘[ ⌥⌘], ⌥⌘E, ⌃⇧⌘L, ⌘+ ⌘- ⌃⌘0 |
 | | Xcode-style `<#placeholder#>` snippets from completions, with Tab or ⌃/ jumping to the next placeholder. | Tab, ⌃/, ⌃⇧/ |
-| **Settings** (from Zed) | zcode ▸ Settings… opens `~/.config/zcode/settings.json`: JSON with comments in Zed's format, applied the moment it's saved, in every window. `theme` (a name, or one for light and one for dark appearance), `buffer_font_family`, `buffer_font_size`, `tab_size`, `hard_tabs`, `soft_wrap`, `show_whitespaces`, `gutter.line_numbers`, `indent_guides`, `format_on_save` (through sourcekit-lsp, on ⌘S, Save All and `:w`), `remove_trailing_whitespace_on_save`, `ensure_final_newline_on_save`, `inlay_hints`, `vim_mode`, `git.inline_blame`, `git.show_authors`, `git.side_by_side_comparison`, `terminal.shell`, `agent_servers` and `agent` (the agent panel's agents, which one a conversation starts with, and `always_allow_tool_actions`); zcode ▸ Open Default Settings lists them with their defaults (read-only). A project's `.zcode/settings.json` (zcode ▸ Open Project Settings File) wins over yours for its window, except the theme, font family, Vim mode and the agent settings (a cloned project can't name programs to run). The Editor menu's toggles (Authors, Inline Blame, Inlay Hints, Vim Mode, Wrap Lines, Invisibles, Side by Side / Inline Comparison) and ⌘+ ⌘- ⌃⌘0 write the file, keeping its comments, and show checkmarks. A mistake (a missing comma, `"tab_size": "four"`, an unknown setting) is shown with its line and column, and the settings it gave last stay until it's fixed. The toggles zcode kept in its session before move into the file once. | ⌘, |
+| **Settings** (from Zed) | zcode ▸ Settings… opens `~/.config/zcode/settings.json`: JSON with comments in Zed's format, applied the moment it's saved, in every window. `theme` (a name, or one for light and one for dark appearance), `buffer_font_family`, `buffer_font_size`, `tab_size`, `hard_tabs`, `soft_wrap`, `show_whitespaces`, `gutter.line_numbers`, `indent_guides`, `format_on_save` (through sourcekit-lsp, on ⌘S, Save All and `:w`), `remove_trailing_whitespace_on_save`, `ensure_final_newline_on_save`, `inlay_hints`, `vim_mode`, `git.inline_blame`, `git.show_authors`, `git.side_by_side_comparison`, `terminal.shell`, `agent_servers` and `agent` (the agent panel's agents, which one a conversation starts with, and `always_allow_tool_actions`), `edit_predictions` (predictive completion's provider, model, key and when it asks); zcode ▸ Open Default Settings lists them with their defaults (read-only). A project's `.zcode/settings.json` (zcode ▸ Open Project Settings File) wins over yours for its window, except the theme, font family, Vim mode, the agent settings and predictions (a cloned project can't name programs to run, or where your code and key are sent; it can only turn predictions off). The Editor menu's toggles (Authors, Inline Blame, Inlay Hints, Vim Mode, Wrap Lines, Invisibles, Side by Side / Inline Comparison) and ⌘+ ⌘- ⌃⌘0 write the file, keeping its comments, and show checkmarks. A mistake (a missing comma, `"tab_size": "four"`, an unknown setting) is shown with its line and column, and the settings it gave last stay until it's fixed. The toggles zcode kept in its session before move into the file once. | ⌘, |
 | | zcode ▸ Key Bindings… opens `keymap.json`: blocks of bindings with an optional `context` (`Editor`, `Editor && vim_mode == normal`, `multibuffer`, `Terminal`, `Navigator && navigator == find`, `PlistEditor`, `Picker`, `Workspace`, …), over zcode's; an action by name (`zcode::Build` or `Build`, `[name, arguments]`), `null` to free a key, `["zed::Unbind", action]` to take a key off one action; multi-key sequences (`ctrl-x ctrl-s`). Bindings for a Vim mode come before Vim's own keys. Bindings that can't be made are reported; the rest apply. zcode ▸ Open Default Key Bindings lists zcode's. | — |
 | | Themes are JSON files in `~/.config/zcode/themes`: gpui-component's format (the window's colors, the editor's and its syntax colors, a monospace font) or Zed's theme files. zcode ▸ Select Theme… lists them with Default Light and Default Dark. zcode ▸ Import Xcode Theme… converts one of Xcode's `.xccolortheme` themes (yours from `~/Library/Developer/Xcode/UserData/FontAndColorThemes`, or one Xcode ships) into a theme file and shows it: the editor's background, text, current line, selection, insertion point, invisibles, syntax colors with their bold and italic, and the font when it's installed. zcode ▸ Import Xcode Key Bindings… turns a set from `~/Library/Developer/Xcode/UserData/KeyBindings` into blocks of `keymap.json`: each command zcode has gets its shortcut, and loses zcode's default ones as in Xcode, and text editing bindings go to the editor; importing again replaces them. Xcode's files are only read. | — |
 | **Vim mode** | Editor ▸ Vim Mode (off by default; `vim_mode` in the settings, for every window) in every editor tab: files in every pane, both sides of Code Review and multibuffers. Normal, insert, replace, visual, visual line and visual block modes, with the mode in the status bar (`-- INSERT --`, then any keys of a command not finished yet). Motions (`h j k l w W b B e E ge 0 ^ $ g_ \| gg G { } f F t T ; , % H M L + - _`, marks), counts, and the operators `d c y > < = g~ gu gU` over motions and text objects (`iw aw iW aW ip ap i" a" i' a' i( a( i[ a[ i{ a{ i< a< it at`, and the backtick quotes); `x X s S C D Y p P gp gP J gJ r R ~ o O i a I A gi gI ⌃A ⌃X`; registers (`"a`–`"z`, `"A`–`"Z` to append, `"0`–`"9`, `"-`, `"_`, `"+` `"*`, `".` `"/` `":`), the unnamed one being the system clipboard (as in Zed); `.` repeats the last change with what its insert typed (completions and closed brackets included); `u` and `⌃R`, an insert undoing in one step with the change that started it; `/ ? n N * #` with Vim's patterns and the matches highlighted; `m` with `'` and the backtick to go to marks; scrolling (`⌃D ⌃U ⌃F ⌃B ⌃E ⌃Y zz zt zb`) and folds (`zo zc za zR zM`); visual block `I`, `A` and `c` typing on every row at once. `:` commands: `:w`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `ZZ`, `ZQ` (`:q` closes the tab, as in Zed, and refuses unsaved changes without `!`; in a multibuffer `:w` saves the files the tab changed), `:s` with ranges (`%`, `.`, `$`, numbers, marks, `'<,'>`, `+N`) and the `g`, `i`, `I`, `n` flags, `:<line>`, `:d`, `:y`, `:j`, `:>`, `:<`, `:noh`, `:undo`, `:redo`, with ↑/↓ history. Every cursor of a multi-cursor editor moves and operates; a selection made with the mouse, ⌘D or a placeholder is visual mode. Escape closes completion, signature help and Find before it leaves insert mode. `gd` jumps to the definition, `gt` / `gT` switch tabs, `⌃O` / Tab go back and forward, `=` re-indents through sourcekit-lsp. zcode's own ⌃ shortcuts (⌃6, ⌃I, ⌃/, ⌃\`…) and every ⌘ key keep working; terminals, property list outlines and text fields aren't affected. | Editor ▸ Vim Mode |
@@ -275,6 +276,18 @@ if zcode is not faster.
   milliseconds. Cold launch, alternating with `master` (load average
   ~9.6): the welcome window's first pixels at 254.8 ms against 254.6 ms
   (median of 12).
+* Predictive completion costs nothing while it's off (the default): no
+  subscriptions, tasks or threads, one comparison per edit, and the editor
+  has no observer without a prediction to show. On, typing only resets a
+  timer; a request is built once typing pauses (a slice of the file around
+  the cursor and a few coalesced recent edits) and sent on a thread of its
+  own, its answer streamed back to the main thread a piece at a time. The
+  HTTP client is made on the first request. Typing in a file with
+  predictions on: median keystroke to frame 2.0 ms, against 3.0 ms with
+  them off (the e2e check's run). Cold launch, three alternating rounds of
+  15 against `master` (load average 7–10): the welcome window's first
+  pixels at 263.8, 257.9 and 260.7 ms against 258.4, 259.8 and 263.8 ms.
+  The binary grows by 1.4 MB (`ureq` and `native-tls`).
 * Settings cost nothing measurable at startup: the user's settings,
   keymap and the theme they name are read and parsed on a thread of their
   own started at the top of `main()`, and the first window takes what it
@@ -314,7 +327,8 @@ src/
                     in the debug area and as pane tabs; Vim mode in every editor tab (`:w`, `:q`, the
                     status bar's mode); the settings applied to the window's editors, terminals and git
                     views, Settings… and the theme and import pickers; the agent panel (agent/: the
-                    conversation, the agent's file reads and writes through buffers, @-mentions)
+                    conversation, the agent's file reads and writes through buffers, @-mentions);
+                    predictive completion (predictions.rs: when to ask, cancelling, the status bar)
   lsp/              JSON-RPC client, document sync store, editor provider adapters, what the server offers;
                     inlay hints, semantic tokens and call/type hierarchies converted for the editor
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner, log/issue/test
@@ -329,6 +343,9 @@ src/
   acp/              the Agent Client Protocol's client side: JSON-RPC to an agent on stdio (its requests
                     to zcode included), the agents and how to start them, a conversation built from
                     session updates
+  predictions/      predictive completion's providers: the Claude API streamed over HTTPS on a thread of
+                    its own (claude.rs, sse.rs), a language server's inlineCompletion (lsp.rs); the
+                    file around the cursor, the latest edits, never-sent files
   mcp/              zcode as an MCP server: `zcode mcp`'s relay (bridge.rs), a connection served on the
                     main thread with cancellation and progress (server.rs), both protocol eras
                     (protocol.rs), the tools (tools.rs; workspace/mcp.rs is their side of the window),
@@ -357,8 +374,9 @@ crates/
   zcode-editor/     the code editor: rope buffer, display map (soft wrap, folding), highlighting,
                     undo, multiple cursors, linked views of one buffer, multibuffers (excerpts of many
                     buffers, one undo step across them), Vim mode (a keystroke interceptor with
-                    motions, text objects, operators, registers, search and `:` commands), LSP
-                    popovers, find panel (docs/editor-engine.md)
+                    motions, text objects, operators, registers, search and `:` commands), edit
+                    predictions as ghost text on inlays and blocks, LSP popovers, find panel
+                    (docs/editor-engine.md)
 vendor/
   gpui-component/   gpui-component 0.7.3 plus small patches (ZCODE-PATCH.md)
 scripts/
@@ -366,6 +384,10 @@ scripts/
   fake_acp_agent.py a scripted ACP agent for the agent panel's tests (no network or account); it also
                     calls the MCP servers it's handed
   mcp_client.py     a stdio MCP client for the MCP server's tests and for trying it
+  fake_anthropic.py the Claude API's Messages endpoint, streaming scripted answers, for the predictions'
+                    tests (no key or network)
+  lsp_proxy.py      the real sourcekit-lsp behind a proxy that logs requests, hides capabilities or
+                    answers inlineCompletion itself
   appkit_floor.swift  minimal native AppKit app, the cold-launch reference
 ```
 
@@ -432,6 +454,16 @@ The MCP server is written from the Model Context Protocol's specification
 transport, sessions and tools are zcode's own. Its tool names are those of
 Xcode 27's MCP server (`xcrun mcpbridge`), read from the names Xcode's
 coding assistant lists; their arguments and results are zcode's.
+Predictive completion's name, menu item and ⌃⌥Space are Xcode 27's (Show
+Predictive Completion); showing a prediction as gray text that typing
+through keeps, the `edit_prediction` key context, `edit_predictions` in
+the settings and `disabled_globs` follow Zed's public documentation (Zed's
+code is GPL; none of it was read), and the provider is written from the
+Claude API's public documentation of the Messages API and its streaming
+events, without an SDK. HTTPS goes through `ureq` (MIT OR Apache-2.0) with
+`native-tls` (MIT OR Apache-2.0), which uses macOS's Security framework
+and trust store; `globset` (MIT OR Unlicense, already there through
+`ignore`) matches the never-sent files.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -498,6 +530,18 @@ themes or session. It covers:
   `ZCODE_SOURCEKIT_LSP`, logging what zcode asks): the requests typing and
   scrolling cost, and a server with these capabilities hidden (nothing
   asked for, ⌃⇧⌘H says so, completion still works)
+* predictive completion on a copy of ZKit: off by default (nothing asked
+  or shown); the Claude API provider against `scripts/fake_anthropic.py`
+  (a local server streaming the Messages API's events, so no key or
+  network): one request for a burst of typing, carrying the file around
+  the cursor and the latest edits, streamed in pieces as an inlay (and a
+  block for more lines), Tab as one ⌘Z, typing through it, ⌥] and Escape,
+  a caret moved during a slow request cancelling it and closing the
+  connection, Vim's normal mode, a read-only checkout and a `.env` left
+  alone, an overloaded API, a broken stream and a refused key in the
+  status bar, ⌃⌥Space with automatic predictions off, typing latency with
+  predictions on and off, and the key in no log; then the language server
+  provider through `scripts/lsp_proxy.py` answering `inlineCompletion`
 * package dependencies, offline against a local repository of the Tally
   fixture (`tests/fixtures/packages`): Add Package Dependencies with its
   tags, rule and products, Add Local…, a build against both packages,
@@ -626,6 +670,15 @@ The control channel also takes window screenshots
 (`screenshot <path>`), which doesn't need Screen Recording permission.
 
 ## Known limitations
+
+* Predictive completion has two providers, the Claude API and a language
+  server's `textDocument/inlineCompletion` (which sourcekit-lsp doesn't
+  offer yet); there's no on-device model like Xcode's. A prediction is
+  accepted whole (no word at a time), there's one at a time (no cycling
+  through alternatives), and only in file tabs (not multibuffers or Code
+  Review). The Claude API key is read from the settings or
+  `ANTHROPIC_API_KEY` (zcode's environment, else the login shell's), not
+  the keychain.
 
 * Project settings cover the General fields, Signing & Capabilities, Info
   and build settings. Adding or removing targets or configurations still

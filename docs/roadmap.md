@@ -53,7 +53,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
    ⌘0 is Coding Assistant). ✅
 2. zcode as an MCP server: build, run, test, diagnostics, simulator
    screenshots (builds on the `debug.rs` control channel). ✅
-3. Inline edit predictions (later).
+3. Inline edit predictions. ✅
 
 ## Phase 4: Xcode-only surfaces, pragmatically
 

@@ -130,7 +130,7 @@ multibuffer only) are zcode's, after Zed's.
 | Command | Key |
 |---|---|
 | Show Editor Only / Canvas (Preview) / Assistant | ⌘↩ / ⌥⌘↩ / ⌃⌥⌘↩ |
-| Show Completions / Predictive Completion | ⌃Space / ⌃⌥Space |
+| Show Completions / Show Predictive Completion (`predict:`, right after it in the Editor menu; Xcode's model suggests while you type when Settings ▸ Text Editing ▸ Predictive code completion is on, `automaticallySuggestPredictiveCodeCompletion` in `SourceEditor`) | ⌃Space / ⌃⌥Space |
 | Edit All in Scope | ⌃⌘E |
 | Refactor > Rename…, Extract to Function/Method/Variable, Add Missing Protocol Requirements, Add Missing Switch Cases, Generate Memberwise Initializer | — |
 | Show Callers…, Expand Macro | — |
