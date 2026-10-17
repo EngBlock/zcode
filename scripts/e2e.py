@@ -4389,6 +4389,11 @@ def terminal_checks(samples):
             z.run(f"terminal type 0 {read_key}\\n", "wait 400", f"keys {keys}")
             # The tty echoes the control character before the shell prints it.
             wait_line(0, lambda l: l.endswith(f"<{code}>"))
+        # Tab completes in the shell rather than moving focus.
+        z.run("type echo Packa", "keys tab", "wait 400")
+        t = terms()[0]
+        assert t["focused"] and t["lines"][t["cursor"][0]].endswith("echo Package.swift"), (t["focused"], t["lines"][t["cursor"][0]])
+        z.run("keys ctrl-u")
         # ↑ is the shell's history.
         z.run("keys up", "wait 300")
         t = terms()[0]

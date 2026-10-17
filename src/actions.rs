@@ -485,8 +485,10 @@ fn key_bindings() -> Vec<KeyBinding> {
 }
 
 /// zcode's keys without ⌘ that work everywhere, which a terminal leaves to
-/// the shell: ⌃ with symbols and digits, and F keys.
+/// the shell: ⌃ with symbols and digits, F keys, and Tab and ⇧Tab (which
+/// gpui-kit's root takes for moving focus; the shell completes with them).
 const TERMINAL_KEYS: &[&str] = &[
+    "tab", "shift-tab",
     "ctrl-;", "ctrl-shift-;", "ctrl-:", "ctrl-alt-;", "ctrl-alt-shift-;", "ctrl-alt-:", "ctrl-`", "ctrl-shift-`", "ctrl-~",
     "ctrl--", "ctrl-\\", "ctrl-shift-\\", "ctrl-|", "ctrl-6", "ctrl-0", "ctrl-shift-0", "f6", "f7", "f8", "f12",
 ];
@@ -876,6 +878,10 @@ mod tests {
                 continue;
             }
             assert!(left_to_the_shell.contains(&keystroke), "{} works everywhere but isn't left to terminals", keystroke.unparse());
+        }
+        // gpui-kit's root binds these to moving focus.
+        for keys in ["tab", "shift-tab"] {
+            assert!(left_to_the_shell.contains(&gpui_kit::Keystroke::parse(keys).unwrap()), "{keys} isn't left to terminals");
         }
     }
 }
