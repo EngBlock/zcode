@@ -494,7 +494,7 @@ fn file_name(path: &std::path::Path) -> String {
 }
 
 impl Render for AgentPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let panel = cx.entity().downgrade();
         let body: AnyElement = if self.thread.entries.is_empty() {
@@ -525,7 +525,6 @@ impl Render for AgentPanel {
         };
         let busy = self.busy();
         let can_send = !busy && !matches!(self.status, Status::AuthRequired(_));
-        let _ = window;
         v_flex()
             .id("agent-panel")
             .key_context("AgentPanel")

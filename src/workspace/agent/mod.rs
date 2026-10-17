@@ -1021,8 +1021,7 @@ fn prompt_blocks(parts: &[Part], capabilities: &PromptCapabilities) -> Vec<Conte
         .filter_map(|part| match part {
             Part::Text(text) if text.is_empty() => None,
             Part::Text(text) => Some(ContentBlock::Text(TextContent::new(text.clone()))),
-            Part::Mention { uri, name, text: Some(text) } if capabilities.embedded_context => {
-                let _ = name;
+            Part::Mention { uri, text: Some(text), .. } if capabilities.embedded_context => {
                 Some(ContentBlock::Resource(EmbeddedResource::new(EmbeddedResourceResource::TextResourceContents(TextResourceContents::new(text.clone(), uri.clone())))))
             }
             Part::Mention { uri, name, .. } => Some(ContentBlock::ResourceLink(ResourceLink::new(name.clone(), uri.clone()))),
