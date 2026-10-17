@@ -57,6 +57,11 @@ gpui_kit::actions!(
         FindConformingTypes,
         FindInFile,
         FindAndReplaceInFile,
+        FindAndReplaceInWorkspace,
+        ShowFindResultsInEditor,
+        ShowIssuesInEditor,
+        OpenExcerpts,
+        ExpandExcerpts,
         // Navigate
         JumpToDefinition,
         JumpToDefinitionInNextPane,
@@ -191,6 +196,8 @@ const PICKER_INPUT: &str = "Picker > Input";
 /// The property list outline, and the key or value being typed in it.
 const PLIST: &str = "PlistEditor";
 const PLIST_INPUT: &str = "PlistEditor > Input";
+/// A multibuffer's editor (Find results, issues, references, a rename).
+const MULTIBUFFER: &str = "Input && multibuffer";
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -241,6 +248,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-cmd-f", FindSelectedSymbol, None),
         KeyBinding::new("ctrl-shift-cmd-h", FindCallHierarchy, None),
         KeyBinding::new("cmd-alt-f", FindAndReplaceInFile, Some(EDITOR)),
+        KeyBinding::new("alt-shift-cmd-f", FindAndReplaceInWorkspace, None),
+        KeyBinding::new("alt-shift-cmd-f", FindAndReplaceInWorkspace, Some(INPUT)),
         // The editor handles ⌘F itself; this binding gives the Find menu its
         // shortcut and works when focus is elsewhere.
         KeyBinding::new("cmd-f", FindInFile, None),
@@ -309,6 +318,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-cmd-e", EditAllInScope, Some(EDITOR)),
         KeyBinding::new("ctrl-alt-cmd-f", FixIssue, Some(EDITOR)),
         KeyBinding::new("alt-enter", ToggleCodeActions, Some(EDITOR)),
+        // In a multibuffer (after the editor's, so they win): ⌥↩ opens the
+        // file at the cursor and ⇧↩ shows more lines, as in Zed.
+        KeyBinding::new("alt-enter", OpenExcerpts, Some(MULTIBUFFER)),
+        KeyBinding::new("shift-enter", ExpandExcerpts, Some(MULTIBUFFER)),
         // Code Review isn't in Xcode 27's inventory (⌥⌘↩ is Canvas now);
         // ⌥⇧⌘↩ is its key in the Xcodes that have it.
         KeyBinding::new("alt-shift-cmd-enter", CodeReview, None),
@@ -455,7 +468,9 @@ pub fn commands() -> Vec<Command> {
         cmd!("Find", "Find and Replace…", FindAndReplaceInFile),
         cmd!("Find", "-", Quit),
         cmd!("Find", "Find in Workspace…", FindInWorkspace),
+        cmd!("Find", "Find and Replace in Workspace…", FindAndReplaceInWorkspace),
         cmd!("Find", "Find Selected Symbol in Workspace", FindSelectedSymbol),
+        cmd!("Find", "Show Find Results in Editor", ShowFindResultsInEditor),
         cmd!("Find", "Find Call Hierarchy", FindCallHierarchy),
         cmd!("Find", "Find Ancestor Types", FindAncestorTypes),
         cmd!("Find", "Find Descendent Types", FindDescendentTypes),
@@ -471,6 +486,7 @@ pub fn commands() -> Vec<Command> {
         cmd!("Navigate", "-", Quit),
         cmd!("Navigate", "Jump to Next Issue", NextIssue),
         cmd!("Navigate", "Jump to Previous Issue", PreviousIssue),
+        cmd!("Navigate", "Show Issues in Editor", ShowIssuesInEditor),
         cmd!("Navigate", "Jump to Next Placeholder", NextPlaceholder),
         cmd!("Navigate", "Jump to Previous Placeholder", PreviousPlaceholder),
         cmd!("Navigate", "-", Quit),
@@ -501,6 +517,8 @@ pub fn commands() -> Vec<Command> {
         cmd!("Editor", "Show Code Actions", ToggleCodeActions),
         cmd!("Editor", "Fix Issue", FixIssue),
         cmd!("Editor", "Show Callers…", ShowCallers),
+        cmd!("Editor", "Open Excerpts", OpenExcerpts),
+        cmd!("Editor", "Expand Excerpts", ExpandExcerpts),
         cmd!("Editor", "-", Quit),
         cmd!("Editor", "Rename…", Rename),
         cmd!("Editor", "Edit All in Scope", EditAllInScope),

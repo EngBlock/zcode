@@ -609,6 +609,7 @@ impl Workspace {
         server: Arc<lsp::LanguageServer>,
         path: PathBuf,
         position: lsp_types::Position,
+        original: String,
         new_name: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -618,15 +619,16 @@ impl Workspace {
             json!({
                 "textDocument": { "uri": path_to_uri(&path).as_str() },
                 "position": position,
-                "newName": new_name,
+                "newName": new_name.clone(),
             }),
         );
         cx.spawn_in(window, async move |this, cx| {
             let result = request.await;
             this.update_in(cx, |this, window, cx| match result {
                 Ok(Value::Null) => this.notify_error("Nothing to rename here.".into(), window, cx),
+                // Reviewed in a multibuffer of the places it changes.
                 Ok(value) => match serde_json::from_value::<lsp_types::WorkspaceEdit>(value) {
-                    Ok(edit) => this.apply_workspace_edit(edit, window, cx),
+                    Ok(edit) => this.apply_rename(edit, original, new_name, window, cx),
                     Err(err) => this.notify_error(format!("Rename failed: {err}"), window, cx),
                 },
                 Err(err) => this.notify_error(format!("Rename failed: {err:#}"), window, cx),

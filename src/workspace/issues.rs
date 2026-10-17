@@ -10,6 +10,14 @@ use super::{Target, Workspace};
 use crate::build::log::{Issue, IssueSource, Severity};
 use crate::lsp;
 
+/// A live or build diagnostic of a file.
+pub(super) struct FileDiagnostic {
+    pub range: lsp_types::Range,
+    pub message: String,
+    pub severity: DiagnosticSeverity,
+    pub source: &'static str,
+}
+
 impl Workspace {
     /// Test failures name only the file; map such paths into the project.
     pub(super) fn resolve_issue_path(&self, path: &Path) -> PathBuf {
@@ -69,64 +77,73 @@ impl Workspace {
         issues
     }
 
-    /// Live and build diagnostics, in every pane showing `path`.
-    pub(super) fn refresh_diagnostics_for(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let views: Vec<Entity<EditorState>> = self.views_of(path).iter().map(|item| item.editor.clone()).collect();
-        if views.is_empty() {
-            return;
-        }
-        let live = self.lsp.read(cx).diagnostics_for(path).to_vec();
-        let build_issues: Vec<Issue> = self
+    /// `path`'s live and build diagnostics, in the language server's
+    /// coordinates (a build issue covers one character).
+    pub(super) fn file_diagnostics(&self, path: &Path, cx: &App) -> Vec<FileDiagnostic> {
+        let live = self.lsp.read(cx).diagnostics_for(path);
+        let mut entries: Vec<FileDiagnostic> = live
+            .iter()
+            .map(|d| {
+                let severity = match d.severity {
+                    Some(lsp_types::DiagnosticSeverity::ERROR) => DiagnosticSeverity::Error,
+                    Some(lsp_types::DiagnosticSeverity::WARNING) => DiagnosticSeverity::Warning,
+                    Some(lsp_types::DiagnosticSeverity::INFORMATION) => DiagnosticSeverity::Info,
+                    _ => DiagnosticSeverity::Hint,
+                };
+                let mut range = d.range;
+                if range.end == range.start {
+                    range.end.character += 1;
+                }
+                FileDiagnostic { range, message: d.message.clone(), severity, source: "sourcekit-lsp" }
+            })
+            .collect();
+        let build_issues = self
             .build
             .read(cx)
             .issues
             .iter()
-            .filter(|i| i.path.as_deref().map(|p| self.resolve_issue_path(p)).as_deref() == Some(path))
-            .cloned()
-            .collect();
+            .filter(|i| i.path.as_deref().map(|p| self.resolve_issue_path(p)).as_deref() == Some(path));
+        for issue in build_issues {
+            let line = issue.line.unwrap_or(1).saturating_sub(1);
+            let col = issue.column.unwrap_or(1).saturating_sub(1);
+            let severity = match issue.severity {
+                Severity::Error => DiagnosticSeverity::Error,
+                Severity::Warning => DiagnosticSeverity::Warning,
+                Severity::Note => DiagnosticSeverity::Info,
+            };
+            let duplicate = live.iter().any(|d| d.range.start.line == line && d.message == issue.message);
+            if !duplicate {
+                let start = lsp_types::Position::new(line, col);
+                let range = lsp_types::Range::new(start, lsp_types::Position::new(line, col + 1));
+                entries.push(FileDiagnostic { range, message: issue.message.clone(), severity, source: "build" });
+            }
+        }
+        entries
+    }
+
+    /// Live and build diagnostics, in every pane showing `path`, and in the
+    /// multibuffers with excerpts of it.
+    pub(super) fn refresh_diagnostics_for(&mut self, path: &Path, cx: &mut Context<Self>) {
+        self.refresh_multibuffer_diagnostics_for(path, cx);
+        let views: Vec<Entity<EditorState>> = self.views_of(path).iter().map(|item| item.editor.clone()).collect();
+        if views.is_empty() {
+            return;
+        }
+        let diagnostics = self.file_diagnostics(path, cx);
         for view in views {
             view.update(cx, |state, cx| {
                 let text = state.text().clone();
                 let to_pos = |p: lsp_types::Position| -> Position {
                     text.offset_to_position(lsp::lsp_to_offset(&text, p))
                 };
-                let mut entries: Vec<EditorDiagnostic> = live
+                let entries: Vec<EditorDiagnostic> = diagnostics
                     .iter()
                     .map(|d| {
-                        let severity = match d.severity {
-                            Some(lsp_types::DiagnosticSeverity::ERROR) => DiagnosticSeverity::Error,
-                            Some(lsp_types::DiagnosticSeverity::WARNING) => DiagnosticSeverity::Warning,
-                            Some(lsp_types::DiagnosticSeverity::INFORMATION) => DiagnosticSeverity::Info,
-                            _ => DiagnosticSeverity::Hint,
-                        };
-                        let mut end = d.range.end;
-                        if end == d.range.start {
-                            end.character += 1;
-                        }
-                        EditorDiagnostic::new(to_pos(d.range.start)..to_pos(end), d.message.clone())
-                            .with_severity(severity)
-                            .with_source("sourcekit-lsp")
+                        EditorDiagnostic::new(to_pos(d.range.start)..to_pos(d.range.end), d.message.clone())
+                            .with_severity(d.severity)
+                            .with_source(d.source)
                     })
                     .collect();
-                for issue in &build_issues {
-                    let line = issue.line.unwrap_or(1).saturating_sub(1);
-                    let col = issue.column.unwrap_or(1).saturating_sub(1);
-                    let start = to_pos(lsp_types::Position::new(line, col));
-                    let end = Position::new(start.line, start.character + 1);
-                    let severity = match issue.severity {
-                        Severity::Error => DiagnosticSeverity::Error,
-                        Severity::Warning => DiagnosticSeverity::Warning,
-                        Severity::Note => DiagnosticSeverity::Info,
-                    };
-                    let duplicate = live.iter().any(|d| d.range.start.line == line && d.message == issue.message);
-                    if !duplicate {
-                        entries.push(
-                            EditorDiagnostic::new(start..end, issue.message.clone())
-                                .with_severity(severity)
-                                .with_source("build"),
-                        );
-                    }
-                }
                 if let Some(set) = state.diagnostics_mut() {
                     set.clear();
                     set.extend(entries);

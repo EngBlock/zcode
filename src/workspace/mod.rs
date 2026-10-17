@@ -25,6 +25,7 @@ mod hunk_popover;
 mod inlay_hints;
 mod issues;
 mod line_anchors;
+mod multibuffer;
 mod navigation;
 mod navigator;
 mod packages;
@@ -65,7 +66,8 @@ use crate::session::{ProjectSession, Session};
 pub use buffers::Buffer;
 pub use find::FindState;
 pub use navigator::NavigatorTab;
-pub use pane::{AssistantMode, DiffItem, EditorItem, Item, Pane, PaneId};
+pub use multibuffer::{MultiBufferKind, MultiBufferView};
+pub use pane::{AssistantMode, DiffItem, EditorItem, Item, MultiBufferItem, Pane, PaneId};
 pub use remote_sheet::RemoteAction;
 pub use pane_group::SplitAxis;
 pub use panels::DebugTab;
@@ -192,6 +194,7 @@ impl Workspace {
         let tree = cx.new(|cx| TreeState::new(cx));
         let debugger = cx.new(|_| Debugger::default());
         let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in Workspace"));
+        let replace_input = cx.new(|cx| InputState::new(window, cx).placeholder("Replace With"));
 
         mark("find input");
         let mut session = Session::load();
@@ -273,6 +276,8 @@ impl Workspace {
             raw_log: false,
             find: FindState {
                 input: find_input,
+                replace_input,
+                replacing: false,
                 options: SearchOptions::default(),
                 results: Arc::new(vec![]),
                 searching: false,
@@ -810,6 +815,7 @@ impl Workspace {
         state["console"] = self.console_summary(cx);
         state["panes"] = self.panes_summary(cx);
         state["git"] = self.git_summary(cx);
+        state["multibuffer"] = self.multibuffer_summary(cx);
         state["language_features"] = serde_json::json!({
             "server": self.lsp.read(cx).features().summary(),
             "inlay_hints": self.inlay_hints_summary(cx),

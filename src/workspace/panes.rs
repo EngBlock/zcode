@@ -174,7 +174,7 @@ impl Workspace {
         let focus = p.items[ix].focus_handle(cx);
         let settings = match &p.items[ix] {
             Item::ProjectSettings(settings) => Some(settings.clone()),
-            Item::Editor(_) | Item::Diff(_) => None,
+            Item::Editor(_) | Item::Diff(_) | Item::MultiBuffer(_) => None,
         };
         self.active_pane = pane;
         self.inspected = None;
@@ -237,7 +237,7 @@ impl Workspace {
     pub fn close_item(&mut self, pane: PaneId, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(item) = self.pane(pane).and_then(|p| p.items.get(ix)) else { return };
         let view = item.view_id();
-        let unsaved = self.unsaved_if_closed([item]);
+        let unsaved = self.unsaved_if_closed([item], cx);
         self.confirm_close(unsaved, window, cx, move |this, window, cx| {
             if let Some((pane, ix)) = this.find_view(view) {
                 this.force_close_item(pane, ix, window, cx);
@@ -247,15 +247,22 @@ impl Workspace {
 
     /// The files whose last tabs are among `items` and that have unsaved
     /// changes.
-    fn unsaved_if_closed<'a>(&self, items: impl IntoIterator<Item = &'a Item>) -> Vec<PathBuf> {
-        // A comparison's local side is a view of the file too.
-        let closing: Vec<&Path> = items.into_iter().filter_map(Item::buffer_path).collect();
-        let mut paths: Vec<PathBuf> = closing.iter().map(|path| path.to_path_buf()).collect();
+    pub(super) fn unsaved_if_closed<'a>(&self, items: impl IntoIterator<Item = &'a Item>, cx: &App) -> Vec<PathBuf> {
+        // A comparison's local side is a view of the file too, and so is
+        // each excerpted file's view in a multibuffer.
+        let mut closing: Vec<PathBuf> = vec![];
+        for item in items {
+            match item {
+                Item::MultiBuffer(item) => closing.extend(item.view.read(cx).paths.values().cloned()),
+                item => closing.extend(item.buffer_path().map(Path::to_path_buf)),
+            }
+        }
+        let mut paths: Vec<PathBuf> = closing.clone();
         paths.sort();
         paths.dedup();
         paths.retain(|path| {
-            let count = closing.iter().filter(|closed| **closed == path).count();
-            let open = self.views_of(path).len() + self.diff_views_of(path).len();
+            let count = closing.iter().filter(|closed| *closed == path).count();
+            let open = self.views_of(path).len() + self.diff_views_of(path).len() + self.multibuffer_views_of(path, cx).len();
             self.buffer(path).is_some_and(|b| b.dirty) && open == count
         });
         paths
@@ -333,6 +340,14 @@ impl Workspace {
                     drop(diff);
                     self.view_closed(&path, view, cx);
                 }
+                Item::MultiBuffer(item) => {
+                    let views: Vec<(PathBuf, EntityId)> =
+                        item.view.read(cx).source_views(cx).into_iter().map(|(path, view)| (path, view.entity_id())).collect();
+                    drop(item);
+                    for (path, view) in views {
+                        self.view_closed(&path, view, cx);
+                    }
+                }
                 Item::ProjectSettings(_) => {
                     self.project_settings = None;
                     self.project_settings_subscriptions.clear();
@@ -373,7 +388,7 @@ impl Workspace {
             .filter(|(ix, _)| *ix != keep)
             .map(|(_, item)| item.view_id())
             .collect();
-        let unsaved = self.unsaved_if_closed(p.items.iter().enumerate().filter(|(ix, _)| *ix != keep).map(|(_, item)| item));
+        let unsaved = self.unsaved_if_closed(p.items.iter().enumerate().filter(|(ix, _)| *ix != keep).map(|(_, item)| item), cx);
         self.confirm_close(unsaved, window, cx, move |this, window, cx| {
             for view in views {
                 if let Some((pane, ix)) = this.find_view(view) {
@@ -416,7 +431,7 @@ impl Workspace {
             return;
         }
         let Some(p) = self.pane(pane) else { return };
-        let unsaved = self.unsaved_if_closed(&p.items);
+        let unsaved = self.unsaved_if_closed(&p.items, cx);
         self.confirm_close(unsaved, window, cx, move |this, window, cx| this.remove_pane(pane, window, cx));
     }
 
@@ -424,7 +439,7 @@ impl Workspace {
     pub(super) fn close_other_panes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let keep = self.active_pane;
         let others: Vec<PaneId> = self.panes.iter().map(|p| p.id).filter(|id| *id != keep).collect();
-        let unsaved = self.unsaved_if_closed(self.panes.iter().filter(|p| p.id != keep).flat_map(|p| p.items.iter()));
+        let unsaved = self.unsaved_if_closed(self.panes.iter().filter(|p| p.id != keep).flat_map(|p| p.items.iter()), cx);
         self.confirm_close(unsaved, window, cx, move |this, window, cx| {
             for pane in others {
                 this.remove_pane(pane, window, cx);
@@ -597,7 +612,7 @@ impl Workspace {
             let stale: Vec<usize> = self
                 .pane(assistant)
                 .map(|p| {
-                    let unsaved = self.unsaved_if_closed(&p.items);
+                    let unsaved = self.unsaved_if_closed(&p.items, cx);
                     (0..p.items.len())
                         .rev()
                         .filter(|&ix| p.items[ix].path().is_none_or(|item| Some(item) != counterpart.as_deref() && !unsaved.iter().any(|u| u == item)))

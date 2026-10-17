@@ -755,16 +755,17 @@ impl PickerDelegate for RenameDelegate {
     }
 
     fn confirm(&mut self, _: usize, window: &mut Window, cx: &mut Context<Picker<Self>>) -> bool {
-        let (server, path, position, name) = (
+        let (server, path, position, original, name) = (
             self.server.clone(),
             self.path.clone(),
             self.position,
+            self.original.clone(),
             self.new_name.clone(),
         );
         self.workspace
             .update(cx, |ws, cx| {
                 ws.dismiss_modal(window, cx);
-                ws.rename_symbol(server, path, position, name, window, cx);
+                ws.rename_symbol(server, path, position, original, name, window, cx);
             })
             .ok();
         false

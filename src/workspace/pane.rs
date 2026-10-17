@@ -1,6 +1,7 @@
 //! Panes: tabs of items in the editor area. An item is a file's editor (or
 //! its property list editor), a file's comparison with `HEAD` (Code
-//! Review), or the project settings; the workspace keeps
+//! Review), a multibuffer (excerpts of many files: find results, issues,
+//! references, a rename), or the project settings; the workspace keeps
 //! its panes in a split tree (`pane_group.rs`) and one of them focused.
 //!
 //! A file shown in two panes is one buffer (`Buffer`, in `buffers.rs`) with
@@ -13,6 +14,7 @@ use gpui_kit::*;
 use zcode_editor::{EditorState, RangeDecorationCollection};
 
 use super::diff_view::DiffView;
+use super::multibuffer::MultiBufferView;
 use super::{PlistEditor, ProjectSettings};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -64,9 +66,19 @@ impl DiffItem {
     }
 }
 
+/// Excerpts of many files in one editor, edited in place.
+pub struct MultiBufferItem {
+    pub view: Entity<MultiBufferView>,
+    /// The editor the excerpts are shown in.
+    pub host: Entity<EditorState>,
+    pub title: String,
+    pub(super) _subscriptions: Vec<Subscription>,
+}
+
 pub enum Item {
     Editor(EditorItem),
     Diff(DiffItem),
+    MultiBuffer(MultiBufferItem),
     ProjectSettings(Entity<ProjectSettings>),
 }
 
@@ -74,7 +86,7 @@ impl Item {
     pub fn editor(&self) -> Option<&EditorItem> {
         match self {
             Item::Editor(item) => Some(item),
-            Item::Diff(_) | Item::ProjectSettings(_) => None,
+            Item::Diff(_) | Item::MultiBuffer(_) | Item::ProjectSettings(_) => None,
         }
     }
 
@@ -88,7 +100,7 @@ impl Item {
         match self {
             Item::Editor(item) => Some(&item.path),
             Item::Diff(diff) => Some(&diff.path),
-            Item::ProjectSettings(_) => None,
+            Item::MultiBuffer(_) | Item::ProjectSettings(_) => None,
         }
     }
 
@@ -97,6 +109,7 @@ impl Item {
         match self {
             Item::Editor(item) => item.editor.entity_id(),
             Item::Diff(diff) => diff.view.entity_id(),
+            Item::MultiBuffer(item) => item.view.entity_id(),
             Item::ProjectSettings(settings) => settings.entity_id(),
         }
     }
@@ -105,6 +118,7 @@ impl Item {
         match self {
             Item::Editor(item) => item.title(),
             Item::Diff(diff) => diff.title(),
+            Item::MultiBuffer(item) => item.title.clone(),
             Item::ProjectSettings(_) => "Project Settings".into(),
         }
     }
@@ -117,6 +131,7 @@ impl Item {
                 None => item.editor.read(cx).focus_handle(cx),
             },
             Item::Diff(diff) => diff.view.read(cx).focus_handle(cx),
+            Item::MultiBuffer(item) => item.view.read(cx).focus_handle(cx),
             Item::ProjectSettings(settings) => settings.read(cx).focus_handle(cx),
         }
     }

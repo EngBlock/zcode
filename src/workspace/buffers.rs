@@ -7,7 +7,9 @@
 //! buffer's others (`zcode_editor::EditorState::link`): one text, one undo
 //! history, one anchor table, a cursor and scroll position each. One of the
 //! views is the buffer's `editor`, whose changes the workspace follows; when
-//! its tab closes another view takes over.
+//! its tab closes another view takes over. A file a multibuffer shows that
+//! no pane had open gets a headless buffer: an editor without a language,
+//! and no language server document until it's edited or shown in a pane.
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -33,6 +35,9 @@ pub struct Buffer {
     pub dirty: bool,
     /// A package's checked-out source: shown, never edited or saved.
     pub read_only: bool,
+    /// `editor` isn't a pane's (a headless buffer's own, or a multibuffer's
+    /// view): a pane showing the file makes a view of its own.
+    pub headless: bool,
     /// Text as last loaded/saved, so undoing back to it clears `dirty`.
     pub(super) saved_text: zcode_editor::Rope,
     pub language: SharedString,
@@ -65,9 +70,14 @@ impl Workspace {
         self.buffer(self.active_item()?.path.as_path())
     }
 
-    /// The focused pane's text editor, unless its tab shows a property list.
+    /// The focused pane's text editor, unless its tab shows a property
+    /// list; a multibuffer's editor.
     pub fn active_editor(&self) -> Option<Entity<EditorState>> {
-        self.active_item().filter(|item| item.shown_plist().is_none()).map(|item| item.editor.clone())
+        match self.pane(self.active_pane)?.active_item()? {
+            Item::Editor(item) => item.shown_plist().is_none().then(|| item.editor.clone()),
+            Item::MultiBuffer(item) => Some(item.host.clone()),
+            Item::Diff(_) | Item::ProjectSettings(_) => None,
+        }
     }
 
     /// Every pane's view of `path`.
@@ -154,6 +164,13 @@ impl Workspace {
     /// Reads a file into a new buffer, with no pane showing it yet. Tells
     /// the user and returns `false` when it can't be opened.
     pub(super) fn open_buffer(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.open_buffer_with(path, false, window, cx)
+    }
+
+    /// `open_buffer`, headless for a multibuffer: no highlighting, language
+    /// server document or semantic tokens until a pane shows it or it's
+    /// edited (it is still compared with git, and keeps its breakpoints).
+    pub(super) fn open_buffer_with(&mut self, path: &Path, headless: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
         if size > MAX_OPEN_FILE_SIZE {
             self.notify_error(format!("{} is too large to open", path.display()), window, cx);
@@ -194,8 +211,12 @@ impl Workspace {
         let language = Self::language_for(path);
         let read_only = crate::packages::location::is_package_checkout(path) || crate::toolchain::is_in_developer_dir(path);
         let soft_wrap = self.soft_wrap;
-        let editor = cx.new(|cx| Self::new_editor(soft_wrap, language, window, cx).default_value(text));
-        if let Some(language_id) = lsp::language_id_for(path) {
+        let editor = if headless {
+            cx.new(|cx| EditorState::new(window, cx).default_value(text))
+        } else {
+            cx.new(|cx| Self::new_editor(soft_wrap, language, window, cx).default_value(text))
+        };
+        if !headless && let Some(language_id) = lsp::language_id_for(path) {
             self.lsp.update(cx, |store, cx| {
                 store.open_document(path.to_path_buf(), language_id, editor.read(cx).text().clone(), cx)
             });
@@ -208,6 +229,7 @@ impl Workspace {
             editor,
             dirty: false,
             read_only,
+            headless,
             language: language.into(),
             mtime,
             breakpoint_anchors: Default::default(),
@@ -217,13 +239,26 @@ impl Workspace {
             tokens: Default::default(),
             _subscriptions: vec![subscription],
         });
-        self.schedule_semantic_tokens(path, Duration::ZERO, cx);
+        if !headless {
+            self.schedule_semantic_tokens(path, Duration::ZERO, cx);
+        }
         self.anchor_breakpoints(path, false, cx);
         self.anchor_bookmarks(path, false, cx);
-        if !read_only {
+        // A multibuffer reads a page of files' bases at once.
+        if !read_only && !headless {
             self.load_git_bases(vec![path.to_path_buf()], cx);
         }
         true
+    }
+
+    /// Opens the language server's document of a headless buffer's file.
+    fn ensure_lsp_document(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let Some(language_id) = lsp::language_id_for(path) else { return };
+        if self.lsp.read(cx).is_open(path) {
+            return;
+        }
+        let Some(text) = self.buffer(path).map(|b| b.editor.read(cx).text().clone()) else { return };
+        self.lsp.update(cx, |store, cx| store.open_document(path.to_path_buf(), language_id, text, cx));
     }
 
     /// What the workspace does after each edit of a buffer, whichever pane
@@ -241,6 +276,8 @@ impl Workspace {
                         cx.notify();
                     }
                 }
+                // A headless buffer's file gets its document once it's edited.
+                this.ensure_lsp_document(&path, cx);
                 let text = this.buffer(&path).map(|b| b.editor.read(cx).text().clone());
                 if let Some(text) = text {
                     this.lsp.update(cx, |lsp, cx| lsp.document_changed(&path, text, cx));
@@ -259,9 +296,12 @@ impl Workspace {
     /// editor when no pane shows it yet, otherwise a new editor linked to it.
     pub(super) fn new_editor_item(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) -> Option<EditorItem> {
         let buffer = self.buffer(path)?;
-        let (shared, read_only, plist_format) = (buffer.editor.clone(), buffer.read_only, buffer.plist_format);
+        let (shared, read_only, plist_format, headless) = (buffer.editor.clone(), buffer.read_only, buffer.plist_format, buffer.headless);
         let language = Self::language_for(path);
-        let editor = if self.views_of(path).is_empty() {
+        if headless {
+            self.ensure_lsp_document(path, cx);
+        }
+        let editor = if self.views_of(path).is_empty() && !headless {
             shared
         } else {
             let soft_wrap = self.soft_wrap;
@@ -306,7 +346,7 @@ impl Workspace {
         let view = editor.entity_id();
         let focus = editor.read(cx).focus_handle(cx);
         // A view linked to an open buffer starts without its tokens.
-        if !self.views_of(path).is_empty() {
+        if !self.views_of(path).is_empty() || headless {
             self.schedule_semantic_tokens(path, Duration::ZERO, cx);
         }
         let mut subscriptions = vec![
@@ -344,11 +384,11 @@ impl Workspace {
     /// its events to a view still open.
     pub(super) fn view_closed(&mut self, path: &Path, view: EntityId, cx: &mut Context<Self>) {
         self.inlay_hints_view_closed(view);
-        let remaining = self
-            .views_of(path)
-            .first()
-            .map(|item| item.editor.clone())
-            .or_else(|| self.diff_views_of(path).first().map(|diff| diff.read(cx).current.clone()));
+        let pane_view = self.views_of(path).first().map(|item| item.editor.clone());
+        let headless = pane_view.is_none();
+        let remaining = pane_view
+            .or_else(|| self.diff_views_of(path).first().map(|diff| diff.read(cx).current.clone()))
+            .or_else(|| self.multibuffer_views_of(path, cx).into_iter().next());
         let Some(ix) = self.buffers.iter().position(|b| b.path == path) else { return };
         match remaining {
             None => {
@@ -359,6 +399,7 @@ impl Workspace {
                 let subscription = self.follow_buffer_changes(&editor, path.to_path_buf(), cx);
                 let buffer = &mut self.buffers[ix];
                 buffer.editor = editor;
+                buffer.headless = headless;
                 buffer._subscriptions = vec![subscription];
             }
             Some(_) => {}
@@ -554,29 +595,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let mut per_file: Vec<(PathBuf, Vec<lsp_types::TextEdit>)> = vec![];
-        if let Some(changes) = edit.changes {
-            for (uri, edits) in changes {
-                if let Some(path) = lsp::uri_to_path(&uri) {
-                    per_file.push((path, edits));
-                }
-            }
-        }
-        if let Some(lsp_types::DocumentChanges::Edits(doc_edits)) = edit.document_changes {
-            for doc in doc_edits {
-                if let Some(path) = lsp::uri_to_path(&doc.text_document.uri) {
-                    let edits = doc
-                        .edits
-                        .into_iter()
-                        .map(|e| match e {
-                            lsp_types::OneOf::Left(edit) => edit,
-                            lsp_types::OneOf::Right(annotated) => annotated.text_edit,
-                        })
-                        .collect();
-                    per_file.push((path, edits));
-                }
-            }
-        }
+        self.apply_file_edits(workspace_edit_files(edit), window, cx);
+    }
+
+    /// Applies each file's edits: in its buffer (opened as a tab if it
+    /// wasn't), or on disk for a file that can't be.
+    pub(super) fn apply_file_edits(
+        &mut self,
+        per_file: Vec<(PathBuf, Vec<lsp_types::TextEdit>)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let mut touched = 0;
         let previously_active = (self.active_pane, self.pane(self.active_pane).map_or(0, |p| p.active));
         for (path, mut edits) in per_file {
@@ -627,4 +656,32 @@ impl Workspace {
         }
         cx.notify();
     }
+}
+
+/// A workspace edit's text edits, by file.
+pub(super) fn workspace_edit_files(edit: lsp_types::WorkspaceEdit) -> Vec<(PathBuf, Vec<lsp_types::TextEdit>)> {
+    let mut per_file: Vec<(PathBuf, Vec<lsp_types::TextEdit>)> = vec![];
+    if let Some(changes) = edit.changes {
+        for (uri, edits) in changes {
+            if let Some(path) = lsp::uri_to_path(&uri) {
+                per_file.push((path, edits));
+            }
+        }
+    }
+    if let Some(lsp_types::DocumentChanges::Edits(doc_edits)) = edit.document_changes {
+        for doc in doc_edits {
+            if let Some(path) = lsp::uri_to_path(&doc.text_document.uri) {
+                let edits = doc
+                    .edits
+                    .into_iter()
+                    .map(|e| match e {
+                        lsp_types::OneOf::Left(edit) => edit,
+                        lsp_types::OneOf::Right(annotated) => annotated.text_edit,
+                    })
+                    .collect();
+                per_file.push((path, edits));
+            }
+        }
+    }
+    per_file
 }

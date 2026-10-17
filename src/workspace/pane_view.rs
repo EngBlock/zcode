@@ -79,6 +79,10 @@ impl Workspace {
                 diff.view.update(cx, |view, cx| view.set_font_size(self.font_size, cx));
                 div().flex_1().min_h_0().child(diff.view.clone()).into_any_element()
             }
+            Some(Item::MultiBuffer(item)) => {
+                item.view.update(cx, |view, cx| view.set_font_size(self.font_size, cx));
+                div().flex_1().min_h_0().child(item.view.clone()).into_any_element()
+            }
             Some(Item::Editor(item)) => {
                 let body = match item.shown_plist() {
                     Some(plist) => div().flex_1().min_h_0().child(plist.clone()).into_any_element(),
@@ -137,6 +141,17 @@ impl Workspace {
                         diff.title(),
                         buffer.is_some_and(|b| b.read_only),
                         buffer.is_some_and(|b| b.dirty),
+                    )
+                }
+                Item::MultiBuffer(item) => {
+                    // Dirty while a file it changed isn't saved.
+                    let dirty = item.view.read(cx).paths.values().any(|path| self.buffer(path).is_some_and(|b| b.dirty));
+                    (
+                        SharedString::from(format!("tab-multibuffer-{}", item.view.entity_id())),
+                        Icon::new(item.icon(cx)).small().text_color(theme.muted_foreground),
+                        item.title.clone(),
+                        false,
+                        dirty,
                     )
                 }
                 Item::ProjectSettings(_) => (

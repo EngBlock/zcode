@@ -832,8 +832,11 @@ impl Render for Workspace {
             .bg(theme.background)
             .text_color(theme.foreground)
             .on_action(cx.listener(|this, _: &Save, window, cx| {
-                // Project settings are written as they are edited.
-                if let Some(path) = this.active_file_path() {
+                // Project settings are written as they are edited; a
+                // multibuffer saves the files it changed.
+                if let Some(view) = this.active_multibuffer().cloned() {
+                    this.save_multibuffer(&view, window, cx);
+                } else if let Some(path) = this.active_file_path() {
                     this.save_path(&path, window, cx);
                 }
             }))
@@ -941,8 +944,21 @@ impl Render for Workspace {
                 let _ = this;
             }))
             .on_action(cx.listener(|this, _: &FindInWorkspace, window, cx| {
+                this.find.replacing = false;
                 this.show_navigator_tab(NavigatorTab::Find, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &FindAndReplaceInWorkspace, window, cx| {
+                this.find.replacing = true;
+                this.show_navigator_tab(NavigatorTab::Find, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowFindResultsInEditor, window, cx| {
+                this.show_find_results_in_editor(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowIssuesInEditor, window, cx| {
+                this.show_issues_in_editor(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &OpenExcerpts, _, cx| this.open_excerpts(cx)))
+            .on_action(cx.listener(|this, _: &ExpandExcerpts, window, cx| this.expand_excerpts(window, cx)))
             .on_action(cx.listener(|this, _: &NextIssue, window, cx| this.step_issue(1, window, cx)))
             .on_action(cx.listener(|this, _: &PreviousIssue, window, cx| this.step_issue(-1, window, cx)))
             .on_action(cx.listener(|this, _: &RevealInNavigator, window, cx| {

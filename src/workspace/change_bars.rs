@@ -23,7 +23,7 @@ use crate::git::{self, Bases};
 
 /// The gutter lane of change bars.
 pub(super) const CHANGES_LANE: &str = "git-changes";
-const LANE_WIDTH: f32 = 6.;
+pub(super) const LANE_WIDTH: f32 = 6.;
 /// From an edit to the diff that follows it.
 const DIFF_DELAY: Duration = Duration::from_millis(30);
 
@@ -283,14 +283,14 @@ pub fn compare(head: &str, index: &str, current: &str) -> Vec<DiffHunk> {
         .collect()
 }
 
-struct BarColors {
+pub(super) struct BarColors {
     added: Hsla,
     modified: Hsla,
     deleted: Hsla,
 }
 
 impl BarColors {
-    fn new(cx: &App) -> Self {
+    pub(super) fn new(cx: &App) -> Self {
         let theme = cx.theme();
         Self { added: theme.success, modified: theme.info, deleted: theme.danger }
     }
@@ -298,7 +298,7 @@ impl BarColors {
 
 /// A bar down the cell (a wedge at its top edge for a deletion); hollow
 /// when staged, wider while hovered.
-fn paint_bar(window: &mut Window, cell: Bounds<Pixels>, kind: HunkKind, staging: Staging, at_end: bool, hovered: bool, colors: &BarColors) {
+pub(super) fn paint_bar(window: &mut Window, cell: Bounds<Pixels>, kind: HunkKind, staging: Staging, at_end: bool, hovered: bool, colors: &BarColors) {
     let color = match kind {
         HunkKind::Added => colors.added,
         HunkKind::Modified => colors.modified,

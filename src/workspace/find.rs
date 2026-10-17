@@ -1,4 +1,6 @@
-//! Find in Workspace (⇧⌘F): the Find navigator's query and results.
+//! Find in Workspace (⇧⌘F): the Find navigator's query and results, and
+//! Find and Replace in Workspace (⌥⇧⌘F), whose Replace All edits the
+//! results in a multibuffer (`multibuffer.rs`).
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -11,6 +13,9 @@ use crate::search::{FileMatches, SearchOptions};
 
 pub struct FindState {
     pub input: Entity<InputState>,
+    /// Find and Replace: the replacement, shown with Replace All.
+    pub replace_input: Entity<InputState>,
+    pub replacing: bool,
     pub options: SearchOptions,
     pub results: Arc<Vec<FileMatches>>,
     pub searching: bool,

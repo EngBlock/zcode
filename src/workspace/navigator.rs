@@ -11,7 +11,7 @@ use gpui_kit::component::input::Input;
 use gpui_kit::component::list::ListItem;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenuItem};
 use gpui_kit::component::tree::tree;
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use gpui_kit::assets::IconName;
@@ -500,6 +500,26 @@ impl Workspace {
                     .p_2()
                     .gap_1()
                     .child(Input::new(&self.find.input).small().cleanable(true))
+                    // Find and Replace in Workspace: Replace All edits the
+                    // results in a tab, unsaved and undone in one step.
+                    .when(self.find.replacing, |el| {
+                        let can_replace = !self.find.searching && total > 0 && self.find.title.is_none();
+                        el.child(
+                            h_flex()
+                                .gap_1()
+                                .child(div().flex_1().child(Input::new(&self.find.replace_input).small().cleanable(true)))
+                                .child(
+                                    Button::new("find-replace-all")
+                                        .label("Replace All")
+                                        .xsmall()
+                                        .disabled(!can_replace)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            let replacement = this.find.replace_input.read(cx).value().to_string();
+                                            this.replace_all_in_workspace(replacement, window, cx);
+                                        })),
+                                ),
+                        )
+                    })
                     .child(
                         h_flex()
                             .gap_1()
@@ -537,6 +557,19 @@ impl Workspace {
                                 .gap_1()
                                 .child(div().flex_1().text_xs().text_color(theme.muted_foreground).child(summary))
                                 .when(can_bookmark, |el| {
+                                    // The results in a tab, to edit in place (Zed's multibuffer).
+                                    el.child(
+                                        Button::new("find-in-editor")
+                                            .icon(IconName::ExternalLink)
+                                            .ghost()
+                                            .xsmall()
+                                            .tooltip("Show Find Results in Editor")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.show_find_results_in_editor(window, cx);
+                                            })),
+                                    )
+                                })
+                                .when(can_bookmark, |el| {
                                     // Xcode bookmarks the query, with its results, as a group.
                                     el.child(
                                         Button::new("find-bookmark")
@@ -558,10 +591,31 @@ impl Workspace {
     fn render_issue_navigator(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let issues = self.all_issues(cx);
-        let mut list = v_flex().id("issues").size_full().overflow_y_scroll();
+        let mut list = v_flex().id("issues").flex_1().min_h_0().overflow_y_scroll();
         if issues.is_empty() {
-            return list.child(empty("No issues", cx));
+            return v_flex().size_full().child(list.child(empty("No issues", cx)));
         }
+        // Every issue with its lines around it, in a tab (a multibuffer).
+        let bar = h_flex()
+            .px_2()
+            .py_1()
+            .gap_1()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(div().flex_1().text_xs().text_color(theme.muted_foreground).child(match issues.len() {
+                1 => "1 issue".to_string(),
+                n => format!("{n} issues"),
+            }))
+            .child(
+                Button::new("issues-in-editor")
+                    .icon(IconName::ExternalLink)
+                    .ghost()
+                    .xsmall()
+                    .tooltip("Show Issues in Editor")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.show_issues_in_editor(window, cx);
+                    })),
+            );
         let mut current_file: Option<(Option<PathBuf>, bool)> = None;
         for (ix, issue) in issues.into_iter().enumerate() {
             let package = issue.source == IssueSource::Package;
@@ -612,7 +666,7 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| this.open_issue(&open, window, cx))),
             );
         }
-        list
+        v_flex().size_full().child(bar).child(list)
     }
 
     fn render_debug_navigator(&mut self, cx: &mut Context<Self>) -> impl IntoElement {

@@ -46,6 +46,9 @@
 //!   inlay-hints on|off         Editor ▸ Inlay Hints (a setting kept in the session)
 //!   git <command>              source control: hunks, the hunk popover, the commit, Push… and Pull…
 //!                              sheets, branches, comparisons (see `Workspace::git_command`)
+//!   multibuffer <command>      multibuffers: find (the Find navigator's results in a tab), issues,
+//!                              replace <text> (Replace All), open (⌥↩), expand (⇧↩), all, save
+//!                              (see `Workspace::multibuffer_command`)
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -419,6 +422,13 @@ fn run_command(
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.git_command(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
+        }
+        "multibuffer" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.multibuffer_command(arg, window, cx)))
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
         }

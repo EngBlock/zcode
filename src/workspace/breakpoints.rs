@@ -50,7 +50,7 @@ pub(super) struct PopupMenuState {
 }
 
 /// Paints a breakpoint marker: a tag pointing at the line, as in Xcode.
-fn paint_marker(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla) {
+pub(super) fn paint_marker(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla) {
     let tip = px(MARKER_TIP).min(bounds.size.width / 2.);
     let (left, right, top, bottom) = (bounds.left(), bounds.right(), bounds.top(), bounds.bottom());
     let body = right - tip;
@@ -65,7 +65,7 @@ fn paint_marker(window: &mut Window, bounds: Bounds<Pixels>, color: Hsla) {
 }
 
 /// Xcode's breakpoint blue; dimmed when the breakpoint (or all of them) is off.
-fn marker_color(enabled: bool, active: bool) -> Hsla {
+pub(super) fn marker_color(enabled: bool, active: bool) -> Hsla {
     let blue = hsla(0.585, 0.78, 0.52, 1.);
     match (enabled, active) {
         (true, true) => blue,
