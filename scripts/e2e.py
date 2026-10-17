@@ -2898,6 +2898,8 @@ def terminal_checks(samples):
         z.run(f"open {os.path.join(project, 'Package.swift')}", "wait 300")
         assert json.loads(z.run(f"terminal link 0 {row} 4")[-1]) == {"opened": True}
         assert z.dump()["active"]["path"] == greeter, z.dump()["active"]["path"]
+        z.run(f"open {os.path.join(project, 'Package.swift')}", "keys cmd-w", "wait 200")
+        assert z.dump()["panes"]["list"][0]["tabs"] == ["Greeter.swift"], z.dump()["panes"]["list"][0]["tabs"]
         # A missing file isn't a link.
         s = run_in(0, "echo Sources/Gone.swift:3; echo marker-6", "marker-6")
         row = row_of(0, lambda l: l.startswith("Sources/Gone"), s)
