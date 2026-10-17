@@ -187,6 +187,19 @@ multibuffer only) are zcode's, after Zed's.
 | Help: Quick Help for Selected Item / Search Docs for Selection | ⌃⌘? / ⌃⌥⌘/ |
 | Settings… | ⌘, |
 
+Xcode's Settings… (`showPreferencesPanel:`) opens a window of panes; its
+font and color themes are `.xccolortheme` property lists (the user's in
+`~/Library/Developer/Xcode/UserData/FontAndColorThemes`, Xcode's own in
+`SharedFrameworks/DVTUserInterfaceKit.framework/…/FontAndColorThemes`) and
+its custom key bindings are `.idekeybindings` (`UserData/KeyBindings`: a
+Menu Key Bindings list of commands by action selector and command ID with
+their `Keyboard Shortcut`, in Xcode's notation, `@` ⌘ `^` ⌃ `~` ⌥ `$` ⇧,
+and Text Key Bindings, Cocoa text selectors by keystroke; IDEKit's own
+default is an old-style property list). zcode's Settings… (⌘, as in Xcode)
+opens `settings.json`, as Zed's does (Phase 2.8); zcode ▸ Key Bindings…,
+Select Theme… and the two Xcode importers sit beside it. Editor ▸
+Invisibles is Xcode's `toggleInvisibleCharactersShown:`.
+
 ## Workspace areas and concepts
 
 **Window layout:** Toolbar (Run/Stop, scheme and destination picker, activity/status view) · **Navigator area** (left) · **Editor area** (tabs, split panes, jump bar, assistant/canvas, minimap) · **Debug area** (bottom: variables view plus LLDB/console) · **Inspector area** (right).

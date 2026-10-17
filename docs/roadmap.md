@@ -45,7 +45,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 6. Integrated terminal. ✅
 7. Vim mode. ✅
 8. File-based settings, keymap and themes; import Xcode `.xccolortheme` and
-   `.idekeybindings`.
+   `.idekeybindings`. ✅
 
 ## Phase 3: AI
 

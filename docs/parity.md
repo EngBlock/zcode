@@ -56,6 +56,7 @@ which was extracted from Xcode 27's own command definitions.
 | Call/type hierarchy | ✅ Find Call Hierarchy (⌃⇧⌘H) with callers or callees, Find Ancestor / Descendent / Conforming Types, in the Find navigator; Editor ▸ Show Callers… |
 | Folding, multi-cursor | ✅ (from the editor engine) |
 | Vim mode (Editor ▸ Vim Mode) | ✅ Normal, insert, replace and visual (character, line, block) modes; operators with motions, text objects and counts; registers with the system clipboard; `.`, undo, search, marks, `:w` `:q` `:s` and ranges; the mode in the status bar; every editor tab and cursor. No macros or sentence objects (README, Known limitations) |
+| Settings… (⌘,), font and color themes, custom key bindings | ✅ Zed's files instead of Xcode's panes: `~/.config/zcode/settings.json` (a project's `.zcode/settings.json` over it), `keymap.json` with contexts, JSON themes; Xcode's `.xccolortheme` themes and `.idekeybindings` key bindings import into them. Editor ▸ Invisibles; checkmarks on the Editor menu's toggles. No settings window, Relative Line Numbers or Code Coverage toggles |
 | Minimap | ⬜ (the editor's hooks exist: `docs/editor-engine.md`) |
 | Reports navigator (log history) | ✅ |
 | Profile (⌘I) with xctrace | ⬜ |
@@ -77,4 +78,9 @@ which was extracted from Xcode 27's own command definitions.
   Tab). No IME composition, ⌥ as Meta or find in scrollback yet.
 * Live memory monitoring for both the editor and the language server, a
   startup benchmark mode, and an idle-baseline memory view.
+* Settings as files (Zed's): `settings.json` with comments, a project's
+  own over it, `keymap.json` with key contexts (`Editor`, `vim_mode`,
+  `Terminal`, `Navigator`…), JSON themes (also Zed's theme files), all
+  applied as soon as they're saved, with mistakes shown and the last good
+  settings kept; format on save, trailing whitespace, the terminal's shell.
 * A scriptable UI control channel (`ZCODE_DEBUG_DIR`) for automated UI tests.

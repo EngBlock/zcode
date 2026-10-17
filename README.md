@@ -33,7 +33,10 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | **Multibuffers** (from Zed) | One editor showing excerpts of many files, edited in place: Find ▸ Show Find Results in Editor (or the Find navigator's button) for Find in Workspace's results or Find Selected Symbol's references, Navigate ▸ Show Issues in Editor (or the Issue navigator's button) for every issue with its lines around it and its message under it, and a rename's changes. Each file has a header with its name and folder; the gutter shows each line's number in its file, its change bars and breakpoints (click one to toggle it), and the excerpts show the file's diagnostics. Typing in an excerpt edits the file itself (unsaved, as in its tab, which shows the change at once, and the other way around); ⌘S saves the files the tab changed, and one ⌘Z undoes one edit across every file it touched, in step with each file's own undo. Click a header or a line number, or ⌥↩, to open the file there; ⇧↩ or a header's ↕ shows three more lines around an excerpt. Find ▸ Find and Replace in Workspace adds a Replace field whose Replace All edits the results this way. A search over thousands of files opens a page of files at a time as the tab scrolls. | ⌥⇧⌘F, ⌥↩, ⇧↩ |
 | | Comment selection, duplicate, move line, select next occurrence, soft wrap and font size. | ⌘/, ⌘D, ⌥⌘[ ⌥⌘], ⌥⌘E, ⌃⇧⌘L, ⌘+ ⌘- ⌃⌘0 |
 | | Xcode-style `<#placeholder#>` snippets from completions, with Tab or ⌃/ jumping to the next placeholder. | Tab, ⌃/, ⌃⇧/ |
-| **Vim mode** | Editor ▸ Vim Mode (off by default, kept for every window across launches) in every editor tab: files in every pane, both sides of Code Review and multibuffers. Normal, insert, replace, visual, visual line and visual block modes, with the mode in the status bar (`-- INSERT --`, then any keys of a command not finished yet). Motions (`h j k l w W b B e E ge 0 ^ $ g_ \| gg G { } f F t T ; , % H M L + - _`, marks), counts, and the operators `d c y > < = g~ gu gU` over motions and text objects (`iw aw iW aW ip ap i" a" i' a' i( a( i[ a[ i{ a{ i< a< it at`, and the backtick quotes); `x X s S C D Y p P gp gP J gJ r R ~ o O i a I A gi gI ⌃A ⌃X`; registers (`"a`–`"z`, `"A`–`"Z` to append, `"0`–`"9`, `"-`, `"_`, `"+` `"*`, `".` `"/` `":`), the unnamed one being the system clipboard (as in Zed); `.` repeats the last change with what its insert typed (completions and closed brackets included); `u` and `⌃R`, an insert undoing in one step with the change that started it; `/ ? n N * #` with Vim's patterns and the matches highlighted; `m` with `'` and the backtick to go to marks; scrolling (`⌃D ⌃U ⌃F ⌃B ⌃E ⌃Y zz zt zb`) and folds (`zo zc za zR zM`); visual block `I`, `A` and `c` typing on every row at once. `:` commands: `:w`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `ZZ`, `ZQ` (`:q` closes the tab, as in Zed, and refuses unsaved changes without `!`; in a multibuffer `:w` saves the files the tab changed), `:s` with ranges (`%`, `.`, `$`, numbers, marks, `'<,'>`, `+N`) and the `g`, `i`, `I`, `n` flags, `:<line>`, `:d`, `:y`, `:j`, `:>`, `:<`, `:noh`, `:undo`, `:redo`, with ↑/↓ history. Every cursor of a multi-cursor editor moves and operates; a selection made with the mouse, ⌘D or a placeholder is visual mode. Escape closes completion, signature help and Find before it leaves insert mode. `gd` jumps to the definition, `gt` / `gT` switch tabs, `⌃O` / Tab go back and forward, `=` re-indents through sourcekit-lsp. zcode's own ⌃ shortcuts (⌃6, ⌃I, ⌃/, ⌃\`…) and every ⌘ key keep working; terminals, property list outlines and text fields aren't affected. | Editor ▸ Vim Mode |
+| **Settings** (from Zed) | zcode ▸ Settings… opens `~/.config/zcode/settings.json`: JSON with comments in Zed's format, applied the moment it's saved, in every window. `theme` (a name, or one for light and one for dark appearance), `buffer_font_family`, `buffer_font_size`, `tab_size`, `hard_tabs`, `soft_wrap`, `show_whitespaces`, `gutter.line_numbers`, `indent_guides`, `format_on_save` (through sourcekit-lsp, on ⌘S, Save All and `:w`), `remove_trailing_whitespace_on_save`, `ensure_final_newline_on_save`, `inlay_hints`, `vim_mode`, `git.inline_blame`, `git.show_authors`, `git.side_by_side_comparison` and `terminal.shell`; zcode ▸ Open Default Settings lists them with their defaults (read-only). A project's `.zcode/settings.json` (zcode ▸ Open Project Settings File) wins over yours for its window, except the theme, font family and Vim mode. The Editor menu's toggles (Authors, Inline Blame, Inlay Hints, Vim Mode, Wrap Lines, Invisibles, Side by Side / Inline Comparison) and ⌘+ ⌘- ⌃⌘0 write the file, keeping its comments, and show checkmarks. A mistake (a missing comma, `"tab_size": "four"`, an unknown setting) is shown with its line and column, and the settings it gave last stay until it's fixed. The toggles zcode kept in its session before move into the file once. | ⌘, |
+| | zcode ▸ Key Bindings… opens `keymap.json`: blocks of bindings with an optional `context` (`Editor`, `Editor && vim_mode == normal`, `multibuffer`, `Terminal`, `Navigator && navigator == find`, `PlistEditor`, `Picker`, `Workspace`, …), over zcode's; an action by name (`zcode::Build` or `Build`, `[name, arguments]`), `null` to free a key, `["zed::Unbind", action]` to take a key off one action; multi-key sequences (`ctrl-x ctrl-s`). Bindings for a Vim mode come before Vim's own keys. Bindings that can't be made are reported; the rest apply. zcode ▸ Open Default Key Bindings lists zcode's. | — |
+| | Themes are JSON files in `~/.config/zcode/themes`: gpui-component's format (the window's colors, the editor's and its syntax colors, a monospace font) or Zed's theme files. zcode ▸ Select Theme… lists them with Default Light and Default Dark. zcode ▸ Import Xcode Theme… converts one of Xcode's `.xccolortheme` themes (yours from `~/Library/Developer/Xcode/UserData/FontAndColorThemes`, or one Xcode ships) into a theme file and shows it: the editor's background, text, current line, selection, insertion point, invisibles, syntax colors with their bold and italic, and the font when it's installed. zcode ▸ Import Xcode Key Bindings… turns a set from `~/Library/Developer/Xcode/UserData/KeyBindings` into blocks of `keymap.json`: each command zcode has gets its shortcut, and loses zcode's default ones as in Xcode, and text editing bindings go to the editor; importing again replaces them. Xcode's files are only read. | — |
+| **Vim mode** | Editor ▸ Vim Mode (off by default; `vim_mode` in the settings, for every window) in every editor tab: files in every pane, both sides of Code Review and multibuffers. Normal, insert, replace, visual, visual line and visual block modes, with the mode in the status bar (`-- INSERT --`, then any keys of a command not finished yet). Motions (`h j k l w W b B e E ge 0 ^ $ g_ \| gg G { } f F t T ; , % H M L + - _`, marks), counts, and the operators `d c y > < = g~ gu gU` over motions and text objects (`iw aw iW aW ip ap i" a" i' a' i( a( i[ a[ i{ a{ i< a< it at`, and the backtick quotes); `x X s S C D Y p P gp gP J gJ r R ~ o O i a I A gi gI ⌃A ⌃X`; registers (`"a`–`"z`, `"A`–`"Z` to append, `"0`–`"9`, `"-`, `"_`, `"+` `"*`, `".` `"/` `":`), the unnamed one being the system clipboard (as in Zed); `.` repeats the last change with what its insert typed (completions and closed brackets included); `u` and `⌃R`, an insert undoing in one step with the change that started it; `/ ? n N * #` with Vim's patterns and the matches highlighted; `m` with `'` and the backtick to go to marks; scrolling (`⌃D ⌃U ⌃F ⌃B ⌃E ⌃Y zz zt zb`) and folds (`zo zc za zR zM`); visual block `I`, `A` and `c` typing on every row at once. `:` commands: `:w`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `ZZ`, `ZQ` (`:q` closes the tab, as in Zed, and refuses unsaved changes without `!`; in a multibuffer `:w` saves the files the tab changed), `:s` with ranges (`%`, `.`, `$`, numbers, marks, `'<,'>`, `+N`) and the `g`, `i`, `I`, `n` flags, `:<line>`, `:d`, `:y`, `:j`, `:>`, `:<`, `:noh`, `:undo`, `:redo`, with ↑/↓ history. Every cursor of a multi-cursor editor moves and operates; a selection made with the mouse, ⌘D or a placeholder is visual mode. Escape closes completion, signature help and Find before it leaves insert mode. `gd` jumps to the definition, `gt` / `gT` switch tabs, `⌃O` / Tab go back and forward, `=` re-indents through sourcekit-lsp. zcode's own ⌃ shortcuts (⌃6, ⌃I, ⌃/, ⌃\`…) and every ⌘ key keep working; terminals, property list outlines and text fields aren't affected. | Editor ▸ Vim Mode |
 | **Language intelligence** (sourcekit-lsp) | Completion, live diagnostics, Quick Help on hover, Jump to Definition (also ⌘-click), Find References and Rename across files. A rename opens a tab of the places it changed (a multibuffer, below), left unsaved: ⌘S saves every file, one ⌘Z undoes it everywhere. | ⌃Space, ⌃⌘J, ⌃⇧⌘F, F2 |
 | | Edit All in Scope, Format File / Re-Indent, code actions and fix-its, Document Items outline, and workspace symbols in Open Quickly. | ⌃⌘E, ⌃⇧I / ⌃I, ⌃⌥⌘F, ⌃6 |
 | | Semantic highlighting over tree-sitter's: what the compiler says each name is, so a type reads as a type at a call (`Square(side: 2)`), and properties, parameters and enum cases get their colors. Signature help while typing arguments: the call's signature above the cursor with the current argument in bold, from `(` until the call is closed (or Escape). Editor ▸ Inlay Hints (off by default, as in Zed): the type inferred for each binding without one (`let areas: [Double]`), and in C and Objective-C the parameter names before arguments (`add(left: 1, right: 2)`), drawn in the text without being part of it. | — |
@@ -168,6 +171,17 @@ if zcode is not faster.
   pixels at 247.0 ms against 248.4 ms (median of 24), and ZKit with two
   Swift tabs restored at 226.3 ms against 224.5 ms to the first frame
   (median of 20), 225.9 ms with Vim mode on.
+* Settings cost nothing measurable at startup: the user's settings,
+  keymap and the theme they name are read and parsed on a thread of their
+  own started at the top of `main()`, and the first window takes what it
+  read (~0.06 ms on the main thread); with no files it's one failed
+  `open` each. A project's `.zcode/settings.json` is read when its window
+  opens, and every file is polled off the main thread about once a second
+  after that. Cold launch, alternating runs against `master` (load average
+  9–17): the welcome window's first pixels at 253.2 ms with no settings
+  files and 255.0 ms with settings, a custom theme, a font and key
+  bindings, against 259.0 ms on `master` (median of 20); ZKit at 262.4 /
+  265.2 ms against 262.7 ms (median of 12).
 * Swift highlighting uses a compact tree-sitter query
   (`src/languages/swift-highlights.scm`) that compiles in ~11 ms. The upstream
   query takes ~185 ms, and the editor pays that cost for every Swift file it
@@ -194,7 +208,8 @@ src/
                     in the Find navigator); multibuffers (find results, issues, references, renames
                     as tabs of excerpts, with headless buffers for the files no pane shows); terminals
                     in the debug area and as pane tabs; Vim mode in every editor tab (`:w`, `:q`, the
-                    status bar's mode)
+                    status bar's mode); the settings applied to the window's editors, terminals and git
+                    views, Settings… and the theme and import pickers
   lsp/              JSON-RPC client, document sync store, editor provider adapters, what the server offers;
                     inlay hints, semantic tokens and call/type hierarchies converted for the editor
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner, log/issue/test
@@ -217,7 +232,10 @@ src/
                     and staging a hunk through the index, commits, blame, branches, fetch, pull, push
   search.rs         parallel find-in-workspace
   bookmarks.rs      bookmarks: lines, files and saved find queries, kept in the session
-  settings.rs       settings for every window (Editor ▸ Vim Mode), kept in the session file for now
+  settings/         settings.json (a project's over it), keymap.json and JSON themes: JSON with comments
+                    read and edited in place, read off the main thread at launch and polled for changes;
+                    the theme in effect; Xcode's .xccolortheme themes and .idekeybindings key bindings
+                    converted (plist/ reads XML, binary and old-style property lists)
   perf.rs           startup timing and memory sampling (proc_pid_rusage)
   debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR)
 crates/
@@ -270,6 +288,17 @@ keys is visual mode, and Escape closes popovers before it leaves insert
 mode. Xcode's own Vi bindings (`IDEViEventConsumer`) live in code, not in a
 data file, so Editor ▸ Vim Mode's name and place are what zcode takes from
 it. No Vim or Zed code was used.
+The settings files follow Zed's public documentation (file names and
+places, JSON with comments, setting names and shapes such as
+`buffer_font_size` and `inlay_hints.enabled`, the keymap's blocks,
+`context`, `null` and `zed::Unbind`); their reader, in-place editing,
+merging and reloading are zcode's own (Zed's settings and keymap code is
+GPL; none of it was read). Themes use gpui-component's theme format
+(Apache-2.0), whose editor part is Zed's theme format, so Zed's theme
+files load too. The Xcode importers read Xcode's own files
+(`.xccolortheme` and `.idekeybindings` property lists, old-style ones
+included), and map its commands to zcode's by the action selectors in
+Xcode's command definitions; Settings… is Xcode's command and shortcut.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -283,7 +312,10 @@ cargo build --release && python3 scripts/e2e.py [--simulator] [--network] [--com
 
 `scripts/e2e.py` launches zcode with `ZCODE_DEBUG_DIR` set and checks against
 a temporary copy of `samples/` taken from git `HEAD`, so local edits and
-saved breakpoints can't leak in. It covers:
+saved breakpoints can't leak in. Every zcode it starts gets a temporary
+`ZCODE_CONFIG_DIR`, which stands in for `~/.config/zcode` and the session's
+folder, so a run never reads or changes your settings, key bindings,
+themes or session. It covers:
 * Open Quickly, definition, completion with placeholders, comment and undo, Document Items, find and references
 * project settings: a General field edited and restored, with
   `project.pbxproj` checked byte for byte
@@ -383,6 +415,22 @@ saved breakpoints can't leak in. It covers:
   alone; a mode per pane; typing latency in insert mode against Vim mode
   off; the setting after a relaunch. The keystroke sequences themselves
   are unit-tested headless in `crates/zcode-editor/src/vim/tests.rs`
+* settings, key bindings and themes on a copy of ZKit, in the run's own
+  configuration folder: ⌘, opening `settings.json`; tab size, hard tabs,
+  font size, wrap, invisibles and line numbers applied as soon as the file
+  is saved; a file with a mistake keeping its last good settings and saying
+  where; a project's `.zcode/settings.json` over it (not for the theme or
+  Vim mode); the Editor menu's toggles and ⌘+ writing the file, with their
+  checkmarks; trailing whitespace, final newline and format on save through
+  sourcekit-lsp; `terminal.shell`; `keymap.json` with an `Editor` binding,
+  one for Vim's normal mode, Unbind, `null` in the Find navigator and a
+  mistake reported; themes in gpui-component's and Zed's formats, edited
+  live, a missing one, and Select Theme…; an Xcode theme imported from a
+  fixture and Xcode's own Midnight read in place; a fixture's Xcode key
+  bindings imported (a rebound command, a removed one, a text binding, and
+  again in place) and your own sets read; the default files read-only; the
+  session's old toggles moved into `settings.json` once; and
+  `~/.config/zcode` left as it was
 * bookmarks on a copy of ZKit: Bookmark Line and File, ribbons, edits and
   undo (a deleted line's bookmark back with ⌘Z), next and previous in the file and the workspace, descriptions
   edited in place, completion, the filter, drag and drop (real mouse
@@ -520,9 +568,23 @@ The control channel also takes window screenshots
   zcode's Go Back / Go Forward rather than Vim's jump list. `=` asks
   sourcekit-lsp to re-indent, so it does nothing without it. An insert in
   a multibuffer undoes a typed run at a time (the multibuffer keeps its own
-  undo steps). Key bindings for Vim can't be changed yet (2.8's keymap
-  file), and the Editor menu shows no checkmark for the toggle (nor for the
-  other toggles).
+  undo steps). Vim's own keys can be overridden in `keymap.json` (contexts
+  with `vim_mode`), but not remapped one to another (no `:map`).
+* Settings are files only: there's no settings window, and only the
+  settings listed above (Zed has many more; others are reported as
+  unknown). Files are checked for changes about once a second. A
+  project's file can't change the theme, font family or Vim mode (they're
+  the app's). Format on save applies to ⌘S, Save All and `:w`, waits at
+  most 1.5 s for sourcekit-lsp, and doesn't run for the saves before a
+  build. Themes color zcode's window and editor; an imported Xcode theme
+  colors the editor (Xcode's themes don't cover the rest of the window)
+  with the SDK's colors for names (tree-sitter can't tell a project's
+  types and functions from the SDK's, as Xcode's colors do), without its
+  font sizes, line spacing, console or markup colors, and Xcode's SF Mono
+  isn't installed for other apps, so its themes keep zcode's font. The key
+  binding import skips commands zcode doesn't have (and says which) and
+  Xcode's sub-word and mark text commands. Menu checkmarks follow the
+  window in front.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas or Instruments.
 * Devices: there's no Devices and Simulators window (⇧⌘2), so pairing a new
   device, turning on Developer Mode and copying a device's system symbols

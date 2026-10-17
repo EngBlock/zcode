@@ -358,8 +358,16 @@ editor.set_keystroke_interceptor(Some(Rc::new(|editor, keystroke, window, cx| {
     vim.handle(editor, keystroke, window, cx)
 })), cx);
 editor.set_cursor_shape(CursorShape::Block, cx);   // Bar, Block, Underline, Hollow
-editor.set_extra_key_context(Some("vim_mode=normal".into()), cx);  // for "Input && vim_mode == normal" bindings
+editor.set_extra_key_context(Some("vim_mode=normal".into()), cx);  // for "Editor && vim_mode == normal" bindings
 ```
+
+A code editor's key context is `Input Editor mode=editor` plus the extra
+one, so keymaps written as Zed's are (`"context": "Editor"`) reach it;
+zcode's own bindings still say `Input && mode == editor`. Its settings
+(2.8) are read back with `current_tab_size()`, `is_soft_wrapped()`,
+`shows_line_numbers()` and `shows_whitespaces()`, and a theme's
+`editor.foreground` colors its text when the theme has one (Xcode's
+themes do).
 
 The interceptor is a GPUI keystroke interceptor scoped to the editor's
 focus, so it runs before the keymap and before text input; a consumed
@@ -398,6 +406,12 @@ parser, visual modes, `.`, scrolling and folds), `registers.rs` (a GPUI
 global, the unnamed register written to the clipboard with its kind as
 metadata), `search.rs` (Vim's magic patterns as Rust regexes),
 `command.rs` (`:` ranges, commands and `:s` replacements).
+
+Bindings in the app's keymap whose context names a Vim mode (`"context":
+"Editor && vim_mode == normal"`, from `keymap.json`, 2.8) come before Vim's
+own keys: while no Vim command is pending, a keystroke such a binding is
+(or starts), and the keys that finish a multi-key binding underway, go to
+the keymap instead of the layer. Other keys stay Vim's.
 
 What it needed from the engine, beside `modal.rs`:
 
@@ -551,6 +565,7 @@ against 5.1–5.2 ms in the same file's own tab; the first page of a
 | Call/type hierarchy (2.4, done) | nothing in the engine: a tree in zcode's Find navigator |
 | Multibuffers (2.5, done) | the excerpt model, `BufferEdit` events, read-only ranges, clickable blocks above rows for headers, other line numbers, transaction ids and an external history for one undo step across files (see above) |
 | Vim mode (2.7, done) | the keystroke interceptor, cursor shapes, an extra key context, transactions for one-step undo of a command; carets drawn inside visual selections, an insert's transactions joined at Escape, a mouse-down hook (see above) |
+| Settings, keymap, themes (2.8, done) | `set_tab_size`, `set_soft_wrap`, `set_line_number`, `set_indent_guides`, `set_show_whitespaces` on every open editor when a settings file changes; the `Editor` key context; Vim leaving keys to bindings made for its modes; `edit` for trimming whitespace on save (one undo step) |
 | Edit predictions (3.3) | an inlay at the cursor for the first line and a block for the rest; Tab accepts through `edit` in a `transact` |
 | Minimap (later) | an element beside the editor reading the rope and the highlight styles; the display map already gives row ↔ offset |
 | Read-only views (package sources, generated interfaces) | `set_read_only`, or read-only ranges for parts of a file |
