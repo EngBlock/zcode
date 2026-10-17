@@ -33,6 +33,9 @@ gpui-kit = { version = "=0.7.3", features = [
 ] }
 anyhow = "1"
 futures = "0.3"
+# Edit predictions' never-sent files (`edit_predictions.disabled_globs`);
+# already here through `ignore`.
+globset = "0.4"
 ignore = "0.4"
 libc = "0.2"
 log = "0.4"
@@ -52,6 +55,9 @@ similar = "2"
 smol = "2"
 tree-sitter = "0.26"
 tree-sitter-swift = "0.7"
+# The Claude API for edit predictions: blocking HTTP on a thread of its own,
+# TLS through macOS (Security.framework) and its trust store.
+ureq = { version = "3", default-features = false, features = ["native-tls-no-default"] }
 
 [profile.release]
 debug = "line-tables-only"

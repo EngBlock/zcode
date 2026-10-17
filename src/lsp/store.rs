@@ -46,6 +46,8 @@ pub struct Features {
     pub signature_help: Option<SignatureTriggers>,
     pub call_hierarchy: bool,
     pub type_hierarchy: bool,
+    /// `textDocument/inlineCompletion` (LSP 3.18), for edit predictions.
+    pub inline_completion: bool,
 }
 
 /// Characters that open signature help, and ones that update it while it's
@@ -77,6 +79,7 @@ impl Features {
             }),
             call_hierarchy: on("/callHierarchyProvider"),
             type_hierarchy: on("/typeHierarchyProvider"),
+            inline_completion: on("/inlineCompletionProvider"),
         }
     }
 
@@ -88,6 +91,7 @@ impl Features {
             "signature_help": self.signature_help.as_ref().map(|s| &s.triggers),
             "call_hierarchy": self.call_hierarchy,
             "type_hierarchy": self.type_hierarchy,
+            "inline_completion": self.inline_completion,
         })
     }
 }
