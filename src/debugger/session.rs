@@ -702,8 +702,9 @@ impl Debugger {
 
     /// Runs a line typed at the console's `(lldb)` prompt.
     pub fn run_console_command(&mut self, command: &str, cx: &mut Context<Self>) {
-        if self.evaluate_command(command, cx).is_none() {
-            cx.emit(DebuggerEvent::Output("The process is running; pause it to use the console.".into()));
+        match self.evaluate_command(command, cx) {
+            Some(task) => task.detach(),
+            None => cx.emit(DebuggerEvent::Output("The process is running; pause it to use the console.".into())),
         }
     }
 
