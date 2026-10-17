@@ -60,6 +60,21 @@ impl Workspace {
         Ok(build.generation)
     }
 
+    /// Product ▸ Profile with `template` for `time_limit` seconds. The
+    /// run's generation, to wait for.
+    pub fn mcp_profile(&mut self, template: String, time_limit: u32, window: &mut Window, cx: &mut Context<Self>) -> Result<u64, String> {
+        if !self.build.read(cx).can_build() {
+            return Err("This folder isn’t an Xcode project or a Swift package; there’s nothing to profile.".into());
+        }
+        let request = crate::build::profile::ProfileRequest { template: Some(template), build: true, time_limit: Some(time_limit) };
+        self.start_recording(request, window, cx);
+        let build = self.build.read(cx);
+        if !build.phase.is_busy() {
+            return Err("Profiling didn’t start.".into());
+        }
+        Ok(build.generation)
+    }
+
     /// Product ▸ Stop: the build, the app and the debugger. Whether anything was running.
     pub fn mcp_stop(&mut self, cx: &mut Context<Self>) -> bool {
         let running = self.build.read(cx).phase.is_busy() || self.debugger.read(cx).state.is_active();

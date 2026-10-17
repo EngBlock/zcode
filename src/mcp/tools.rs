@@ -258,6 +258,19 @@ pub const TOOLS: &[Tool] = &[
             )
         },
     },
+    Tool {
+        name: "ProfileProject",
+        title: "Profile",
+        description: "Product ▸ Profile (⌘I): builds with the scheme's Profile configuration (Release), launches the app under Instruments (xctrace record) on the run destination and records it with a template for time_limit_seconds, then opens the trace in Instruments. Returns the trace's path and, for Time Profiler, the functions with the most samples (self and total share).",
+        read_only: false,
+        asks: true,
+        schema: || {
+            let mut properties = selection_properties();
+            properties["template"] = json!({ "type": "string", "description": "An Instruments template: Time Profiler (the default), Allocations, Leaks, Animation Hitches, SwiftUI, … (`xctrace list templates`)." });
+            properties["time_limit_seconds"] = json!({ "type": "integer", "minimum": 1, "maximum": 600, "description": "How long to record (default 10)." });
+            schema(properties, &[])
+        },
+    },
 ];
 
 pub fn tool(name: &str) -> Option<&'static Tool> {
@@ -311,6 +324,7 @@ pub async fn call(name: &str, args: &Value, call: &Rc<Call>, cx: &mut AsyncApp) 
         "BuildProject" => product(BuildAction::Build, name, args, &workspace, call, cx).await,
         "RunProject" => product(BuildAction::Run, name, args, &workspace, call, cx).await,
         "RunAllTests" | "RunSomeTests" => product(BuildAction::Test, name, args, &workspace, call, cx).await,
+        "ProfileProject" => profile(args, &workspace, call, cx).await,
         "StopProject" => {
             let permission = permit(call, &workspace, name, "Stop".into(), args, cx).await?;
             let stopped = cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(cx)));
@@ -710,6 +724,101 @@ fn product_result(action: BuildAction, reports_before: usize, started: Instant, 
     value
 }
 
+async fn profile(args: &Value, workspace: &Entity<Workspace>, call: &Call, cx: &mut AsyncApp) -> Result<ToolOutput> {
+    let scheme = string(args, "scheme")?;
+    let destination = string(args, "destination")?;
+    let template = string(args, "template")?.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "Time Profiler".into());
+    let time_limit = integer(args, "time_limit_seconds")?.unwrap_or(10);
+    if !(1..=600).contains(&time_limit) {
+        return Err(ToolError::InvalidParams("time_limit_seconds is between 1 and 600".into()));
+    }
+    wait_for_schemes(workspace, call, cx).await?;
+    cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_select(scheme.as_deref(), destination.as_deref(), cx)))?;
+    let scheme_name = cx.update(|cx| workspace.read(cx).build.read(cx).scheme.clone()).unwrap_or_default();
+    let permission = permit(call, workspace, "ProfileProject", format!("Profile “{scheme_name}” with {template}"), args, cx).await?;
+    let window = cx.update(|cx| workspace.read(cx).window);
+    let started = Instant::now();
+    let generation = cx
+        .update(|cx| window.update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.mcp_profile(template.clone(), time_limit as u32, window, cx))))
+        .map_err(|e| e.to_string())
+        .and_then(|started| started);
+    let generation = match generation {
+        Ok(generation) => generation,
+        Err(message) => {
+            finish(&permission, false, cx);
+            return Err(message.into());
+        }
+    };
+    let mut last_message = String::new();
+    loop {
+        cx.background_executor().timer(Duration::from_millis(250)).await;
+        let (current, busy, message) = cx.update(|cx| {
+            let build = workspace.read(cx).build.read(cx);
+            let message = match &build.recording {
+                Some(recording) if recording.stopping => format!("Saving the {} trace", recording.template),
+                Some(recording) => format!("Recording {}", recording.template),
+                None => phase_label(&build.phase).to_string(),
+            };
+            (build.generation, build.phase.is_busy(), message)
+        });
+        if current != generation {
+            finish(&permission, false, cx);
+            return Err(ToolError::Failed("Another build, run or test started in zcode and replaced this one.".into()));
+        }
+        if call.cancelled() {
+            cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(cx)));
+            finish(&permission, false, cx);
+            return Err(ToolError::Cancelled);
+        }
+        if !busy {
+            break;
+        }
+        if message != last_message {
+            call.progress(&message);
+            last_message = message;
+        }
+    }
+    let value = cx.update(|cx| {
+        let ws = workspace.read(cx);
+        let build = ws.build.read(cx);
+        let (status, success) = match &build.phase {
+            Phase::Finished { success, .. } => (if *success { "succeeded" } else { "failed" }, *success),
+            Phase::Stopped => ("stopped", false),
+            _ => ("unknown", false),
+        };
+        let issues = ws.mcp_build_issues(cx);
+        let errors: Vec<Value> = issues.iter().filter(|i| i.severity == Severity::Error).map(issue_json).collect();
+        let outcome = build.last_profile.clone().unwrap_or_default();
+        let console = &build.console;
+        json!({
+            "action": "profile",
+            "status": status,
+            "success": success,
+            "scheme": build.scheme,
+            "destination": build.destination.as_ref().map(|d| d.name.clone()),
+            "template": template,
+            "duration_seconds": round(started.elapsed().as_secs_f64()),
+            "trace": outcome.trace,
+            "opened_in_instruments": outcome.opened,
+            "error": outcome.error,
+            "errors": errors,
+            "summary": outcome.summary.map(|s| json!({
+                "process": s.process,
+                "samples": s.samples,
+                "functions": s.functions.iter().take(25).map(|f| json!({
+                    "function": f.name,
+                    "binary": f.binary,
+                    "self_percent": round(100. * f.self_weight as f64 / s.total_weight.max(1) as f64),
+                    "total_percent": round(100. * f.total_weight as f64 / s.total_weight.max(1) as f64),
+                })).collect::<Vec<_>>(),
+            })),
+            "console": console[console.len().saturating_sub(40)..],
+        })
+    });
+    finish(&permission, value["success"] == true, cx);
+    Ok(ToolOutput::json(value))
+}
+
 fn test_summary<'a>(tests: impl Iterator<Item = &'a crate::build::log::TestResult>) -> Value {
     let tests: Vec<_> = tests.collect();
     let count = |status| tests.iter().filter(|t| t.status == status).count();
@@ -854,7 +963,7 @@ mod tests {
             [
                 "XcodeListSchemes", "XcodeSwitchScheme", "XcodeListRunDestinations", "XcodeSwitchRunDestination", "BuildProject", "RunProject",
                 "StopProject", "RunAllTests", "RunSomeTests", "GetTestList", "XcodeListNavigatorIssues", "GetBuildLog", "GetConsoleOutput",
-                "XcodeGetCurrentFile", "OpenFile", "EvaluateInDebugger", "TakeScreenshot",
+                "XcodeGetCurrentFile", "OpenFile", "EvaluateInDebugger", "TakeScreenshot", "ProfileProject",
             ]
         );
         for definition in &definitions {
@@ -865,7 +974,7 @@ mod tests {
             assert_eq!(definition["annotations"]["readOnlyHint"], tool(name).unwrap().read_only);
         }
         let asking: Vec<&str> = TOOLS.iter().filter(|t| t.asks).map(|t| t.name).collect();
-        assert_eq!(asking, ["BuildProject", "RunProject", "StopProject", "RunAllTests", "RunSomeTests", "EvaluateInDebugger"]);
+        assert_eq!(asking, ["BuildProject", "RunProject", "StopProject", "RunAllTests", "RunSomeTests", "EvaluateInDebugger", "ProfileProject"]);
         assert!(TOOLS.iter().all(|t| !t.asks || !t.read_only));
         assert_eq!((tool("OpenFile").unwrap().schema)()["required"], json!(["path"]));
         assert_eq!((tool("RunSomeTests").unwrap().schema)()["required"], json!(["tests"]));
