@@ -613,15 +613,49 @@ impl<M: InputModeKind> TextElement<M> {
             }
         }
         if state.annotations.has_blocks() {
+            let lay_out = |block: crate::annotations::BlockRef<'_>, row: usize, window: &mut Window| {
+                let font = gpui::Font { weight: block.block.font_weight.unwrap_or(font.weight), ..font.clone() };
+                block
+                    .block
+                    .lines
+                    .iter()
+                    .enumerate()
+                    .map(|(line, text)| LaidOutBlockLine {
+                        shaped: window.text_system().shape_line(
+                            text.clone(),
+                            font_size,
+                            &[TextRun {
+                                len: text.len(),
+                                font: font.clone(),
+                                color: block.block.color.unwrap_or(muted),
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            }],
+                            None,
+                        ),
+                        background: block.block.background,
+                        key: block.key.clone(),
+                        row: row as u32,
+                        line,
+                        clickable: block.block.clickable,
+                    })
+                    .collect::<Vec<_>>()
+            };
             let blocks = state.annotations.blocks_by_row(&state.anchors, &state.text);
             for &line in &last_layout.visible_buffer_lines {
                 let Some(blocks) = blocks.get(&line) else { continue };
+                // A block above the next row is laid out below this one.
                 let rows = blocks
                     .iter()
-                    .flat_map(|block| block.lines.iter().map(move |text| (text, block.color, block.background)))
-                    .map(|(text, color, background)| (shape(text, color, None, window), background))
+                    .flat_map(|block| lay_out(*block, if block.block.above { line + 1 } else { line }, window))
                     .collect();
                 layout.blocks.insert(line, rows);
+            }
+            if last_layout.visible_buffer_lines.first() == Some(&0) {
+                for block in state.annotations.top_blocks(&state.anchors, &state.text) {
+                    layout.top_blocks.extend(lay_out(block, 0, window));
+                }
             }
         }
         layout
@@ -2616,11 +2650,24 @@ struct LaidOutInlay {
     background: bool,
 }
 
-/// The visible inlays (sorted by offset) and blocks (by buffer line).
+/// A block's line, shaped.
+pub(super) struct LaidOutBlockLine {
+    shaped: ShapedLine,
+    background: Option<Hsla>,
+    key: SharedString,
+    /// The block's row.
+    row: u32,
+    line: usize,
+    clickable: bool,
+}
+
+/// The visible inlays (sorted by offset) and blocks (by the buffer line they
+/// go below, and above the first line).
 #[derive(Default)]
 pub(super) struct AnnotationLayout {
     inlays: Vec<LaidOutInlay>,
-    blocks: std::collections::BTreeMap<usize, Vec<(ShapedLine, Option<Hsla>)>>,
+    blocks: std::collections::BTreeMap<usize, Vec<LaidOutBlockLine>>,
+    top_blocks: Vec<LaidOutBlockLine>,
 }
 
 pub(super) struct PrepaintState {
@@ -2663,7 +2710,9 @@ pub(super) struct PrepaintState {
     gutter_hitbox: Option<Hitbox>,
     gutter_geometry: GutterGeometry,
     /// Each visible line's block rows, shaped, with their backgrounds.
-    blocks: std::collections::BTreeMap<usize, Vec<(ShapedLine, Option<Hsla>)>>,
+    blocks: std::collections::BTreeMap<usize, Vec<LaidOutBlockLine>>,
+    /// The block rows above the first line, when it's visible.
+    top_blocks: Vec<LaidOutBlockLine>,
 }
 
 impl PrepaintState {
@@ -3082,6 +3131,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         );
 
         let blocks = std::mem::take(&mut annotations.blocks);
+        let top_blocks = std::mem::take(&mut annotations.top_blocks);
         let mut longest_line_width = wrap_width.unwrap_or(px(0.));
         // 1. Single line
         // 2. Multi-line with soft wrap disabled.
@@ -3403,6 +3453,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             gutter_hitbox,
             gutter_geometry,
             blocks,
+            top_blocks,
         }
     }
 
@@ -3574,6 +3625,35 @@ impl<M: InputModeKind> Element for TextElement<M> {
         // Track the y-position of the cursor row for positioning the first line suffix
         let mut cursor_row_y = None;
 
+        // Block lines as painted, for clicks; those above the first line first.
+        let mut painted_blocks = vec![];
+        let block_left = origin.x + prepaint.last_layout.line_number_width;
+        let block_width = bounds.size.width - prepaint.last_layout.line_number_width;
+        let paint_block_lines = |block: &[LaidOutBlockLine], mut y: Pixels, text_x: Pixels, painted: &mut Vec<_>, window: &mut Window, cx: &mut App| {
+            for laid in block {
+                let row_bounds = Bounds::new(point(block_left, y), size(block_width, line_height));
+                if let Some(background) = laid.background {
+                    window.paint_quad(fill(row_bounds, background));
+                }
+                _ = laid.shaped.paint(point(text_x, y), line_height, TextAlign::Left, None, window, cx);
+                painted.push(crate::annotations::PaintedBlockLine {
+                    key: laid.key.clone(),
+                    row: laid.row,
+                    line: laid.line,
+                    bounds: row_bounds,
+                    text_x,
+                    shaped: laid.shaped.clone(),
+                    clickable: laid.clickable,
+                });
+                y += line_height;
+            }
+        };
+        if !prepaint.top_blocks.is_empty() {
+            let y = origin.y + offset_y - line_height * prepaint.top_blocks.len() as f32;
+            let text_x = origin.x + prepaint.last_layout.line_number_width + scroll_offset;
+            paint_block_lines(&prepaint.top_blocks, y, text_x, &mut painted_blocks, window, cx);
+        }
+
         for (line, &buffer_line) in prepaint
             .last_layout
             .lines
@@ -3598,20 +3678,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
             );
             // Its blocks, in the rows reserved below it.
             if let Some(block) = prepaint.blocks.get(&buffer_line) {
-                let mut y = line_y + line.text_height(line_height);
-                for (shaped, background) in block {
-                    if let Some(background) = background {
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                point(origin.x + prepaint.last_layout.line_number_width, y),
-                                size(bounds.size.width - prepaint.last_layout.line_number_width, line_height),
-                            ),
-                            *background,
-                        ));
-                    }
-                    _ = shaped.paint(point(p.x, y), line_height, TextAlign::Left, None, window, cx);
-                    y += line_height;
-                }
+                let y = line_y + line.text_height(line_height);
+                paint_block_lines(block, y, p.x, &mut painted_blocks, window, cx);
             }
             offset_y += line.size(line_height).height;
 
@@ -3800,6 +3868,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
         }
 
         self.paint_mouse_listeners(&prepaint.hitbox, window, cx);
+        // A clickable block (a header) takes the pointer.
+        let mouse = window.mouse_position();
+        if painted_blocks.iter().any(|line| line.clickable && line.bounds.contains(&mouse)) {
+            window.set_cursor_style(gpui::CursorStyle::PointingHand, &prepaint.hitbox);
+        }
+        self.state.update(cx, |state, _| state.annotations.painted_blocks = painted_blocks);
         if let (Some(gutter), Some(hitbox)) = (prepaint.gutter.clone(), prepaint.gutter_hitbox.clone()) {
             self.paint_gutter_listeners(gutter, hitbox, window);
         }

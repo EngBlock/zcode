@@ -2225,6 +2225,13 @@ impl<M: InputModeKind> InputBaseState<M> {
         if window.default_prevented() {
             return;
         }
+        // A clickable block (a header) reports the click instead.
+        if event.button == MouseButton::Left
+            && let Some(click) = self.block_click_at(event.position, event.click_count, event.modifiers)
+        {
+            cx.emit(click);
+            return;
+        }
         self.undo_manager.break_transaction_coalescing();
         // Input has its own text selection; suppress the window-level text
         // selection (Root) so it does not start a drag from here.
