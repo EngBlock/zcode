@@ -1272,6 +1272,339 @@ INFO_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+def png_bytes(w, h, rgba):
+    """A solid-color PNG."""
+    import struct
+    import zlib
+    raw = b"".join(b"\x00" + bytes(rgba) * w for _ in range(h))
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def tree_snapshot(root):
+    """Every file under `root` with its bytes."""
+    out = {}
+    for folder, _, files in os.walk(root):
+        for name in files:
+            path = os.path.join(folder, name)
+            out[os.path.relpath(path, root)] = open(path, "rb").read()
+    return out
+
+
+def asset_catalog_checks(samples):
+    """The asset catalog editor on a copy of HelloClassic (group-based: the
+    catalog is one file reference) whose Assets.xcassets gets the fixture
+    catalog's sets (tests/fixtures/xcassets, Contents.json as Xcode writes
+    them), and a copy of HelloZ (synchronized) given that catalog. Files
+    are dropped through the window's own file-drop events (as Finder's
+    drags arrive); fields are typed into. Every edit's Contents.json is
+    checked byte for byte, then undone to the original bytes, and actool
+    compiles what zcode wrote."""
+    fixture = os.path.join(ROOT, "tests", "fixtures", "xcassets", "Assets.xcassets")
+    project = os.path.join(WORK, "Assets", "HelloClassic")
+    shutil.copytree(os.path.join(samples, "HelloClassic"), project)
+    catalog = os.path.join(project, "HelloClassic", "Assets.xcassets")
+    for name in os.listdir(fixture):
+        if name != "Contents.json":
+            shutil.copytree(os.path.join(fixture, name), os.path.join(catalog, name))
+    pbxproj = os.path.join(project, "HelloClassic.xcodeproj", "project.pbxproj")
+    pbxproj_before = open(pbxproj, "rb").read()
+    original = tree_snapshot(catalog)
+    drops = os.path.join(WORK, "Assets", "drops")
+    os.makedirs(drops)
+    orange = os.path.join(drops, "orange.png")
+    open(orange, "wb").write(png_bytes(48, 48, (255, 149, 0, 255)))
+    hero2x = os.path.join(drops, "hero@2x.png")
+    open(hero2x, "wb").write(png_bytes(64, 64, (0, 122, 255, 255)))
+    hero3x = os.path.join(drops, "hero@3x.png")
+    open(hero3x, "wb").write(png_bytes(96, 96, (0, 122, 255, 255)))
+    contents = lambda *rel: open(os.path.join(catalog, *rel, "Contents.json")).read()
+
+    def assets(z):
+        return z.dump()["asset_catalog"] or {}
+
+    def wait_assets(z, predicate, timeout=30):
+        deadline = time.time() + timeout
+        while True:
+            a = assets(z)
+            if a and not a["busy"] and predicate(a):
+                return a
+            if time.time() > deadline:
+                a = {k: v for k, v in a.items() if k not in ("outline", "places")}
+                raise TimeoutError("asset catalog: " + json.dumps(a)[:1500])
+            time.sleep(0.2)
+
+    def edited(z, count):
+        return wait_assets(z, lambda a: len(a["undo"]) == count)
+
+    z = Zcode(project)
+    try:
+        def opens_as_a_tab():
+            z.run(f"open {catalog}")
+            a = wait_assets(z, lambda a: a["loaded"])
+            s = z.dump()
+            assert any(p["active"] == "Assets.xcassets" for p in s["panes"]["list"]), s["panes"]
+            assert [o["name"] for o in a["outline"]] == ["AccentColor", "AppIcon", "Brand", "Icons", "Logo", "Seed"], a["outline"]
+            assert a["sets"] == 7 and a["type"] == "Asset Catalog", a
+            # A set opens the catalog on it, in the same tab.
+            z.run(f"open {os.path.join(catalog, 'Logo.imageset')}")
+            a = wait_assets(z, lambda a: a["selected_name"] == "Logo")
+            assert sum(p["tabs"].count("Assets.xcassets") for p in z.dump()["panes"]["list"]) == 1
+            assert [(sl["row"], sl["label"], sl["filename"]) for sl in a["slots"][:3]] == [
+                ("Universal · Any Appearance", "1x", "logo.png"),
+                ("Universal · Any Appearance", "2x", "logo@2x.png"),
+                ("Universal · Any Appearance", "3x", None)], a["slots"]
+            assert a["unassigned"] == ["stray.png"] and a["properties"] == [["template-rendering-intent", "original"]], a
+            a = wait_assets(z, lambda a: [sl["thumbnail"] for sl in a["slots"][:2]] == ["ready", "ready"])
+
+        check("Asset catalog: an .xcassets opens as a tab (a set opens it on that set); the outline, rows and wells as Xcode lays them out, PNG thumbnails decoded off the main thread", opens_as_a_tab)
+
+        def vector_and_other_sets():
+            z.run(f"open {catalog}", "assets select Icons/Badge")
+            a = wait_assets(z, lambda a: a["slots"] and a["slots"][0]["thumbnail"] == "ready")
+            assert a["type"] == "Image Set" and a["slots"][0]["label"] == "Single Scale", a["slots"]
+            z.run("assets slot 0", "wait 200")
+            assert assets(z)["properties"] == [["preserves-vector-representation", "true"]]
+            z.run("assets select Icons/Star")
+            a = wait_assets(z, lambda a: a["slots"] and a["slots"][0]["thumbnail"] == "ready")
+            assert a["type"] == "Symbol Image Set", a
+            z.run("assets select AppIcon")
+            a = wait_assets(z, lambda a: a["slots"] and a["slots"][0]["thumbnail"] == "ready")
+            assert [sl["row"] + " " + sl["label"] for sl in a["slots"]] == [
+                "iOS 1024pt Any Appearance", "iOS 1024pt Dark", "iOS 1024pt Tinted", "Mac 16pt 1x", "Mac 16pt 2x"], a["slots"]
+            z.run("assets select Seed")
+            a = wait_assets(z, lambda a: a["type"] == "Data Set")
+            assert a["slots"][0]["filename"] == "seed.json", a["slots"]
+
+        check("Asset catalog: a PDF drawn by Core Graphics, an SVG symbol by resvg, app icon wells by platform and appearance, a data set", vector_and_other_sets)
+
+        def color_components():
+            z.run(f"open {catalog}", "assets select Brand")
+            a = wait_assets(z, lambda a: a["type"] == "Color Set")
+            assert [(sl["label"], sl["color"]) for sl in a["slots"]] == [("Any Appearance", "#2E4A73"), ("Dark", "#7A98BF")], a["slots"]
+            # Click the Dark well, then type over Red in its 8-bit hex field.
+            x, y = a["places"]["well:1"]
+            z.run(f"click {x} {y}", "wait 300")
+            a = assets(z)
+            assert a["slot"] == 1 and a["components"] == [["red", "0x7A"], ["green", "0x98"], ["blue", "0xBF"], ["alpha", "1.000"]], a["components"]
+            z.run("assets field red", "keys cmd-a", "type 0xFF", "keys enter")
+            a = edited(z, 1)
+            assert a["slots"][1]["color"] == "#FF98BF" and a["undo"] == ["Change Color"], a
+            expected = original["Brand.colorset/Contents.json"].decode().replace('"red" : "0x7A"', '"red" : "0xFF"')
+            assert contents("Brand.colorset") == expected, contents("Brand.colorset")
+            # Alpha is floating point whatever the input method.
+            z.run("assets color Dark alpha 0.5")
+            edited(z, 2)
+            assert '"alpha" : "0.500",\n          "blue" : "0xBF"' in contents("Brand.colorset"), contents("Brand.colorset")
+            z.run("assets method Dark float")
+            a = edited(z, 3)
+            assert '"red" : "1.000"' in contents("Brand.colorset") and a["slots"][1]["color"] == "#FF98BF80", a["slots"]
+            # ⌘Z three times: the file Xcode wrote, byte for byte.
+            x, y = a["places"]["well:0"]
+            z.run(f"click {x} {y}", "keys cmd-z")
+            edited(z, 2)
+            z.run("keys cmd-z")
+            edited(z, 1)
+            z.run("keys cmd-z")
+            a = edited(z, 0)
+            assert a["redo"] == ["Change Input Method", "Change Color", "Change Color"], a["redo"]
+            assert open(os.path.join(catalog, "Brand.colorset", "Contents.json"), "rb").read() == original["Brand.colorset/Contents.json"], contents("Brand.colorset")
+            z.run("keys cmd-shift-z")
+            edited(z, 1)
+            assert '"red" : "0xFF"' in contents("Brand.colorset"), contents("Brand.colorset")
+            z.run("keys cmd-z")
+            edited(z, 0)
+
+        check("Asset catalog: color swatches from Contents.json; a component typed into its field written in its input method as Xcode does; ⌘Z back to Xcode's bytes, ⇧⌘Z", color_components)
+
+        def drops_into_wells():
+            z.run(f"open {catalog}", "assets select Logo")
+            a = wait_assets(z, lambda a: a["selected_name"] == "Logo" and "well:2" in a["places"])
+            x, y = a["places"]["well:2"]
+            z.run(f"file-drop {x} {y} {orange}")
+            a = edited(z, 1)
+            assert a["slots"][2]["filename"] == "orange.png" and a["undo"] == ["Drop Image"], a["slots"]
+            assert open(os.path.join(catalog, "Logo.imageset", "orange.png"), "rb").read() == open(orange, "rb").read()
+            assert '{\n      "filename" : "orange.png",\n      "idiom" : "universal",\n      "scale" : "3x"\n    },' in contents("Logo.imageset"), contents("Logo.imageset")
+            a = wait_assets(z, lambda a: a["slots"][2]["thumbnail"] == "ready")
+            # Dropped again on the 2x well: logo@2x.png goes, orange.png is
+            # kept by the 3x well, so the copy is "orange 1.png".
+            x, y = a["places"]["well:1"]
+            z.run(f"file-drop {x} {y} {orange}")
+            a = edited(z, 2)
+            assert a["slots"][1]["filename"] == "orange 1.png", a["slots"]
+            assert not os.path.exists(os.path.join(catalog, "Logo.imageset", "logo@2x.png"))
+            # Delete on a well clears it.
+            z.run("assets slot 3x", "keys backspace")
+            a = edited(z, 3)
+            assert a["slots"][2]["filename"] is None and not os.path.exists(os.path.join(catalog, "Logo.imageset", "orange.png")), a["slots"]
+            for count in (2, 1, 0):
+                z.run("keys cmd-z")
+                edited(z, count)
+            assert tree_snapshot(catalog) == original, "undone byte for byte"
+            # Not an image: refused, nothing written.
+            try:
+                z.run(f"assets drop 1x {os.path.join(catalog, 'Seed.dataset', 'seed.json')}")
+                raise AssertionError("a JSON file dropped into an image well")
+            except RuntimeError as e:
+                assert "isn’t an image" in str(e), e
+            assert not assets(z)["undo"]
+
+        check("Asset catalog: a file dropped from Finder into a well is copied into the set and named in Contents.json (the old file goes unless another slot keeps it); Delete clears a well; ⌘Z undoes it all", drops_into_wells)
+
+        def sets_added_renamed_removed():
+            files_before = z.dump()["files"]
+            z.run(f"open {catalog}", "assets select /", "assets new image")
+            a = edited(z, 1)
+            assert a["selected_name"] == "Image" and [sl["label"] for sl in a["slots"]] == ["1x", "2x", "3x"], a
+            assert contents("Image.imageset") == ('{\n  "images" : [\n    {\n      "idiom" : "universal",\n      "scale" : "1x"\n    },\n'
+                                                  '    {\n      "idiom" : "universal",\n      "scale" : "2x"\n    },\n'
+                                                  '    {\n      "idiom" : "universal",\n      "scale" : "3x"\n    }\n  ],\n'
+                                                  '  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  }\n}\n'), contents("Image.imageset")
+            z.wait_for(lambda s: s["files"] == files_before + 1, timeout=15, interval=0.3)
+            # Renamed by typing its name.
+            z.run("assets field name", "keys cmd-a", "type Hero", "keys enter")
+            a = edited(z, 2)
+            assert a["selected_name"] == "Hero" and os.path.isdir(os.path.join(catalog, "Hero.imageset")), a
+            z.run("assets new color")
+            a = edited(z, 3)
+            assert a["selected_name"] == "Color" and contents("Color.colorset") == (
+                '{\n  "colors" : [\n    {\n      "idiom" : "universal"\n    }\n  ],\n  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  }\n}\n')
+            try:
+                z.run("assets rename Brand")
+                raise AssertionError("renamed over Brand")
+            except RuntimeError as e:
+                assert "already exists" in str(e), e
+            assert len(assets(z)["undo"]) == 3
+            # An unset color gets its first component.
+            z.run("assets slot 0", "assets color red 0.5")
+            a = edited(z, 4)
+            assert a["slots"][0]["color"] == "#80FFFF", a["slots"]
+            # Files dropped on the outline: an image set named for them, by scale.
+            x, y = a["places"]["row:Seed"]
+            z.run(f"file-drop {x} {y} {hero2x};{hero3x}")
+            a = edited(z, 5)
+            assert a["selected_name"] == "hero 1" and [(sl["label"], sl["filename"]) for sl in a["slots"]] == [
+                ("1x", None), ("2x", "hero@2x.png"), ("3x", "hero@3x.png")], a["slots"]
+            # Remove Selected Items with Delete.
+            x, y = a["places"]["row:Hero"]
+            z.run(f"click {x} {y}", "keys backspace")
+            a = edited(z, 6)
+            assert "Hero" not in [o["name"] for o in a["outline"]] and not os.path.exists(os.path.join(catalog, "Hero.imageset")), a["outline"]
+            assert open(pbxproj, "rb").read() == pbxproj_before, "project.pbxproj untouched (the catalog is one file reference)"
+            for count in range(5, -1, -1):
+                z.run("assets undo")
+                edited(z, count)
+            assert tree_snapshot(catalog) == original, "every edit undone, byte for byte"
+            z.wait_for(lambda s: s["files"] == files_before, timeout=15, interval=0.3)
+
+        check("Asset catalog: New Image Set and New Color Set written as Xcode writes them, renamed by typing, files dropped on the outline become a set by scale, Delete removes a set; project.pbxproj untouched; ⌘Z all the way back", sets_added_renamed_removed)
+
+        def reopened_after_relaunch():
+            z.run(f"open {os.path.join(catalog, 'Brand.colorset')}", "wait 300")
+            z.quit()
+            z2 = Zcode(project)
+            try:
+                a = z2.wait_for(lambda s: s["asset_catalog"] and s["asset_catalog"]["loaded"], timeout=30, interval=0.3)["asset_catalog"]
+                assert a["root"] == os.path.realpath(catalog), a["root"]
+            finally:
+                z2.quit()
+
+        check("Asset catalog: the tab comes back after a relaunch", reopened_after_relaunch)
+    finally:
+        z.quit()
+
+    def synchronized_project_and_actool():
+        hello = os.path.join(WORK, "Assets", "HelloZ")
+        shutil.copytree(os.path.join(samples, "HelloZ"), hello)
+        assets_dir = os.path.join(hello, "HelloZ", "Assets.xcassets")
+        shutil.copytree(fixture, assets_dir)
+        # Not what actool takes: a stray file, a toy SVG that isn't an SF
+        # Symbols template, a 64-pixel app icon.
+        for name in ("Logo.imageset", "Icons/Star.symbolset", "AppIcon.appiconset"):
+            shutil.rmtree(os.path.join(assets_dir, name))
+        pbx = os.path.join(hello, "HelloZ.xcodeproj", "project.pbxproj")
+        before = open(pbx, "rb").read()
+        z = Zcode(hello)
+        try:
+            z.run(f"open {assets_dir}")
+            wait_assets(z, lambda a: a["loaded"])
+            z.run("assets new color")
+            edited(z, 1)
+            z.run("assets color 0 red 0.8")
+            edited(z, 2)
+            z.run("assets select /")
+            a = wait_assets(z, lambda a: a["selected_name"] == "Assets" and "row:Seed" in a["places"])
+            x, y = a["places"]["row:Seed"]
+            z.run(f"file-drop {x} {y} {hero2x};{orange}")
+            edited(z, 3)
+            z.run("assets select Brand", "assets color Dark green 0x10")
+            edited(z, 4)
+        finally:
+            z.quit()
+        assert open(pbx, "rb").read() == before, "a synchronized folder needs no project edits"
+        out = os.path.join(WORK, "Assets", "actool")
+        os.makedirs(out)
+        result = subprocess.run(["xcrun", "actool", "--compile", out, "--platform", "iphonesimulator",
+                                 "--minimum-deployment-target", "17.0",
+                                 "--output-partial-info-plist", os.path.join(out, "partial.plist"),
+                                 "--output-format", "human-readable-text", "--errors", "--warnings", assets_dir],
+                                capture_output=True, text=True)
+        assert result.returncode == 0 and "error" not in result.stdout.lower(), result.stdout + result.stderr
+        info = json.loads(subprocess.run(["xcrun", "assetutil", "--info", os.path.join(out, "Assets.car")],
+                                         capture_output=True, text=True, check=True).stdout)
+        names = {i.get("Name") for i in info}
+        assert {"Color", "Brand", "hero", "orange", "Icons/Badge", "Seed"} <= names, sorted(n for n in names if n)
+
+    check("Asset catalog: in a synchronized project (HelloZ) nothing in project.pbxproj changes, and actool compiles what zcode wrote (new color, edited colors, dropped images)", synchronized_project_and_actool)
+
+    def huge_catalog_stays_responsive():
+        big = os.path.join(WORK, "Assets", "Big")
+        shutil.copytree(os.path.join(samples, "HelloClassic"), big)
+        big_catalog = os.path.join(big, "HelloClassic", "Assets.xcassets")
+        image = png_bytes(256, 256, (88, 86, 214, 255))
+        info = '  "info" : {\n    "author" : "xcode",\n    "version" : 1\n  }\n'
+        for i in range(3000):
+            folder = os.path.join(big_catalog, f"Group{i // 300}", f"Image{i:04}.imageset")
+            os.makedirs(folder)
+            open(os.path.join(folder, "img.png"), "wb").write(image)
+            open(os.path.join(folder, "Contents.json"), "w").write(
+                '{\n  "images" : [\n    {\n      "filename" : "img.png",\n      "idiom" : "universal",\n      "scale" : "1x"\n    }\n  ],\n' + info + '}\n')
+        z = Zcode(big)
+        try:
+            started = time.time()
+            z.run(f"open {big_catalog}")
+            # The window answers while the catalog is read.
+            slowest = 0
+            while True:
+                t = time.time()
+                a = assets(z)
+                slowest = max(slowest, time.time() - t)
+                if a.get("loaded"):
+                    break
+                assert time.time() - started < 30, "catalog loaded"
+            # And the sample's AccentColor.
+            assert a["sets"] == 3001 and len(a["outline"]) == 11, (a["sets"], len(a["outline"]))
+            z.run("assets expand Group5", "assets select Group5/Image1500")
+            a = wait_assets(z, lambda a: a["slots"] and a["slots"][0]["thumbnail"] == "ready")
+            z.run("assets select Group9")
+            a = wait_assets(z, lambda a: a["thumbnails"]["decoded"] > 5 and a["selected_name"] == "Group9")
+            time.sleep(1)
+            a = assets(z)
+            # Only the tiles on screen are decoded, not the folder's 300.
+            assert a["thumbnails"]["decoded"] < 120, a["thumbnails"]
+            assert a["thumbnails"]["bytes"] < 64 * 1024 * 1024, a["thumbnails"]
+            print(f"    3,000 sets read in {time.time() - started:.2f} s; slowest dump meanwhile {slowest * 1000:.0f} ms; {a['thumbnails']}")
+            assert slowest < 1.0, slowest
+        finally:
+            z.quit()
+
+    check("Asset catalog: 3,000 image sets read off the main thread, only the thumbnails on screen decoded", huge_catalog_stays_responsive)
+
+
 def plist_rows(z):
     return z.dump()["active"]["plist"]
 
@@ -5587,6 +5920,9 @@ def main():
 
     print("Archive and Distribute App (copies of HelloClassic and HelloZ; uploads and notarization through scripts/fake_distribute.py):")
     archive_checks(samples)
+
+    print("Asset catalogs (copies of HelloClassic and HelloZ with tests/fixtures/xcassets):")
+    asset_catalog_checks(samples)
 
     print("Property lists, Info and Signing & Capabilities (copies of HelloZ and HelloClassic):")
     plist_checks(samples)
