@@ -266,7 +266,7 @@ impl Workspace {
                     .separator()
                     .item(PopupMenuItem::new("Open in Xcode").on_click(move |_, _, cx| {
                         let bundle = bundle.clone();
-                        cx.background_spawn(async move { super::project_settings::open_in_xcode(&bundle) }).detach();
+                        cx.background_spawn(async move { crate::xcode_app::open_project(&bundle) }).detach();
                     }))
                     .item(PopupMenuItem::new("Show in Finder").on_click(move |_, _, cx| cx.reveal_path(&reveal)))
                 })

@@ -34,5 +34,6 @@ pub mod testing;
 pub mod toolchain;
 pub mod welcome;
 pub mod workspace;
+pub mod xcode_app;
 pub mod xcassets;
 pub mod xcodeproj;

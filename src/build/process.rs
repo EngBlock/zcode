@@ -79,7 +79,7 @@ impl ProcessHandle {
 /// its background threads (GCD's), which block SIGTERM, SIGINT, SIGHUP and
 /// most others, and a child inherits that: Stop's SIGTERM would wait for
 /// the SIGKILL after it, and xctrace would never see Ctrl-C's SIGINT.
-fn unblock_signals(cmd: &mut Command) {
+pub fn unblock_signals(cmd: &mut Command) {
     unsafe {
         cmd.pre_exec(|| {
             let mut none: libc::sigset_t = std::mem::zeroed();

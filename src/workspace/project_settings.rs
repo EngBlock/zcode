@@ -503,7 +503,7 @@ impl ProjectSettings {
 
     fn open_in_xcode(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.paths.get(self.selection.project).cloned() else { return };
-        cx.background_spawn(async move { open_in_xcode(&path) }).detach();
+        cx.background_spawn(async move { crate::xcode_app::open_project(&path) }).detach();
     }
 
     // ------------------------------------------------------------------
@@ -869,25 +869,6 @@ fn field_row(field: &Field, suffix: Option<AnyElement>, cx: &App) -> impl IntoEl
         )
         .child(div().flex_1().min_w_0().child(Input::new(&field.input).small()))
         .when_some(suffix, |el, suffix| el.child(suffix))
-}
-
-/// Opens the project in the Xcode that `xcode-select` points at.
-pub(super) fn open_in_xcode(path: &Path) {
-    let app = std::process::Command::new("/usr/bin/xcode-select")
-        .arg("-p")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
-        .and_then(|dev| dev.ancestors().find(|p| p.extension().is_some_and(|e| e == "app")).map(Path::to_path_buf));
-    let mut open = std::process::Command::new("/usr/bin/open");
-    match app {
-        Some(app) => open.arg("-a").arg(app),
-        None => open.args(["-b", "com.apple.dt.Xcode"]),
-    };
-    if let Err(err) = open.arg(path).status() {
-        log::warn!("couldn’t open {} in Xcode: {err}", path.display());
-    }
 }
 
 impl Render for ProjectSettings {
