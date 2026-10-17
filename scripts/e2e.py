@@ -2713,12 +2713,14 @@ def multibuffer_checks(samples):
         assert z.dump()["find_results"] == 400
         z.run("multibuffer find", "wait 300")
         m = mb()
-        assert m["pending_files"] == 375 and len(m["files"]) == 25, (m["pending_files"], len(m["files"]))
+        # A page, or two when one doesn't fill two screens.
+        assert len(m["files"]) in (25, 50) and m["pending_files"] == 400 - len(m["files"]), (m["pending_files"], len(m["files"]))
+        shown = len(m["files"])
         assert m["last_page_ms"] < 500, m["last_page_ms"]
         print(f"      first page of 25 files: {m['last_page_ms']:.1f} ms")
         # Scrolling to the end adds the next pages.
         z.run("keys cmd-down", "wait 400", "keys cmd-down", "wait 400")
-        assert len(mb()["files"]) > 25, len(mb()["files"])
+        assert len(mb()["files"]) > shown, len(mb()["files"])
         z.run("multibuffer all", "wait 300")
         m = mb()
         assert m["pending_files"] == 0 and len(m["files"]) == 400 and m["matches"] == 400, (len(m["files"]), m["matches"])
@@ -2730,6 +2732,11 @@ def multibuffer_checks(samples):
         assert stats["median_ms"] < 16 and mb()["dirty"], stats
         z.run("keys cmd-z", "wait 300")
         assert not mb()["dirty"]
+        # Closed, it lets go of the files only it had open.
+        assert sum(b.startswith("note") for b in z.dump()["buffers"]) == 400
+        z.run("keys cmd-w", "wait 300")
+        s = z.dump()
+        assert not any(b.startswith("note") for b in s["buffers"]), s["buffers"][:10]
 
     try:
         check("Multibuffer: Rename (sourcekit-lsp) shows the places it changed, unsaved; one ⌘Z undoes it", rename_preview)
