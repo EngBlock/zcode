@@ -8,7 +8,10 @@ through both ways, and:
     test can count requests;
   * removes the capabilities named in `$ZCODE_LSP_PROXY_HIDE` (comma
     separated, e.g. `inlayHintProvider,callHierarchyProvider`) from the
-    server's `initialize` answer, to check zcode does without them.
+    server's `initialize` answer, to check zcode does without them;
+  * with `$ZCODE_LSP_PROXY_INLINE_TEXT`, offers `inlineCompletionProvider`
+    (sourcekit-lsp has none) and answers `textDocument/inlineCompletion`
+    itself with one item inserting that text at the position.
 """
 
 import json
@@ -19,8 +22,11 @@ import threading
 
 LOG = os.environ.get("ZCODE_LSP_PROXY_LOG")
 HIDE = [c for c in os.environ.get("ZCODE_LSP_PROXY_HIDE", "").split(",") if c]
+INLINE_TEXT = os.environ.get("ZCODE_LSP_PROXY_INLINE_TEXT")
 initialize_ids = set()
 log_lock = threading.Lock()
+# Both threads write to zcode.
+out_lock = threading.Lock()
 
 
 def read_message(stream):
@@ -42,8 +48,9 @@ def read_message(stream):
 
 def write_message(stream, message):
     body = json.dumps(message).encode()
-    stream.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
-    stream.flush()
+    with out_lock:
+        stream.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+        stream.flush()
 
 
 def client_to_server(server):
@@ -54,6 +61,10 @@ def client_to_server(server):
         if LOG and method:
             with log_lock, open(LOG, "a") as log:
                 log.write(method + "\n")
+        if INLINE_TEXT is not None and method == "textDocument/inlineCompletion":
+            items = [{"insertText": INLINE_TEXT}] if INLINE_TEXT else []
+            write_message(sys.stdout.buffer, {"jsonrpc": "2.0", "id": message["id"], "result": {"items": items}})
+            continue
         write_message(server.stdin, message)
     server.stdin.close()
 
@@ -64,6 +75,8 @@ def server_to_client(server):
             capabilities = message.get("result", {}).get("capabilities", {})
             for name in HIDE:
                 capabilities.pop(name, None)
+            if INLINE_TEXT is not None:
+                capabilities["inlineCompletionProvider"] = True
         write_message(sys.stdout.buffer, message)
 
 

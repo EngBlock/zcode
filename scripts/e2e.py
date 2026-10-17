@@ -71,6 +71,7 @@ XCODE_SHORTCUTS = [
     ("ctrl-cmd-e", "zcode::EditAllInScope", "Editor ▸ Edit All in Scope"),
     ("ctrl-alt-cmd-f", "zcode::FixIssue", "Editor ▸ Fix All Issues"),
     ("ctrl-space", "input::ShowCompletions", "Editor ▸ Show Completions"),
+    ("ctrl-alt-space", "zcode::ShowPredictiveCompletion", "Editor ▸ Show Predictive Completion"),
     ("cmd-+", "zcode::IncreaseFontSize", "Editor ▸ Font Size ▸ Increase"),
     ("cmd--", "zcode::DecreaseFontSize", "Editor ▸ Font Size ▸ Decrease"),
     ("ctrl-cmd-0", "zcode::ResetFontSize", "Editor ▸ Font Size ▸ Reset"),
@@ -3662,6 +3663,347 @@ MCP_READ_ONLY = {"XcodeListSchemes", "XcodeListRunDestinations", "GetTestList", 
                  "GetConsoleOutput", "XcodeGetCurrentFile", "TakeScreenshot"}
 
 
+def prediction_checks(samples):
+    """Predictive code completion on a copy of ZKit, in a configuration
+    folder of its own: off by default (nothing runs); then the Claude API
+    provider against scripts/fake_anthropic.py (no key or network): one
+    debounced, streamed request carrying the file around the cursor and the
+    recent edits; ghost text drawn as an inlay and a block; Tab as one undo
+    step; typing through a prediction; a moved caret cancelling a slow
+    request; Escape and ⌥]; Vim's normal mode, read-only and excluded files
+    left alone; errors in the status bar; ⌃⌥Space with automatic
+    predictions off; typing latency with predictions on and off; the key in
+    no log; then the language server provider through scripts/lsp_proxy.py
+    answering textDocument/inlineCompletion."""
+    project = os.path.realpath(os.path.join(WORK, "PredictKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    with open(greeter) as f:
+        greeter_original = f.read()
+    config = tempfile.mkdtemp(prefix="zcode-e2e-predict-config-")
+    server_dir = tempfile.mkdtemp(prefix="zcode-e2e-anthropic-")
+    port_file, requests_log, reply_file = (os.path.join(server_dir, n) for n in ("port", "requests.jsonl", "reply.json"))
+    stderr_log = os.path.join(server_dir, "zcode-stderr.log")
+    key = "sk-ant-e2e-fake-0123456789"
+    server = subprocess.Popen([sys.executable, os.path.join(ROOT, "scripts", "fake_anthropic.py"), "--port-file", port_file,
+                               "--log", requests_log, "--reply", reply_file, "--key", key],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + 15
+    while not os.path.exists(port_file) and time.time() < deadline:
+        time.sleep(0.1)
+    with open(port_file) as f:
+        port = int(f.read())
+
+    def set_reply(**script):
+        with open(reply_file + ".tmp", "w") as f:
+            json.dump(script, f)
+        os.rename(reply_file + ".tmp", reply_file)
+
+    def requests():
+        try:
+            with open(requests_log) as f:
+                return [json.loads(l) for l in f]
+        except FileNotFoundError:
+            return []
+
+    set_reply(text="name.uppercased()", chunk=4, delay_ms=20)
+    # No language server for the Claude API's checks: its completion menu,
+    # which hides a prediction while it's open, would race with them.
+    env = {"ZCODE_CONFIG_DIR": config, "ZCODE_AGENT_NO_LOGIN_SHELL": "1", "ANTHROPIC_API_KEY": key,
+           "ZCODE_SOURCEKIT_LSP": "/usr/bin/false"}
+    previous_stderr = os.environ.get("ZCODE_E2E_STDERR")
+    os.environ["ZCODE_E2E_STDERR"] = stderr_log
+    try:
+        z = Zcode(project, env)
+    except Exception:
+        server.kill()
+        raise
+    finally:
+        if previous_stderr is None:
+            del os.environ["ZCODE_E2E_STDERR"]
+        else:
+            os.environ["ZCODE_E2E_STDERR"] = previous_stderr
+    init_line = line_of(greeter, "self.name = name")
+
+    def p(s=None):
+        return (s or z.dump())["predictions"]
+
+    def active_text():
+        return z.dump()["active"]["text"]
+
+    def new_line_after_init(text):
+        """A fresh line in init (`        ` indented), `text` typed on it."""
+        z.run(f"open {greeter}:{init_line}", "wait 300", "keys end", "keys enter", f"type {text}")
+
+    def revert():
+        z.run(f"open {greeter}:1", "wait 200")
+        for _ in range(40):
+            if not z.dump()["active"]["dirty"]:
+                break
+            z.run("keys escape", "keys cmd-z")
+        assert active_text() == greeter_original
+
+    def wait_p(predicate, timeout=10):
+        """Waits for the predictions' state to satisfy `predicate`."""
+        deadline = time.time() + timeout
+        while True:
+            s = z.dump()
+            if predicate(p(s)):
+                return s
+            if time.time() > deadline:
+                raise TimeoutError("predictions: " + json.dumps(p(s))[:900])
+            time.sleep(0.2)
+
+    def shown(timeout=10):
+        return wait_p(lambda q: q["shown"] is not None, timeout)
+
+    def off_by_default():
+        new_line_after_init("let shout =")
+        z.run("wait 800", "keys ctrl-alt-space", "wait 500")
+        s = p()
+        assert s["provider"] == "none" and s["requests"] == 0 and s["following"] == 0 and s["indicator"] is None, s
+        assert s["ghost"] == {"inlays": [], "blocks": [], "struck": []}, s
+        assert requests() == [], "nothing sent"
+        revert()
+
+    def streamed_prediction_and_tab():
+        revert()
+        z.run("settings set edit_predictions.provider \"claude\"",
+              f"settings set edit_predictions.claude.api_url \"http://127.0.0.1:{port}\"",
+              "settings set edit_predictions.debounce_ms 200", "wait 300")
+        assert p()["provider"] == "claude" and p()["indicator"] == "Predictions", p()
+        # Streamed slowly enough to watch it grow.
+        set_reply(text=" name.uppercased()", chunk=3, delay_ms=200)
+        new_line_after_init("let shout =")
+        cursor = greeter_original.index("self.name = name") + len("self.name = name") + len("\n        let shout =")
+        seen = []
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            s = p()
+            if s["shown"] and s["shown"]["text"] not in seen:
+                seen.append(s["shown"]["text"])
+            if seen and seen[-1] == " name.uppercased()" and s["status"] == "idle":
+                break
+            time.sleep(0.1)
+        assert seen and seen[-1] == " name.uppercased()" and len(seen) >= 2, f"streamed in pieces: {seen}"
+        s = p()
+        assert s["shown"] == {"start": cursor, "end": cursor, "text": " name.uppercased()"}, s["shown"]
+        assert s["ghost"]["inlays"] == [[cursor, " name.uppercased()"]] and s["ghost"]["blocks"] == [], s["ghost"]
+        assert s["indicator"] == "Prediction: ⇥ to accept", s
+        assert "name.uppercased()" not in active_text(), "ghost text isn't in the buffer"
+        z.run("screenshot " + os.path.join(WORK, "edit-prediction.png"))
+        # One request for the whole burst of typing, with what it needs.
+        sent = requests()
+        assert len(sent) == 1 and s["requests"] == 1, [r["body"]["messages"][0]["content"][-80:] for r in sent]
+        body, = (r["body"] for r in sent)
+        assert sent[0]["key_ok"] and sent[0]["version"] == "2023-06-01" and not sent[0]["hung_up"], sent[0]
+        assert body["model"] == "claude-haiku-5-5" and body["stream"] and body["stop_sequences"] == ["</insert>"], body
+        assert body["output_config"] == {"effort": "low"} and body["max_tokens"] == 256, body
+        prompt = body["messages"][0]["content"]
+        assert '<file path="Sources/ZKit/Greeter.swift" language="swift" first_line="1">' in prompt, prompt
+        assert "self.name = name\n        let shout =<|cursor|>\n    }\n" in prompt, prompt
+        assert "The user's latest edits" in prompt and "+        let shout =" in prompt, prompt
+        # Tab types it, as one undo step.
+        z.run("keys tab", "wait 200")
+        text = active_text()
+        assert "        let shout = name.uppercased()\n    }" in text, text
+        a = z.dump()["active"]
+        assert a["column"] == len("        let shout = name.uppercased()") + 1, a["column"]
+        q = p()
+        assert q["accepted"] == 1 and q["ghost"]["inlays"] in ([], [[cursor + 18, q["shown"] and q["shown"]["text"]]]), q
+        z.run("keys cmd-z", "wait 200")
+        assert "        let shout =\n    }" in active_text(), active_text()
+        revert()
+
+    def multi_line_typing_through_and_dismissing():
+        revert()
+        set_reply(text=" name.uppercased()\n        print(shout)", chunk=8, delay_ms=10)
+        new_line_after_init("let shout =")
+        shown()
+        s = wait_p(lambda q: q["status"] == "idle" and q["ghost"]["blocks"])
+        row = init_line  # the new line's 0-based row
+        assert p(s)["ghost"]["inlays"][0][1] == " name.uppercased()" and p(s)["ghost"]["blocks"] == [[row, ["        print(shout)"]]], p(s)["ghost"]
+        before = p(s)["requests"]
+        # Typing what it predicts keeps the rest, without asking again.
+        z.run("keys space", "type name.", "wait 600")
+        s = p()
+        assert s["shown"]["text"] == "uppercased()\n        print(shout)" and s["requests"] == before, s
+        # ⌥] dismisses it; typing on asks again.
+        z.run("keys alt-]", "wait 200")
+        assert p()["shown"] is None and p()["ghost"]["blocks"] == []
+        assert "‘" not in active_text(), "⌥] didn't type a quote"
+        set_reply(text="ount", chunk=8, delay_ms=10)
+        z.run("type c")
+        shown()
+        assert p()["requests"] == before + 1
+        # Escape dismisses it too (and leaves the text alone).
+        text = active_text()
+        z.run("keys escape", "wait 200")
+        assert p()["shown"] is None and active_text() == text
+        revert()
+
+    def stale_requests_cancelled():
+        revert()
+        set_reply(text="name", chunk=8, delay_ms=10, hold_ms=2500)
+        new_line_after_init("let a =")
+        wait_p(lambda q: q["status"] == "requesting")
+        before = p()["cancelled"]
+        z.run("keys left", "wait 3500")
+        s = p()
+        assert s["cancelled"] == before + 1 and s["shown"] is None and not s["pending"], s
+        assert s["status"] == "idle", s
+        hung_up = [r for r in requests() if r.get("hung_up")]
+        assert hung_up, "the connection was closed"
+        set_reply(text="name", chunk=8, delay_ms=10)
+        revert()
+
+    def left_alone():
+        revert()
+        before = p()["requests"]
+        # Vim's normal mode asks nothing; insert mode does.
+        z.run("vim on", f"open {greeter}:{init_line}", "wait 300", "keys ctrl-alt-space", "wait 600")
+        assert p()["requests"] == before and p()["shown"] is None
+        set_reply(text=" // set", chunk=8, delay_ms=10)
+        z.run("type A", "type x")
+        shown()
+        assert p()["requests"] == before + 1
+        z.run("keys escape", "wait 200")
+        assert p()["shown"] is None and z.dump()["vim"]["mode"] == "INSERT", "Escape closes the prediction first"
+        z.run("keys escape", "vim off", "wait 200")
+        revert()
+        # A read-only file (a package checkout) and a secret one ask nothing.
+        checkout = os.path.join(project, "Vendor", "SourcePackages", "checkouts", "Tally", "Tally.swift")
+        os.makedirs(os.path.dirname(checkout))
+        with open(checkout, "w") as f:
+            f.write("public let tally = 1\n")
+        before = p()["requests"]
+        z.run(f"open {checkout}:1", "wait 300", "keys end", "keys ctrl-alt-space", "wait 600")
+        assert p()["requests"] == before and z.dump()["active"]["read_only"], p()
+        secret = os.path.join(project, ".env")
+        with open(secret, "w") as f:
+            f.write("TOKEN=abc\n")
+        z.run(f"open {secret}:1", "wait 300", "keys end", "type d", "wait 800")
+        s = p()
+        assert s["requests"] == before and s["status"] == "excluded" and s["indicator"] == "Predictions: not for this file", s
+        z.run("keys cmd-z", "keys cmd-w", "wait 200", "keys cmd-w", "wait 200")
+
+    def errors_in_the_status_bar():
+        revert()
+        set_reply(status=529, error_type="overloaded_error", message="Overloaded")
+        new_line_after_init("let a =")
+        s = wait_p(lambda q: q["status"].startswith("failed"))
+        assert p(s)["status"] == "failed: overloaded_error: Overloaded (529)" and p(s)["indicator"] == "Predictions: overloaded_error: Overloaded (529)", p(s)
+        set_reply(text="name", stream_error=True, chunk=8, delay_ms=10)
+        z.run("type b")
+        s = wait_p(lambda q: q["status"] == "failed: overloaded_error: Overloaded")
+        assert p(s)["shown"] is None, "a broken answer is dropped"
+        # A refused key says so, and isn't repeated anywhere.
+        z.run("settings set edit_predictions.claude.api_key \"sk-ant-wrong-e2e-key\"", "wait 200", "type c")
+        wait_p(lambda q: q["status"] == "failed: the API key was refused (401)")
+        assert [r["key_ok"] for r in requests()][-1] is False
+        z.run("settings set edit_predictions.claude.api_key null", "wait 200")
+        set_reply(text="name", chunk=8, delay_ms=10)
+        z.run("type d")
+        shown()
+        revert()
+
+    def asked_for_with_automatic_off():
+        revert()
+        z.run("settings set edit_predictions.automatic false", "wait 300")
+        assert p()["indicator"] == "Predictions: ⌃⌥Space"
+        before = p()["requests"]
+        set_reply(text=" name.count", chunk=8, delay_ms=10)
+        new_line_after_init("let n =")
+        z.run("wait 800")
+        assert p()["requests"] == before and p()["shown"] is None, "nothing while typing"
+        # Editor ▸ Show Predictive Completion (⌃⌥Space, as in Xcode).
+        z.run("keys ctrl-alt-space")
+        shown()
+        assert p()["shown"]["text"] == " name.count" and p()["last_request"]["invoked"], p()
+        z.run("keys tab", "wait 200")
+        assert "        let n = name.count\n" in active_text(), active_text()
+        z.run("settings set edit_predictions.automatic true", "wait 300")
+        revert()
+
+    def typing_latency():
+        revert()
+        set_reply(text="name", chunk=8, delay_ms=10)
+        z.run(f"open {greeter}:{init_line}", "wait 300", "keys end", "keys enter")
+        on = json.loads(z.run("type-latency let measured = name.count + 1")[-1])
+        revert()
+        z.run("settings set edit_predictions.provider \"none\"", "wait 300")
+        assert p()["following"] == 0 and p()["indicator"] is None
+        z.run(f"open {greeter}:{init_line}", "wait 300", "keys end", "keys enter")
+        off = json.loads(z.run("type-latency let measured = name.count + 1")[-1])
+        revert()
+        z.run("settings set edit_predictions.provider \"claude\"", "wait 300")
+        print(f"    keystroke → frame, median / p95: predictions on {on['median_ms']:.1f} / {on['p95_ms']:.1f} ms, "
+              f"off {off['median_ms']:.1f} / {off['p95_ms']:.1f} ms")
+        assert on["median_ms"] < 16 and on["median_ms"] <= max(off["median_ms"] * 1.5, off["median_ms"] + 2), (on, off)
+
+    def key_in_no_log():
+        z.quit()
+        with open(stderr_log) as f:
+            logged = f.read()
+        for secret in (key, "sk-ant-wrong-e2e-key"):
+            assert secret not in logged, "a key in zcode's log"
+        # The control channel's log echoes the commands it ran (the wrong
+        # key was set with one), but no answer of zcode's has a key.
+        with open(os.path.join(DEBUG_DIR, "log"), errors="replace") as f:
+            answers = [l for l in f if not l.startswith(("ok settings set", "err settings set"))]
+        assert not any(key in l or "sk-ant-wrong-e2e-key" in l for l in answers), "a key in the control channel's answers"
+        assert "edit prediction: overloaded_error: Overloaded (529)" in logged, logged[-2000:]
+
+    try:
+        check("Predictions: off by default; nothing asked, followed or shown", off_by_default)
+        check("Predictions (Claude API, fake server): one debounced streamed request with the file and recent edits; ghost text as an inlay; Tab as one undo step", streamed_prediction_and_tab)
+        check("Predictions: several lines as an inlay and a block; typing what it predicts keeps it; ⌥] and Escape dismiss", multi_line_typing_through_and_dismissing)
+        check("Predictions: a caret moved during a slow request cancels it and closes the connection", stale_requests_cancelled)
+        check("Predictions: not in Vim's normal mode, read-only files or files in disabled_globs", left_alone)
+        check("Predictions: API errors and a refused key in the status bar", errors_in_the_status_bar)
+        check("Predictions: Show Predictive Completion (⌃⌥Space) with automatic predictions off", asked_for_with_automatic_off)
+        check("Predictions: typing latency with predictions on stays level with off", typing_latency)
+        check("Predictions: the API key in no log", key_in_no_log)
+    finally:
+        z.quit()
+
+    traffic = os.path.join(server_dir, "lsp-traffic.log")
+
+    def language_server_provider():
+        with open(os.path.join(config, "settings.json"), "w") as f:
+            json.dump({"edit_predictions": {"provider": "lsp", "debounce_ms": 200}}, f)
+        z = Zcode(project, dict(env, ZCODE_SOURCEKIT_LSP=os.path.join(ROOT, "scripts", "lsp_proxy.py"),
+                                ZCODE_LSP_PROXY_LOG=traffic, ZCODE_LSP_PROXY_INLINE_TEXT="name.count"))
+        claude_requests = len(requests())
+        try:
+            z.run(f"open {greeter}:{init_line}")
+            s = z.wait_for(lambda s: s["lsp"] == "Ready", timeout=120)
+            assert s["language_features"]["server"]["inline_completion"], s["language_features"]["server"]
+            z.run("keys end", "keys enter", "type let n =", "keys space")
+            s = z.wait_for(lambda s: s["predictions"]["shown"] is not None, timeout=20, interval=0.3)
+            assert s["predictions"]["shown"]["text"] == "name.count" and s["predictions"]["last_request"]["provider"] == "lsp", s["predictions"]
+            assert s["predictions"]["ghost"]["inlays"][0][1] == "name.count"
+            sent = open(traffic).read().splitlines()
+            assert 1 <= sent.count("textDocument/inlineCompletion") <= 2, sent.count("textDocument/inlineCompletion")
+            z.run("keys tab", "wait 200")
+            assert "        let n = name.count\n" in z.dump()["active"]["text"], z.dump()["active"]["text"]
+            assert len(requests()) == claude_requests, "nothing to the Claude API"
+            for _ in range(20):
+                if not z.dump()["active"]["dirty"]:
+                    break
+                z.run("keys cmd-z")
+        finally:
+            z.quit()
+
+    try:
+        check("Predictions (language server): textDocument/inlineCompletion where the server offers it", language_server_provider)
+    finally:
+        server.kill()
+        server.wait()
+        shutil.rmtree(server_dir, ignore_errors=True)
+        shutil.rmtree(config, ignore_errors=True)
+
+
 def mcp_checks(samples):
     """zcode's MCP server on a copy of ZKit, through `zcode mcp` and
     scripts/mcp_client.py, in a configuration folder of its own: no zcode
@@ -4760,6 +5102,9 @@ def main():
 
     print("zcode as an MCP server (a copy of samples/ZKit, scripts/mcp_client.py):")
     mcp_checks(samples)
+
+    print("Predictive code completion (a copy of samples/ZKit, scripts/fake_anthropic.py):")
+    prediction_checks(samples)
 
     print("Package dependencies (offline, a local repository of the Tally fixture):")
     package_dependency_checks(samples)
