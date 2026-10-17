@@ -139,6 +139,9 @@ impl AssetCatalogView {
                 this.commit_name(window, cx);
             }
         });
+        let stash = Stash::new(stash);
+        let old = stash.clone();
+        cx.background_spawn(async move { old.prune(std::time::Duration::from_secs(24 * 60 * 60)) }).detach();
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             selected: select.clone().unwrap_or_else(|| root.clone()),
@@ -152,7 +155,7 @@ impl AssetCatalogView {
             redo: vec![],
             busy: false,
             error: None,
-            stash: Stash::new(stash),
+            stash,
             lock,
             name,
             name_for: None,

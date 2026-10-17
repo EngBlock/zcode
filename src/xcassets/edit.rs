@@ -53,6 +53,19 @@ impl Stash {
         Self { dir }
     }
 
+    /// Forgets removed files stashed more than `age` ago (their windows'
+    /// undo is long gone). Blocking.
+    pub fn prune(&self, age: std::time::Duration) {
+        let Ok(entries) = std::fs::read_dir(&self.dir) else { return };
+        let now = std::time::SystemTime::now();
+        for entry in entries.flatten() {
+            let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|d| d > age);
+            if old {
+                std::fs::remove_dir_all(entry.path()).ok();
+            }
+        }
+    }
+
     fn slot(&self, path: &Path) -> std::io::Result<PathBuf> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
