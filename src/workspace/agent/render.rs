@@ -150,6 +150,7 @@ impl AgentPanel {
             .rounded(theme.radius)
             .border_1()
             .border_color(theme.border)
+            .overflow_hidden()
             .text_xs()
             .child(
                 h_flex()

@@ -110,6 +110,8 @@ pub struct AgentPanel {
     /// Tool calls' diffs as drawn, by entry and content index.
     diff_cache: HashMap<(usize, usize), std::rc::Rc<Vec<render::DiffLine>>>,
     last_stop: Option<StopReason>,
+    /// The message field's length, to tell a character typed from a deletion.
+    composer_len: usize,
     turn: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -132,11 +134,14 @@ impl AgentPanel {
         let subscriptions = vec![cx.subscribe_in(&composer, window, |this, composer, event: &InputEvent, window, cx| match event {
             InputEvent::PressEnter { shift: false, .. } => this.send(window, cx),
             InputEvent::Change => {
-                // "@" typed at a word's start asks what to mention.
+                // "@" typed at a word's start asks what to mention (not one
+                // a deletion left before the cursor).
                 let state = composer.read(cx);
                 let cursor = state.cursor();
                 let text = state.value();
-                if cursor > 0 && text.get(cursor - 1..cursor) == Some("@") && text[..cursor - 1].chars().last().is_none_or(char::is_whitespace) {
+                let typed = text.len() == this.composer_len + 1;
+                this.composer_len = text.len();
+                if typed && cursor > 0 && text.get(cursor - 1..cursor) == Some("@") && text[..cursor - 1].chars().last().is_none_or(char::is_whitespace) {
                     let at = cursor - 1;
                     let panel = cx.entity().downgrade();
                     window.defer(cx, move |window, cx| {
@@ -165,6 +170,7 @@ impl AgentPanel {
             expanded: HashSet::new(),
             diff_cache: HashMap::new(),
             last_stop: None,
+            composer_len: 0,
             turn: None,
             _subscriptions: subscriptions,
         }
@@ -272,6 +278,7 @@ impl AgentPanel {
         let parts = self.parts(&content);
         let mentions = content.tokens().iter().map(|span| span.token().label().to_string()).collect();
         self.composer.update(cx, |state, cx| state.set_value("", window, cx));
+        self.composer_len = 0;
         let change = self.thread.push_user(UserMessage { text: text.trim().to_string(), mentions });
         self.list_changed(change, cx);
         self.scroller.update(cx, |scroller, cx| scroller.scroll_to_end(cx));
@@ -545,18 +552,15 @@ impl AgentPanel {
                 }
             }
             Incoming::Exited { .. } if current => {
+                // It wasn't stopped (that forgets the session first): say
+                // why. The next message starts it again, in a new session.
                 let message = self.exit_message();
-                let was_busy = self.busy();
                 self.turn = None;
                 for (call, _) in self.thread.pending_permissions() {
                     self.thread.resolve_permission(&call, None);
                 }
-                // Started again with the next message, in a new session.
                 self.session = None;
-                if was_busy {
-                    self.fail(message, cx);
-                }
-                cx.notify();
+                self.fail(message, cx);
             }
             Incoming::Exited { .. } => {}
         }
@@ -987,7 +991,7 @@ impl Drop for AgentPanel {
 }
 
 fn placeholder(agent: &AgentServer) -> String {
-    format!("Message {} — @ to mention a file or symbol", agent.name)
+    format!("Message {}, @ for files", agent.name)
 }
 
 fn auth_methods(response: &InitializeResponse) -> Vec<(String, String, Option<String>)> {
