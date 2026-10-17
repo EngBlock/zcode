@@ -48,6 +48,7 @@ fn definition_across_files_in_xcode_project() {
         "sourcekit-lsp",
         &binary,
         &["--compilation-db-search-path".into(), rel.display().to_string()],
+        &[],
         &root,
         None,
         tx,
@@ -55,7 +56,7 @@ fn definition_across_files_in_xcode_project() {
     .unwrap();
 
     smol::block_on(async {
-        server.initialize(&root, json!({})).await.unwrap();
+        server.initialize(&root, json!({}), false).await.unwrap();
         let file = root.join("HelloZ/ContentView.swift");
         let text = std::fs::read_to_string(&file).unwrap();
         server.notify_raw(
@@ -120,12 +121,12 @@ fn language_features_on_a_swift_package() {
 
     let binary = zcode::toolchain::find_tool("sourcekit-lsp").unwrap();
     let (tx, _rx) = smol::channel::unbounded();
-    let server = LanguageServer::spawn("sourcekit-lsp", &binary, &[], &root, None, tx).unwrap();
+    let server = LanguageServer::spawn("sourcekit-lsp", &binary, &[], &[], &root, None, tx).unwrap();
     let uri = path_to_uri(&file);
     let document = json!({ "uri": uri.as_str() });
 
     smol::block_on(async {
-        server.initialize(&root, json!({ "backgroundIndexing": true })).await.unwrap();
+        server.initialize(&root, json!({ "backgroundIndexing": true }), false).await.unwrap();
         let features = Features::from_capabilities(&server.capabilities());
         assert!(features.inlay_hints && features.call_hierarchy && features.type_hierarchy, "{features:?}");
         let legend = features.semantic_tokens.clone().expect("semantic tokens");

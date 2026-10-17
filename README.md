@@ -5,7 +5,9 @@ A fast, Zed-inspired editor for Apple-platform development, written in Rust on
 [GPUI Kit](https://gpui-kit.com). It edits, builds, runs, tests and debugs
 Xcode projects and Swift packages without opening Xcode. It uses the
 toolchain Xcode installs: `xcodebuild`, `simctl`, `sourcekit-lsp` and
-`lldb-dap`.
+`lldb-dap`. The web app an Apple app ships with (a Vite app in `web/`, the
+pages of a web view) is edited in the same window, with the web's language
+servers and Emmet.
 
 ```
 cargo build --release
@@ -49,17 +51,20 @@ update feed in one go (`--dry-run` prints what it would run).
 | **Coding assistant** (ACP, from Zed) | View ▸ Show Coding Assistant (⌘0, as in Xcode 27) opens the agent panel beside the inspector: a conversation with Claude Code, Codex or Gemini CLI (their Agent Client Protocol adapters, run with `npx`) or any agent you add to `agent_servers` in `settings.json`. Answers and thinking stream in as Markdown; tool calls show what they read and run, their output and their diffs; an agent that asks permission waits for Allow, Always Allow or Reject. Agents read files through zcode, so they see unsaved edits; what they write lands in the file's buffer as one undoable edit and is saved (⌘Z in any pane takes it back), and a change an agent makes on disk itself is taken into the buffer the same way. The files a conversation changed are listed with their lines added and removed: Review compares one with what it was before (as Code Review does with `HEAD`), Reject puts it back, Keep stops listing it. `@` (or the @ button) mentions a file or a symbol from sourcekit-lsp, sent with its text from the buffer. Follow Agent opens the files the agent reads and changes at the line, leaving the keyboard in the panel. The agent's plan, its modes (Always Ask, Plan…), Stop, signing in, and File ▸ New ▸ Conversation (⌃⌘H). Nothing loads until the panel is opened, and no agent starts until a message is sent. Show/Hide Navigator, which had ⌘0, has no key now, as in Xcode 27 (`keymap.json` can give it one). | ⌘0, ⌃⌘H, Return, ⇧Return |
 | **MCP server** (for coding agents) | `zcode mcp` is a Model Context Protocol server on stdio for Claude Code, Codex, Gemini CLI, Cursor, Zed or any MCP client: it connects to the running zcode and acts on the open project, so an agent builds, runs and tests with your scheme and destination, reads the Issue navigator, the build log and the console, opens files, reads the editor's selection (unsaved edits included), evaluates in the paused debugger and takes screenshots of the window or a simulator. Results come back structured (each test's result, each error's file and line); builds and tests report progress and stop when the request is cancelled. The tools have Xcode 27's names where its own MCP server has the tool (`BuildProject`, `RunAllTests`, `GetBuildLog`…). The agent panel hands every agent it starts this server; the tools that build, run, stop, test or evaluate ask in the panel first, like the agent's own tool calls. See [zcode as an MCP server](#zcode-as-an-mcp-server). | — |
 | **Predictive completion** (from Zed and Xcode) | Code predicted at the cursor, shown in gray as you type: the rest of the line where the text goes and the lines after it below, the text after the caret moved aside; Tab accepts it as one ⌘Z, Escape or ⌥] dismisses it, and typing what it predicts keeps the rest. Editor ▸ Show Predictive Completion (⌃⌥Space, as in Xcode) asks at once. Off until `edit_predictions.provider` in `settings.json` names one: `"claude"`, the Claude API (the model, `claude-haiku-5-5` by default, and the key from the settings or `ANTHROPIC_API_KEY`), streamed, sent the code around the cursor and your latest edits; or `"lsp"`, the language server's `textDocument/inlineCompletion` where it has one (sourcekit-lsp doesn't yet). Asked once typing pauses (`debounce_ms`, or only on ⌃⌥Space with `automatic` off); a newer request or a moved caret cancels the one before. The status bar shows what it's doing, errors included, and its menu turns predicting while typing on and off. Never in Vim's normal mode, read-only files, multibuffers, terminals or files matching `disabled_globs` (`.env`, keys and certificates by default). | ⌃⌥Space, Tab, Esc, ⌥] |
-| **Editing** | Rope-based editor with tree-sitter highlighting (Swift, C/ObjC, C++, JSON, YAML, Markdown…), multiple cursors, folding, indent guides and find/replace. | ⌘F, ⌥⌘F |
+| **Editing** | Rope-based editor with tree-sitter highlighting (Swift, C/ObjC, C++, JSON, YAML, Markdown, and the web's: HTML, CSS, JavaScript, TypeScript, JSX/TSX, Vue, Svelte, Astro…), multiple cursors, folding, indent guides and find/replace. Snippets from completions (and Emmet) select their first tab stop; Tab moves through the rest. | ⌘F, ⌥⌘F |
 | **Multibuffers** (from Zed) | One editor showing excerpts of many files, edited in place: Find ▸ Show Find Results in Editor (or the Find navigator's button) for Find in Workspace's results or Find Selected Symbol's references, Navigate ▸ Show Issues in Editor (or the Issue navigator's button) for every issue with its lines around it and its message under it, and a rename's changes. Each file has a header with its name and folder; the gutter shows each line's number in its file, its change bars and breakpoints (click one to toggle it), and the excerpts show the file's diagnostics. Typing in an excerpt edits the file itself (unsaved, as in its tab, which shows the change at once, and the other way around); ⌘S saves the files the tab changed, and one ⌘Z undoes one edit across every file it touched, in step with each file's own undo. Click a header or a line number, or ⌥↩, to open the file there; ⇧↩ or a header's ↕ shows three more lines around an excerpt. Find ▸ Find and Replace in Workspace adds a Replace field whose Replace All edits the results this way. A search over thousands of files opens a page of files at a time as the tab scrolls. | ⌥⇧⌘F, ⌥↩, ⇧↩ |
 | | Comment selection, duplicate, move line, select next occurrence, soft wrap and font size. | ⌘/, ⌘D, ⌥⌘[ ⌥⌘], ⌥⌘E, ⌃⇧⌘L, ⌘+ ⌘- ⌃⌘0 |
 | | Xcode-style `<#placeholder#>` snippets from completions, with Tab or ⌃/ jumping to the next placeholder. | Tab, ⌃/, ⌃⇧/ |
-| **Settings** (from Zed) | zcode ▸ Settings… opens `~/.config/zcode/settings.json`: JSON with comments in Zed's format, applied the moment it's saved, in every window. `theme` (a name, or one for light and one for dark appearance), `buffer_font_family`, `buffer_font_size`, `tab_size`, `hard_tabs`, `soft_wrap`, `show_whitespaces`, `gutter.line_numbers`, `indent_guides`, `format_on_save` (through sourcekit-lsp, on ⌘S, Save All and `:w`), `remove_trailing_whitespace_on_save`, `ensure_final_newline_on_save`, `inlay_hints`, `vim_mode`, `git.inline_blame`, `git.show_authors`, `git.side_by_side_comparison`, `terminal.shell`, `agent_servers` and `agent` (the agent panel's agents, which one a conversation starts with, and `always_allow_tool_actions`), `edit_predictions` (predictive completion's provider, model, key and when it asks), `profiling.time_limit` (Profile stops recording after it), `distribution.notary_keychain_profile` (Distribute App's notarization credentials); zcode ▸ Open Default Settings lists them with their defaults (read-only). A project's `.zcode/settings.json` (zcode ▸ Open Project Settings File) wins over yours for its window, except the theme, font family, Vim mode, the agent settings, predictions and the notarization profile (a cloned project can't name programs to run, or where your code and key are sent; it can only turn predictions off). The Editor menu's toggles (Authors, Inline Blame, Inlay Hints, Vim Mode, Wrap Lines, Invisibles, Side by Side / Inline Comparison) and ⌘+ ⌘- ⌃⌘0 write the file, keeping its comments, and show checkmarks. A mistake (a missing comma, `"tab_size": "four"`, an unknown setting) is shown with its line and column, and the settings it gave last stay until it's fixed. The toggles zcode kept in its session before move into the file once. | ⌘, |
+| **Settings** (from Zed) | zcode ▸ Settings… opens `~/.config/zcode/settings.json`: JSON with comments in Zed's format, applied the moment it's saved, in every window. `theme` (a name, or one for light and one for dark appearance), `buffer_font_family`, `buffer_font_size`, `tab_size`, `hard_tabs`, `soft_wrap`, `show_whitespaces`, `gutter.line_numbers`, `indent_guides`, `format_on_save` (through sourcekit-lsp, on ⌘S, Save All and `:w`), `remove_trailing_whitespace_on_save`, `ensure_final_newline_on_save`, `inlay_hints`, `vim_mode`, `git.inline_blame`, `git.show_authors`, `git.side_by_side_comparison`, `terminal.shell`, `agent_servers` and `agent` (the agent panel's agents, which one a conversation starts with, and `always_allow_tool_actions`), `edit_predictions` (predictive completion's provider, model, key and when it asks), `profiling.time_limit` (Profile stops recording after it), `lsp` (each language server's `enabled`, `binary`, `initialization_options` and `settings`), `auto_install_language_servers`, `formatter`, `distribution.notary_keychain_profile` (Distribute App's notarization credentials); zcode ▸ Open Default Settings lists them with their defaults (read-only). A project's `.zcode/settings.json` (zcode ▸ Open Project Settings File) wins over yours for its window, except the theme, font family, Vim mode, the agent settings, predictions, the notarization profile, a language server's `binary` and `auto_install_language_servers` (a cloned project can't name programs to run, or where your code and key are sent; it can only turn predictions off). The Editor menu's toggles (Authors, Inline Blame, Inlay Hints, Vim Mode, Wrap Lines, Invisibles, Side by Side / Inline Comparison) and ⌘+ ⌘- ⌃⌘0 write the file, keeping its comments, and show checkmarks. A mistake (a missing comma, `"tab_size": "four"`, an unknown setting) is shown with its line and column, and the settings it gave last stay until it's fixed. The toggles zcode kept in its session before move into the file once. | ⌘, |
 | | zcode ▸ Key Bindings… opens `keymap.json`: blocks of bindings with an optional `context` (`Editor`, `Editor && vim_mode == normal`, `multibuffer`, `Terminal`, `Navigator && navigator == find`, `PlistEditor`, `Picker`, `Workspace`, …), over zcode's; an action by name (`zcode::Build` or `Build`, `[name, arguments]`), `null` to free a key, `["zed::Unbind", action]` to take a key off one action; multi-key sequences (`ctrl-x ctrl-s`). Bindings for a Vim mode come before Vim's own keys. Bindings that can't be made are reported; the rest apply. zcode ▸ Open Default Key Bindings lists zcode's. | — |
 | | Themes are JSON files in `~/.config/zcode/themes`: gpui-component's format (the window's colors, the editor's and its syntax colors, a monospace font) or Zed's theme files. zcode ▸ Select Theme… lists them with Default Light and Default Dark. zcode ▸ Import Xcode Theme… converts one of Xcode's `.xccolortheme` themes (yours from `~/Library/Developer/Xcode/UserData/FontAndColorThemes`, or one Xcode ships) into a theme file and shows it: the editor's background, text, current line, selection, insertion point, invisibles, syntax colors with their bold and italic, and the font when it's installed. zcode ▸ Import Xcode Key Bindings… turns a set from `~/Library/Developer/Xcode/UserData/KeyBindings` into blocks of `keymap.json`: each command zcode has gets its shortcut, and loses zcode's default ones as in Xcode, and text editing bindings go to the editor; importing again replaces them. Xcode's files are only read. | — |
 | **Vim mode** | Editor ▸ Vim Mode (off by default; `vim_mode` in the settings, for every window) in every editor tab: files in every pane, both sides of Code Review and multibuffers. Normal, insert, replace, visual, visual line and visual block modes, with the mode in the status bar (`-- INSERT --`, then any keys of a command not finished yet). Motions (`h j k l w W b B e E ge 0 ^ $ g_ \| gg G { } f F t T ; , % H M L + - _`, marks), counts, and the operators `d c y > < = g~ gu gU` over motions and text objects (`iw aw iW aW ip ap i" a" i' a' i( a( i[ a[ i{ a{ i< a< it at`, and the backtick quotes); `x X s S C D Y p P gp gP J gJ r R ~ o O i a I A gi gI ⌃A ⌃X`; registers (`"a`–`"z`, `"A`–`"Z` to append, `"0`–`"9`, `"-`, `"_`, `"+` `"*`, `".` `"/` `":`), the unnamed one being the system clipboard (as in Zed); `.` repeats the last change with what its insert typed (completions and closed brackets included); `u` and `⌃R`, an insert undoing in one step with the change that started it; `/ ? n N * #` with Vim's patterns and the matches highlighted; `m` with `'` and the backtick to go to marks; scrolling (`⌃D ⌃U ⌃F ⌃B ⌃E ⌃Y zz zt zb`) and folds (`zo zc za zR zM`); visual block `I`, `A` and `c` typing on every row at once. `:` commands: `:w`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `ZZ`, `ZQ` (`:q` closes the tab, as in Zed, and refuses unsaved changes without `!`; in a multibuffer `:w` saves the files the tab changed), `:s` with ranges (`%`, `.`, `$`, numbers, marks, `'<,'>`, `+N`) and the `g`, `i`, `I`, `n` flags, `:<line>`, `:d`, `:y`, `:j`, `:>`, `:<`, `:noh`, `:undo`, `:redo`, with ↑/↓ history. Every cursor of a multi-cursor editor moves and operates; a selection made with the mouse, ⌘D or a placeholder is visual mode. Escape closes completion, signature help and Find before it leaves insert mode. `gd` jumps to the definition, `gt` / `gT` switch tabs, `⌃O` / Tab go back and forward, `=` re-indents through sourcekit-lsp. zcode's own ⌃ shortcuts (⌃6, ⌃I, ⌃/, ⌃\`…) and every ⌘ key keep working; terminals, property list outlines and text fields aren't affected. | Editor ▸ Vim Mode |
 | **Language intelligence** (sourcekit-lsp) | Completion, live diagnostics, Quick Help on hover, Jump to Definition (also ⌘-click), Find References and Rename across files. A rename opens a tab of the places it changed (a multibuffer, below), left unsaved: ⌘S saves every file, one ⌘Z undoes it everywhere. | ⌃Space, ⌃⌘J, ⌃⇧⌘F, F2 |
 | | Edit All in Scope, Format File / Re-Indent, code actions and fix-its, Document Items outline, and workspace symbols in Open Quickly. | ⌃⌘E, ⌃⇧I / ⌃I, ⌃⌥⌘F, ⌃6 |
 | | Semantic highlighting over tree-sitter's: what the compiler says each name is, so a type reads as a type at a call (`Square(side: 2)`), and properties, parameters and enum cases get their colors. Signature help while typing arguments: the call's signature above the cursor with the current argument in bold, from `(` until the call is closed (or Escape). Editor ▸ Inlay Hints (off by default, as in Zed): the type inferred for each binding without one (`let areas: [Double]`), and in C and Objective-C the parameter names before arguments (`add(left: 1, right: 2)`), drawn in the text without being part of it. | — |
+| **Web apps** (Vite: HTML, CSS, JavaScript, TypeScript, Vue, Svelte, Astro) | The same language features for a web app inside the project, from the servers VS Code and Zed use: vtsls (JavaScript, TypeScript, JSX and TSX: completions with auto-imports, diagnostics, Quick Help, Jump to Definition, references, rename, code actions, inlay hints, semantic highlighting), the HTML, CSS (SCSS, Less) and JSON servers (JSON Schema Store's schemas for `package.json`, `tsconfig.json` and the other config files), Vue (Volar, with its TypeScript plugin in vtsls: zcode relays its `tsserver/request`s), Svelte and Astro, and, when the app uses them, ESLint (its fixes as code actions), Biome and Tailwind CSS (class completions, hover and color swatches). Each runs for the web app a file is in: the outermost folder with a `package.json`, `tsconfig.json` or `jsconfig.json` (an Xcode project's `web/` gets servers of its own next to sourcekit-lsp), started by the first file it serves. A file has every server for it: completions, code actions, colors and diagnostics are all of theirs; the first that answers gives Quick Help and definitions. The status bar shows the focused file's first server (installing, starting, indexing, failed) and how many more it has. Files in `node_modules` open read-only. | Editor ▸ Restart Language Servers |
+| | Where the servers come from: `lsp.<id>.binary` in your settings, the web app's own `node_modules/.bin`, your login shell's `PATH`, or zcode installs them with npm into `~/Library/Application Support/zcode/language-servers` the first time one is needed (Node.js required; `auto_install_language_servers: false` turns that off). `lsp.<id>` also takes `enabled`, `initialization_options` and `settings` (merged over zcode's), as in Zed. Format File and `format_on_save` use the web app's Prettier when it has one (`formatter`: `auto`, `prettier` or `language_server`), Biome's formatter for a Biome app, the language server otherwise. | ⌃⇧I |
+| | Emmet, built in (no Node): an abbreviation before the cursor is offered as a completion in HTML, the markup of Vue, Svelte and Astro files, JSX and TSX (`className`, `<img />`), and CSS, SCSS and Less (and a component's `<style>`): `ul.list>li*3`, `.card>h2{Title}+p`, `!`, `a:link`, `input:email`, `lorem10`, `m10-20`, `d:f`, `c#fc0`… Expanded, its first tab stop is selected and Tab visits the rest. Editor ▸ Emmet ▸ Expand Abbreviation expands without the menu; Wrap with Abbreviation… puts the selection (or the line) inside one, previewed as you type it (`ul>li*` makes an item of each line). Tags close as their `>` is typed in HTML, Vue, Svelte, Astro, JSX and TSX; ⌘/ comments markup as `<!-- -->` and CSS as `/* */` (a component's script and style blocks in their own language). | ⌃⌥E |
 | | Find ▸ Find Call Hierarchy: the function at the cursor (in whichever pane is focused) as a tree in the Find navigator, with its callers (as in Xcode) or the calls it makes, each level expanded on demand; a caller opens at its call, the rest at their declarations, and a row's menu starts a new hierarchy from it. Find Ancestor Types, Find Descendent Types and Find Conforming Types show a type's supertypes or subtypes the same way. Editor ▸ Show Callers… lists the callers in a menu at the cursor. Features the language server doesn't offer are left out, and their commands say so. | ⌃⇧⌘H |
 | **Xcode project indexing** | zcode pulls a compilation database out of `xcodebuild` output, the job xcode-build-server does, so cross-file features work for `.xcodeproj` targets. When a project has never been built, a low-priority background "index build" produces it. Saving source files refreshes the index, so rename and references stay current. | — |
 | **Navigation** | Open Quickly (fuzzy file and symbol search, `file:line`), Quick Actions command palette, back/forward history, jump to line, counterpart (.h ↔ .m), reveal in navigator and tab switching. | ⇧⌘O, ⇧⌘A, ⌃⌘← ⌃⌘→, ⌘L, ⌃⌘↑, ⇧⌘J, ⇧⌘[ ⇧⌘] |
@@ -93,7 +98,7 @@ update feed in one go (`--dry-run` prints what it would run).
 | | Symbolic (symbol and module), Swift Error and Exception (Objective-C, C++ or both, on throw or catch) breakpoints from the Breakpoint navigator's + menu or Debug ▸ Breakpoints; the navigator lists every breakpoint with its toggle and options. | ⌥⌘\\ |
 | | Pause/continue, step over/into/out, the stopped line highlighted in green, threads and frames in the Debug navigator, and an expandable Variables view next to the console, with Copy Value and Print Description. Hovering a variable while paused shows its value. | ⌃⌘Y, F6, F7, F8 |
 | | The LLDB console: an `(lldb)` prompt while paused takes `po`, `p`, `v`, `expr` and any other lldb command, with ↑/↓ history; an empty Return repeats the last command. | ⇧⌘C |
-| **Monitoring** | Memory is sampled every 2 s for the life of the app. The status bar shows zcode's footprint and the language server's (including its `SourceKitService` XPC helpers), and turns orange above 1.5 GB idle for zcode or 4 GB for the language server. View ▸ Performance shows startup timings, the current and 30 s idle-baseline footprint, peak, and a history graph. `--perf-log <file>` (or `ZCODE_PERF_LOG`) appends every sample as a JSON line for long-term tracking. `zcode --startup-bench` prints startup and memory as JSON and quits. | — |
+| **Monitoring** | Memory is sampled every 2 s for the life of the app. The status bar shows zcode's footprint and the language servers' together (including sourcekit-lsp's `SourceKitService` XPC helpers and the processes the web's servers start, such as vtsls's tsserver), and turns orange above 1.5 GB idle for zcode or 4 GB for the language server. View ▸ Performance shows startup timings, the current and 30 s idle-baseline footprint, peak, and a history graph. `--perf-log <file>` (or `ZCODE_PERF_LOG`) appends every sample as a JSON line for long-term tracking. `zcode --startup-bench` prints startup and memory as JSON and quits. | — |
 | **The app** | `scripts/package.py` builds `zcode.app` (icon, `Info.plist` with the version from `Cargo.toml`, the document types for `.xcodeproj`, `.xcworkspace`, Swift sources, source code and folders as an alternate handler so Xcode stays the default), signs it (Developer ID with the hardened runtime, or ad hoc for local use), notarizes and staples it (`notarytool` with a keychain profile; nothing in the repo), and makes the zip, the dmg and the update feed. Finder opens projects in the running zcode or starts it. zcode ▸ Install CLI links `zcode` into `/usr/local/bin` (an administrator prompt when needed, as Zed's): `zcode <path>` hands the path to the running zcode in ~50 ms or starts the app through LaunchServices and returns. zcode ▸ Open at Login registers the bundle's LaunchAgent (`zcode --background`) with SMAppService, listed under zcode in System Settings ▸ Login Items. zcode ▸ Check for Updates… (and a daily check, `auto_update` in settings.json) reads a JSON feed, downloads the release, checks its SHA-256 and signature (the running app's team), swaps it into the bundle's place and offers Restart Now. | — |
 
 The full Xcode 27 menu and shortcut inventory this was matched against is in
@@ -245,6 +250,10 @@ if zcode is not faster.
   first frame is already with the window server. `ZCODE_TRACE_STARTUP=1`
   prints the phases. `ZCODE_PAUSE_AT_START=<ms>` lets a profiler attach before
   startup begins.
+* Language servers start the first time a file they serve opens (a
+  project without web files never runs one), and the web's grammars'
+  queries are compiled the first time a file in their language is
+  highlighted, so launch costs the same with web apps in the project.
 * sourcekit-lsp, scheme listing, simulator and device discovery, file
   scanning and git status all start after the window appears, on background
   threads. git status is read again after saves (debounced), git
@@ -404,8 +413,14 @@ src/
                     sheet (archive.rs, organizer.rs, distribute_sheet.rs); the asset catalog editor as a tab
                     (asset_catalog.rs: outline, wells, inspector, edits and undo; asset_catalogs.rs: opening it);
                     SwiftUI previews' gutter marks and Show in Xcode Canvas (previews.rs)
-  lsp/              JSON-RPC client, document sync store, editor provider adapters, what the server offers;
-                    inlay hints, semantic tokens and call/type hierarchies converted for the editor
+  lsp/              JSON-RPC client; the store of a project's servers (one per kind and folder) keeping
+                    documents in sync with ranged changes, pushed and pulled diagnostics; which server
+                    serves which files and folders, and what each is told (servers.rs); finding and
+                    installing their programs (install.rs); editor provider adapters merging several
+                    servers' answers; Prettier; inlay hints, semantic tokens and call/type hierarchies
+                    converted for the editor
+  languages/        grammar registrations (Swift's query, JSX's tags, TSX, Vue's blocks), editing rules
+                    for markup and CSS (tags closed as typed), Emmet in the editor (emmet.rs)
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner (programs started with
                     no signals blocked, ended by Stop wherever they ended up), log/issue/test parsing,
                     compilation-database extraction; profile/: Product ▸ Profile (xctrace's templates and
@@ -469,6 +484,8 @@ crates/
                     motions, text objects, operators, registers, search and `:` commands), edit
                     predictions as ghost text on inlays and blocks, LSP popovers, find panel
                     (docs/editor-engine.md)
+  zcode-emmet/      Emmet, std only: HTML, JSX and CSS abbreviations to LSP snippets, the abbreviation
+                    before the cursor, Wrap with Abbreviation
 vendor/
   gpui-component/   gpui-component 0.7.3 plus small patches (ZCODE-PATCH.md)
 scripts/
@@ -599,6 +616,20 @@ Apache-2.0 OR MIT, like `objc2`), and the updater uses `ureq` (already
 there), CommonCrypto's SHA-256 (part of libSystem) and `codesign`. Sparkle
 (MIT) was considered and not used: it would add an Objective-C framework,
 its XPC services and EdDSA keys to the bundle for what those do here.
+The web's language servers aren't part of zcode: they're npm packages
+(vtsls, `vscode-langservers-extracted` for HTML, CSS, JSON and ESLint,
+`@vue/language-server`, `svelte-language-server`,
+`@astrojs/language-server`, `@tailwindcss/language-server`: MIT) a web
+app has, you install, or zcode installs from npm when one is first
+needed; Biome and Prettier are only ever the web app's own. Which servers
+a file gets, what they're told and how Vue's TypeScript requests reach
+vtsls follow those projects' documentation and Zed's public
+documentation of its web language support (none of Zed's code was read).
+The web's grammars are tree-sitter's (MIT), through gpui-component; the
+JSX and Vue queries are zcode's. Emmet is written from Emmet's
+documentation of its abbreviation syntax and snippets (`crates/zcode-emmet`,
+no Emmet code); Expand Abbreviation, Wrap with Abbreviation and ⌃⌥E are
+zcode's choices (Xcode has no Emmet).
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -665,6 +696,19 @@ themes or session. It covers:
   `ZCODE_SOURCEKIT_LSP`, logging what zcode asks): the requests typing and
   scrolling cost, and a server with these capabilities hidden (nothing
   asked for, ⌃⇧⌘H says so, completion still works)
+* web languages on a copy of `samples/HelloWeb` (a Swift package with a
+  Vite app in `web/`), against the real servers, installed by zcode with
+  npm into a folder runs share (`ZCODE_LANGUAGE_SERVERS_DIR`): vtsls
+  rooted at `web/` next to sourcekit-lsp for the Swift; TypeScript
+  completions, live diagnostics, an auto-import and Jump to Definition
+  into another file; the HTML server's completions and a tag closed as
+  its `>` is typed; Emmet in HTML (a completion, Tab through its stops,
+  ⌃⌥E) and CSS (`m10-20`); ⌘/ as `/* */` and `<!-- -->`; the JSON
+  server's diagnostics; a Vue template's expression completed by vtsls
+  through Vue's server; Format File through the app's Prettier (a
+  stand-in in `node_modules/.bin`); `node_modules` read-only;
+  `lsp.<id>.enabled` and Restart Language Servers. With `--network`, ESLint's
+  pulled diagnostics and Tailwind's classes from the app's own packages
 * predictive completion on a copy of ZKit: off by default (nothing asked
   or shown); the Claude API provider against `scripts/fake_anthropic.py`
   (a local server streaming the Messages API's events, so no key or
@@ -965,9 +1009,27 @@ The control channel also takes window screenshots
   labels already). Signature help shows the active signature (no switching
   between overloads), and semantic token colors follow the theme's names
   (the default themes color types, functions, properties and constants,
-  not Xcode's project-versus-system distinction). Documents are still sent
-  whole on each change (no incremental sync), which completion's requests
-  do on every keystroke.
+  not Xcode's project-versus-system distinction). Documents are sent as one
+  range per change (every server zcode runs takes ranged changes), which
+  completion's requests do on every keystroke.
+* Web apps: the npm servers need Node.js (zcode looks for `npm` on your
+  login shell's `PATH`). zcode installs a server's latest version the
+  first time a file needs it (a few seconds to a minute, shown in the
+  status bar) and doesn't update it afterwards: delete its folder in
+  `~/Library/Application Support/zcode/language-servers` (then Restart
+  Language Servers) for a newer one. JSON's schemas are fetched from the
+  network by the server. A web app's servers are rooted at its outermost
+  `package.json`, so a monorepo's packages share one each. Inlay hints and
+  semantic highlighting come from a file's first server that has them (a
+  Vue file's are Vue's server's). Vue's `{{ }}` interpolations aren't
+  highlighted as JavaScript (directives' values are). There's no linked
+  editing of a tag's pair, no ESLint fix-all on save, no running or
+  debugging the web app (the terminal runs `npm run dev`) and no
+  browser preview. Emmet works in markup, JSX, TSX and stylesheets (not in
+  `.js` or `.ts` files), without CSS at-rules, vendor prefixes, BEM and
+  other filters, or Emmet's other actions (Balance, Go to Edit Point,
+  Update Tag); a snippet's repeated tab stops aren't linked (typing in
+  one doesn't change the others).
 * Multibuffers: excerpts are highlighted in the language most of their
   files are in, and have no completion, Quick Help, Jump to Definition or
   inlay hints (⌥↩ opens the file, where they work); bookmarks, test

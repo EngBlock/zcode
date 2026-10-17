@@ -276,3 +276,57 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod editor_tests {
+    use gpui::TestAppContext;
+
+    use crate::test_support::open_editor;
+
+    #[gpui::test]
+    fn tab_visits_a_snippets_stops_and_ends_outside_it(cx: &mut TestAppContext) {
+        let (editor, mut cx) = open_editor(cx, "a\nrest\n");
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| {
+                state.insert_snippet(0..1, "<a href=\"$1\">${2:text}</a>$0", window, cx);
+                assert_eq!(state.text().to_string(), "<a href=\"\"><#text#></a>\nrest\n");
+                assert_eq!(state.selected_range(), 9..9, "the first stop");
+                state.edit([(9..9, "/x")], window, cx);
+                state.set_selected_range(11..11, cx);
+                assert!(state.next_snippet_stop(cx));
+                // The placeholder, past what was typed in the first stop.
+                assert_eq!(state.selected_range(), 13..21);
+                assert!(state.next_snippet_stop(cx), "$0, last");
+                assert_eq!(state.selected_range(), 25..25);
+                assert!(!state.next_snippet_stop(cx) && !state.has_snippet_stops());
+            });
+        });
+        // Leaving the snippet ends it.
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| {
+                state.insert_snippet(0..0, "$1-$2", window, cx);
+                let end = state.text().len();
+                state.set_selected_range(end..end, cx);
+                assert!(!state.next_snippet_stop(cx));
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn a_tag_closes_as_its_bracket_is_typed(cx: &mut TestAppContext) {
+        let (editor, mut cx) = open_editor(cx, "");
+        cx.update(|window, cx| {
+            crate::set_language_config("html", crate::language_config::LanguageConfig::default().auto_close_tags(true), cx);
+            editor.update(cx, |state, cx| state.set_highlighter("html", cx));
+            editor.update(cx, |state, cx| state.focus(window, cx));
+        });
+        cx.simulate_input("<div class=\"a\">");
+        cx.update(|_, cx| {
+            let state = editor.read(cx);
+            assert_eq!(state.text().to_string(), "<div class=\"a\"></div>");
+            assert_eq!(state.selected_range(), 15..15);
+        });
+        cx.simulate_input("<br>");
+        cx.update(|_, cx| assert_eq!(editor.read(cx).text().to_string(), "<div class=\"a\"><br></div>"));
+    }
+}

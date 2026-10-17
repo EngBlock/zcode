@@ -379,6 +379,31 @@ replacing the last; it closes when the provider has nothing for the caret
 `on_blur` mode hook). The popover is the hover popover's element above the
 caret, `sticky` so the mouse doesn't close it.
 
+### Snippets and tab stops (`snippet.rs`, `editor/lsp/overlay.rs`)
+
+```rust
+snippet::expand("<a href=\"$1\">${2:text}</a>");  // Expansion { text, stops }: `<#text#>` tokens, stop ranges
+editor.insert_snippet(range, snippet, window, cx);  // the first stop selected
+editor.next_snippet_stop(cx);     // Tab: the next one; false when none or the caret left the snippet
+editor.end_snippet();
+CompletionProvider::completion_inserted(&item, window, cx);  // after a completion: resolve its auto-import
+```
+
+A completion item in snippet format goes through `insert_snippet`, so
+servers' `$1`, `${1:Int}` and `$0` become a selected first stop and the
+rest Tab visits (stops are anchors, so typing in one moves the others);
+placeholders with text keep Xcode's `<#…#>` tokens. Mirrors of a stop show
+its text but aren't linked. Emmet's expansions are snippets too.
+
+### Tags closed as typed (`language_config.rs`)
+
+`LanguageConfig::auto_close_tags(true)` (zcode sets it for HTML, Vue,
+Svelte, Astro, JSX and TSX): typing the `>` of an opening tag inserts its
+closing tag after the caret as one edit, like an auto-closed bracket, unless
+it's a void element, self-closed, inside an attribute's quotes or braces,
+or not a tag (`a < b`, `Array<T`). `IndentationRules::except` keeps a void
+element's line from indenting the next.
+
 ### The rows on screen (`viewport.rs`)
 
 ```rust

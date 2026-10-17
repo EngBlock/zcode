@@ -191,6 +191,13 @@ fn rank_completions(text: &Rope, offset: usize, items: Vec<(usize, CompletionIte
         .filter_map(|(order, item)| {
             let start = replaced_start(text, offset, &item);
             let query = text.slice(start..offset).to_string();
+            // A number being typed isn't a name: nothing completes `1` but
+            // what starts with it.
+            if let Some(digit) = query.chars().next().filter(char::is_ascii_digit)
+                && !item.filter_text.as_deref().unwrap_or(&item.label).starts_with(digit)
+            {
+                return None;
+            }
             let pattern = patterns
                 .entry(query.clone())
                 .or_insert_with(|| (!query.trim().is_empty()).then(|| Pattern::parse(&query, CaseMatching::Ignore, Normalization::Smart)));
@@ -558,6 +565,9 @@ mod tests {
         let text = Rope::from("x.");
         let ranked: Vec<String> = rank_completions(&text, 2, vec![(2, item("b", "0")), (1, item("a", "9"))]).into_iter().map(|i| i.label).collect();
         assert_eq!(ranked, ["a", "b"]);
+        // Typing a number completes nothing that doesn't start with it.
+        let text = Rope::from("const n = 1");
+        assert!(rank_completions(&text, text.len(), vec![(1, item("Int16Array", "0"))]).is_empty());
     }
 
     #[test]

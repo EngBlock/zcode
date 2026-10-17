@@ -93,4 +93,12 @@ which was extracted from Xcode 27's own command definitions.
   `Terminal`, `Navigator`…), JSON themes (also Zed's theme files), all
   applied as soon as they're saved, with mistakes shown and the last good
   settings kept; format on save, trailing whitespace, the terminal's shell.
+* Web apps beside the Apple app (Xcode highlights HTML, CSS and JavaScript
+  but has no language server for them): vtsls, the HTML, CSS and JSON
+  servers, Vue, Svelte, Astro, and ESLint, Biome and Tailwind when the app
+  uses them, each rooted at the web app's folder and installed with npm on
+  first use; completions from all of a file's servers, auto-imports,
+  pulled and pushed diagnostics, Prettier formatting; Emmet built in
+  (completions, ⌃⌥E, Wrap with Abbreviation…) with snippet tab stops; tags
+  closed as typed; block comments for markup and CSS.
 * A scriptable UI control channel (`ZCODE_DEBUG_DIR`) for automated UI tests.

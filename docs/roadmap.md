@@ -63,6 +63,19 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 4. SwiftUI Previews: "open this preview in Xcode" bridge first. ✅
 5. Interface Builder: out of scope; "Open in Xcode".
 
+## Phase 5: the web app beside the Apple app
+
+Many apps ship a web front end (a Vite app in `web/`, a web view's pages)
+in the same repository; editing it shouldn't need VS Code.
+
+1. Language servers per web app (vtsls, HTML, CSS, JSON, ESLint, Biome,
+   Tailwind, Vue, Svelte, Astro) next to sourcekit-lsp, installed with npm
+   on first use; Prettier; Emmet; web grammars, tags closed as typed. ✅
+2. Linked editing of tag pairs (`textDocument/linkedEditingRange`), ESLint
+   fix-all on save, updating zcode's copies of the servers.
+3. Run the web app: `package.json` scripts in a picker (`npm run dev` in a
+   terminal tab), the dev server's URL opened, its errors as issues.
+
 ## Foundations
 
 1. Packaging: signed, notarized `.app`, updates, CLI install, `.xcodeproj`

@@ -2887,6 +2887,256 @@ def language_feature_checks(samples):
     check("A server without these features: nothing asked for, commands say so, the rest works", without_the_features)
 
 
+FAKE_PRETTIER = """#!/usr/bin/env python3
+# A stand-in for a web app's Prettier: records its arguments, then formats
+# stdin by collapsing runs of spaces and ending statements with semicolons.
+import os, re, sys
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "prettier-args.log"), "a") as f:
+    f.write(" ".join(sys.argv[1:]) + "\\n")
+text = sys.stdin.read()
+lines = [re.sub(r"(?<=\\S) {2,}", " ", l) for l in text.split("\\n")]
+lines = [l + ";" if re.match(r"^\\s*(const|let) .*[^;{,(]$", l) else l for l in lines]
+sys.stdout.write("\\n".join(lines))
+"""
+
+EXTRA_TS = "/** Everything the page has counted. */\nexport const totalTaps = 0\n"
+
+
+def web_language_checks(samples):
+    """A Swift package with a Vite app in web/ (samples/HelloWeb): the web's
+    language servers, installed by zcode with npm into a folder shared by
+    runs (ZCODE_LANGUAGE_SERVERS_DIR), rooted at web/ next to
+    sourcekit-lsp for the Swift; TypeScript, HTML, CSS, JSON and Vue; Emmet,
+    tags closed as typed, comments, Prettier (a stand-in in node_modules),
+    settings and Restart Language Servers. With --network, ESLint and
+    Tailwind on the app's own packages too."""
+    npm = shutil.which("npm") or os.path.expanduser("~/.vite-plus/js_runtime/node/24.18.0/bin/npm")
+    if not os.path.exists(npm):
+        print("  (skipped: npm isn't installed)")
+        return
+    # zcode reports paths as they really are (/private/var/…).
+    project = os.path.realpath(os.path.join(WORK, "HelloWeb"))
+    shutil.copytree(os.path.join(samples, "HelloWeb"), project, ignore=shutil.ignore_patterns("node_modules", ".build", "dist"))
+    web = os.path.join(project, "web")
+    src = os.path.join(web, "src")
+    main_ts, counter_ts, extra_ts = (os.path.join(src, n) for n in ("main.ts", "counter.ts", "extra.ts"))
+    index, style, greeting = os.path.join(web, "index.html"), os.path.join(src, "style.css"), os.path.join(src, "Greeting.vue")
+    package_json, main_swift = os.path.join(web, "package.json"), os.path.join(project, "Sources", "HelloWeb", "main.swift")
+    with open(extra_ts, "w") as f:
+        f.write(EXTRA_TS)
+    bin_dir = os.path.join(web, "node_modules", ".bin")
+    os.makedirs(bin_dir)
+    prettier = os.path.join(bin_dir, "prettier")
+    with open(prettier, "w") as f:
+        f.write(FAKE_PRETTIER)
+    os.chmod(prettier, 0o755)
+    library = os.path.join(web, "node_modules", "left-pad", "index.d.ts")
+    os.makedirs(os.path.dirname(library))
+    with open(library, "w") as f:
+        f.write("export declare function leftPad(s: string, n: number): string\n")
+    servers_dir = os.environ.get("ZCODE_LANGUAGE_SERVERS_DIR") or os.path.join(tempfile.gettempdir(), "zcode-e2e-language-servers")
+    z = Zcode(project, {"ZCODE_LANGUAGE_SERVERS_DIR": servers_dir})
+
+    def servers(s):
+        return {x["id"]: x for x in s["language_servers"]}
+
+    def ready(*ids, timeout=400):
+        return z.wait_for(lambda s: all(servers(s).get(i, {}).get("status") == "Ready" for i in ids), timeout=timeout, interval=1)
+
+    def menu(timeout=30):
+        return z.wait_for(lambda s: s["active"]["completion_menu_open"], timeout=timeout, interval=0.3)["active"]["completion_items"]
+
+    def text():
+        return z.dump()["active"]["text"]
+
+    def revert(path):
+        for _ in range(12):
+            if not z.dump()["active"]["dirty"]:
+                return
+            z.run("keys cmd-z", "wait 150")
+        assert not z.dump()["active"]["dirty"], f"{os.path.basename(path)} still edited"
+
+    def servers_per_web_app():
+        z.run(f"open {main_ts}:1")
+        s = ready("vtsls")
+        vtsls = servers(s)["vtsls"]
+        assert vtsls["root"] == web and vtsls["documents"] == 1, vtsls
+        assert os.path.isdir(os.path.join(servers_dir, "vtsls-language-server", "node_modules")), "installed in zcode's folder"
+        assert s["lsp"] == "Ready", s["lsp"]
+        # The Swift beside it has sourcekit-lsp, for the whole project.
+        z.run(f"open {main_swift}:1")
+        s = ready("sourcekit-lsp", timeout=300)
+        assert servers(s)["sourcekit-lsp"]["root"] == project, servers(s)
+        assert servers(s)["vtsls"]["documents"] == 1, "a Swift file isn't vtsls's"
+
+    def typescript_completion():
+        z.run(f"open {main_ts}:{line_of(main_ts, 'render()')}", "keys end", "keys enter", "type counter.inc")
+        assert "increment" in menu(), "a member of Counter"
+        z.run("keys enter", "wait 400")
+        line = z.dump()["active"]["line_text"]
+        assert line.strip().startswith("counter.increment"), line
+        revert(main_ts)
+
+    def typescript_diagnostics():
+        z.run(f"open {main_ts}:{line_of(main_ts, 'render()')}", "keys end", "keys enter", "type const wrong: number = 'x'")
+        s = z.wait_for(lambda s: any("main.ts" in i and "not assignable" in i for i in s["issues"]), timeout=60, interval=0.5)
+        revert(main_ts)
+        z.wait_for(lambda s: not any("main.ts" in i for i in s["issues"]), timeout=60, interval=0.5)
+
+    def auto_import():
+        z.run(f"open {main_ts}:{line_of(main_ts, 'render()')}", "keys end", "keys enter", "type const all = totalTa")
+        assert "totalTaps" in menu()
+        z.run("keys enter")
+        z.wait_for(lambda s: "from './extra'" in s["active"]["text"], timeout=20, interval=0.3)
+        assert "import { totalTaps } from './extra'" in text().splitlines()[:3], text().splitlines()[:3]
+        revert(main_ts)
+
+    def definition_across_files():
+        z.run(f"open {main_ts}:{line_of(main_ts, 'new Counter')}", "keys home", keys_right(column_of(main_ts, "Counter(") + 2), "keys ctrl-cmd-j")
+        s = z.wait_for(lambda s: s["active"]["path"] == counter_ts, timeout=30, interval=0.3)
+        # `new Counter(1)` is a call of its constructor.
+        assert "constructor(" in s["active"]["line_text"], s["active"]["line_text"]
+
+    def html_completion_and_tags():
+        z.run(f"open {index}:{line_of(index, '<div id=')}")
+        s = ready("vscode-html-language-server")
+        z.run("keys end", "keys enter", "type <sec")
+        assert "section" in menu(), "the HTML server's tags"
+        z.run("keys escape", "type tion class=\"hero\">", "wait 200")
+        assert z.dump()["active"]["line_text"].strip() == '<section class="hero"></section>', "closed as its > was typed"
+        assert servers(s)["vscode-html-language-server"]["root"] == web
+        revert(index)
+
+    def emmet_markup():
+        z.run(f"open {index}:{line_of(index, '<div id=')}", "keys end", "keys enter", "type ul.list>li*3")
+        items = menu()
+        assert items[0] == "ul.list>li*3", items
+        z.run("keys enter", "type One", "keys tab", "type Two", "wait 200")
+        t = text()
+        assert '<ul class="list">\n        <li>One</li>\n        <li>Two</li>\n        <li></li>\n    </ul>' in t, t[t.find("<ul"):][:200]
+        revert(index)
+        # ⌃⌥E expands without the menu; nothing to expand says so.
+        z.run(f"open {index}:{line_of(index, '<div id=')}", "keys end", "keys enter", "type nav>a*2", "keys escape", "keys ctrl-alt-e", "wait 200")
+        assert '<nav><a href=""></a><a href=""></a></nav>' in text(), text()
+        revert(index)
+
+    def css_completion_emmet_and_comments():
+        z.run(f"open {style}:{line_of(style, 'padding')}")
+        ready("vscode-css-language-server")
+        z.run("keys end", "keys enter", "type marg")
+        assert "margin" in menu()
+        z.run("keys escape")
+        revert(style)
+        z.run(f"open {style}:{line_of(style, 'padding')}", "keys end", "keys enter", "type m10-20")
+        assert menu()[0] == "m10-20"
+        z.run("keys enter", "wait 200")
+        assert z.dump()["active"]["line_text"].strip() == "margin: 10px 20px;", z.dump()["active"]["line_text"]
+        z.run("keys cmd-/", "wait 200")
+        assert z.dump()["active"]["line_text"].strip() == "/* margin: 10px 20px; */"
+        revert(style)
+        z.run(f"open {index}:{line_of(index, '<div id=')}", "keys cmd-/", "wait 200")
+        assert z.dump()["active"]["line_text"].strip() == '<!-- <div id="app"></div> -->'
+        revert(index)
+
+    def json_diagnostics():
+        z.run(f"open {package_json}:2")
+        ready("vscode-json-language-server")
+        z.run("keys end", "type  oops")
+        z.wait_for(lambda s: any("package.json" in i for i in s["issues"]), timeout=60, interval=0.5)
+        revert(package_json)
+        z.wait_for(lambda s: not any("package.json" in i for i in s["issues"]), timeout=60, interval=0.5)
+
+    def vue_through_typescript():
+        line = line_of(greeting, "{{ greeting }}")
+        z.run(f"open {greeting}:{line}")
+        s = ready("vue-language-server", "vtsls")
+        assert [x["id"] for x in s["language_servers"] if x["documents"] and x["id"] in ("vue-language-server", "vtsls")], s["language_servers"]
+        # The template's expressions are TypeScript's (Vue's plugin in vtsls,
+        # through zcode's tsserver/request relay).
+        for _ in range(10):
+            z.run("keys home", keys_right(column_of(greeting, "{{ gree") + len("{{ gree")), "keys ctrl-space", "wait 1500")
+            s = z.dump()
+            if s["active"]["completion_menu_open"]:
+                break
+        assert "greeting" in s["active"]["completion_items"], s["active"]["completion_items"]
+        z.run("keys escape")
+
+    def prettier_formats():
+        z.run(f"open {counter_ts}:1", "keys home", "type const   spaced  =  1", "keys enter", "keys ctrl-shift-i")
+        z.wait_for(lambda s: s["active"]["text"].startswith("const spaced = 1;\n/**"), timeout=20, interval=0.3)
+        with open(os.path.join(bin_dir, "prettier-args.log")) as f:
+            assert f"--stdin-filepath {counter_ts}" in f.read()
+        revert(counter_ts)
+
+    def libraries_are_read_only():
+        z.run(f"open {library}:1")
+        s = z.wait_for(lambda s: s["active"]["path"] == library, timeout=10, interval=0.3)
+        assert s["active"]["read_only"], "node_modules is shown, never edited"
+
+    def a_server_turned_off_and_restarts():
+        z.run("settings set lsp.vscode-css-language-server.enabled false", "wait 800")
+        z.run(f"open {style}:1")
+        s = z.wait_for(lambda s: "vscode-css-language-server" not in [x["id"] for x in s["language_servers"] if x["documents"]], timeout=20, interval=0.5)
+        z.run("settings set lsp.vscode-css-language-server.enabled true", "wait 800")
+        ready("vscode-css-language-server", timeout=60)
+        before = {x["id"]: x["pid"] for x in z.dump()["language_servers"]}
+        z.run(f"open {main_ts}:1", "action zcode::RestartLanguageServers")
+        s = z.wait_for(lambda s: all(x["status"] == "Ready" for x in s["language_servers"]), timeout=180, interval=1)
+        assert all(x["pid"] != before.get(x["id"]) for x in s["language_servers"]), "each one is a new process"
+
+    try:
+        check("Web servers per web app (vtsls installed by zcode, rooted at web/), sourcekit-lsp for the Swift beside it", servers_per_web_app)
+        check("TypeScript: completions", typescript_completion)
+        check("TypeScript: live diagnostics in the Issue navigator", typescript_diagnostics)
+        check("TypeScript: a completion's auto-import", auto_import)
+        check("TypeScript: Jump to Definition in another file", definition_across_files)
+        check("HTML: the server's completions; a tag closed as its > is typed", html_completion_and_tags)
+        check("Emmet in HTML: a completion with Tab stops, ⌃⌥E", emmet_markup)
+        check("CSS: completions, Emmet's m10-20, ⌘/ as /* */ (and <!-- --> in HTML)", css_completion_emmet_and_comments)
+        check("JSON: the server's diagnostics", json_diagnostics)
+        check("Vue: the template's expressions completed through vtsls", vue_through_typescript)
+        check("Format File with the web app's Prettier (a stand-in)", prettier_formats)
+        check("node_modules files open read-only", libraries_are_read_only)
+        check("lsp.<id>.enabled turns a server off and on; Restart Language Servers", a_server_turned_off_and_restarts)
+    finally:
+        z.quit()
+
+    if "--network" not in sys.argv:
+        return
+
+    def eslint_and_tailwind():
+        app = os.path.join(WORK, "WebTools")
+        shutil.copytree(project, app, ignore=shutil.ignore_patterns("node_modules", ".build"))
+        web = os.path.join(app, "web")
+        subprocess.run([npm, "install", "--no-audit", "--no-fund", "--loglevel=error", "-D", "eslint", "@eslint/js", "typescript-eslint", "tailwindcss@4", "@tailwindcss/vite"],
+                       cwd=web, check=True, stdout=subprocess.DEVNULL)
+        with open(os.path.join(web, "eslint.config.js"), "w") as f:
+            f.write("import js from '@eslint/js'\nimport tseslint from 'typescript-eslint'\n\nexport default tseslint.config(\n"
+                    "  { extends: [js.configs.recommended, ...tseslint.configs.recommended], files: ['**/*.ts'], rules: { 'prefer-const': 'error' } },\n)\n")
+        with open(os.path.join(web, "src", "style.css"), "a") as f:
+            f.write('\n@import "tailwindcss";\n')
+        main_ts = os.path.join(web, "src", "main.ts")
+        z = Zcode(app, {"ZCODE_LANGUAGE_SERVERS_DIR": servers_dir})
+        try:
+            z.run(f"open {main_ts}:{line_of(main_ts, 'render()')}")
+            z.wait_for(lambda s: all(servers(s).get(i, {}).get("status") == "Ready" for i in ("vtsls", "eslint", "tailwindcss-language-server")), timeout=400, interval=1)
+            z.run("keys end", "keys enter", "type let never = 1")
+            z.wait_for(lambda s: any("Use 'const' instead" in i for i in s["issues"]), timeout=60, interval=0.5)
+            # Tailwind's classes in a class attribute of the page.
+            index = os.path.join(web, "index.html")
+            z.run(f"open {index}:{line_of(index, '<div id=')}", "keys end", "keys enter", 'type <p class="bg-sky-')
+            for _ in range(10):
+                z.run("keys ctrl-space", "wait 1500")
+                s = z.dump()
+                if s["active"]["completion_menu_open"]:
+                    break
+            assert "bg-sky-50" in s["active"]["completion_items"], s["active"]["completion_items"][:5]
+        finally:
+            z.quit()
+
+    check("ESLint's diagnostics (pulled) and Tailwind's classes, from the app's own packages", eslint_and_tailwind)
+
+
 def pane_checks(samples):
     """Editor panes on a copy of ZKit with an Objective-C pair and a property
     list: splits, one buffer in several panes (edits, undo, breakpoints,
@@ -6414,6 +6664,9 @@ def main():
 
     print("Language features (a copy of samples/ZKit, sourcekit-lsp):")
     language_feature_checks(samples)
+
+    print("Web languages (a copy of samples/HelloWeb: a Swift package with a Vite app in web/):")
+    web_language_checks(samples)
 
     print("Editor panes (a copy of samples/ZKit):")
     pane_checks(samples)
