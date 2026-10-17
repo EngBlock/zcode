@@ -123,6 +123,7 @@ gpui_kit::actions!(
         FocusEditorPane,
         // Editor
         ShowEditorOnly,
+        ShowInXcodeCanvas,
         ShowAssistant,
         FormatFile,
         ReIndent,
@@ -359,6 +360,8 @@ fn key_bindings() -> Vec<KeyBinding> {
         // Editor. ⌘↩ is Show Editor Only in Xcode, in the editor too.
         KeyBinding::new("cmd-enter", ShowEditorOnly, None),
         KeyBinding::new("cmd-enter", ShowEditorOnly, Some(EDITOR)),
+        // Xcode's Canvas key: zcode shows previews in Xcode's canvas.
+        KeyBinding::new("alt-cmd-enter", ShowInXcodeCanvas, None),
         KeyBinding::new("ctrl-alt-cmd-enter", ShowAssistant, None),
         KeyBinding::new("ctrl-shift-i", FormatFile, Some(EDITOR)),
         KeyBinding::new("ctrl-i", ReIndent, Some(EDITOR)),
@@ -593,6 +596,7 @@ pub fn commands() -> Vec<Command> {
         cmd!("Navigate", "Move Focus to Next Editor Pane", FocusNextEditorPane),
         cmd!("Navigate", "Move Focus to Previous Editor Pane", FocusPreviousEditorPane),
         cmd!("Editor", "Show Editor Only", ShowEditorOnly),
+        cmd!("Editor", "Show in Xcode Canvas", ShowInXcodeCanvas),
         cmd!("Editor", "Assistant", ShowAssistant),
         cmd!("Editor", "Code Review", CodeReview),
         cmd!("Editor", "-", Quit),

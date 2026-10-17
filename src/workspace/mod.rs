@@ -44,6 +44,7 @@ mod panes;
 mod pickers;
 mod plist_editor;
 mod predictions;
+mod previews;
 mod profile;
 mod project_files;
 mod project_settings;
@@ -198,6 +199,8 @@ pub struct Workspace {
     pub outline_generation: u64,
     session: Session,
     pub tests: testing::TestsState,
+    /// The last Show in Xcode Canvas and how it went.
+    canvas_request: Option<previews::CanvasRequest>,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
     outline_task: Option<Task<()>>,
@@ -334,6 +337,7 @@ impl Workspace {
             hierarchy: Default::default(),
             inlay_hints: inlay_hints::InlayHints::new(current_settings.inlay_hints),
             predictions: predictions::Predictions::new(&current_settings.edit_predictions),
+            canvas_request: None,
             profile_chooser: None,
             lsp_ready: false,
             outline: vec![],
@@ -888,6 +892,7 @@ impl Workspace {
         state["settings"] = self.settings_summary(window, cx);
         state["agent"] = self.agent_summary(window, cx);
         state["predictions"] = self.predictions_summary(cx);
+        state["previews"] = self.previews_summary(cx);
         state["language_features"] = serde_json::json!({
             "server": self.lsp.read(cx).features().summary(),
             "inlay_hints": self.inlay_hints_summary(cx),

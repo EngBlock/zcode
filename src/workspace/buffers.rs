@@ -51,6 +51,8 @@ pub struct Buffer {
     pub git: super::change_bars::BufferGit,
     /// The language server's semantic tokens for it.
     pub(super) tokens: super::semantic_tokens::BufferTokens,
+    /// The SwiftUI previews it declares.
+    pub(super) previews: super::previews::BufferPreviews,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -110,11 +112,12 @@ impl Workspace {
     }
 
     /// The gutter's lanes: breakpoint markers, bookmark ribbons over them,
-    /// test diamonds over both, each taking its clicks first; change bars
-    /// after the numbers, and the authors column when it's shown.
+    /// test diamonds and preview marks over both, each taking its clicks
+    /// first; change bars after the numbers, and the authors column when
+    /// it's shown.
     fn install_gutter_lanes(&self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
         let mut lanes =
-            vec![self.breakpoint_lane(editor, cx), self.bookmark_lane(editor, cx), self.test_lane(editor, cx), self.changes_lane(editor, cx)];
+            vec![self.breakpoint_lane(editor, cx), self.bookmark_lane(editor, cx), self.test_lane(editor, cx), self.preview_lane(editor, cx), self.changes_lane(editor, cx)];
         if self.git.show_authors {
             lanes.push(self.authors_lane(editor, cx));
         }
@@ -243,6 +246,7 @@ impl Workspace {
             plist_format,
             git: Default::default(),
             tokens: Default::default(),
+            previews: Default::default(),
             _subscriptions: vec![subscription],
         });
         if !headless {
@@ -250,6 +254,7 @@ impl Workspace {
         }
         self.anchor_breakpoints(path, false, cx);
         self.anchor_bookmarks(path, false, cx);
+        self.scan_previews(path, Duration::ZERO, cx);
         // A multibuffer reads a page of files' bases at once.
         if !read_only && !headless {
             self.load_git_bases(vec![path.to_path_buf()], cx);
@@ -289,6 +294,7 @@ impl Workspace {
                     this.lsp.update(cx, |lsp, cx| lsp.document_changed(&path, text, cx));
                 }
                 this.schedule_test_reparse(&path, cx);
+                this.previews_edited(&path, cx);
                 this.track_breakpoints(&path, cx);
                 this.track_bookmarks(&path, cx);
                 this.buffer_edited_for_git(&path, cx);

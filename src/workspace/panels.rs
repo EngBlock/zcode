@@ -987,6 +987,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FocusEditorPane, _, cx| this.toggle_zoom(cx)))
             .on_action(cx.listener(|this, _: &ShowAssistant, window, cx| this.toggle_assistant(window, cx)))
             .on_action(cx.listener(|this, _: &ShowEditorOnly, window, cx| this.show_editor_only(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowInXcodeCanvas, window, cx| this.show_in_xcode_canvas(window, cx)))
             .on_action(cx.listener(|this, _: &JumpToDefinitionInNextPane, window, cx| {
                 this.jump_to_definition_in_next_pane(window, cx)
             }))
