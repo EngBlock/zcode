@@ -36,7 +36,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | **Multibuffers** (from Zed) | One editor showing excerpts of many files, edited in place: Find ▸ Show Find Results in Editor (or the Find navigator's button) for Find in Workspace's results or Find Selected Symbol's references, Navigate ▸ Show Issues in Editor (or the Issue navigator's button) for every issue with its lines around it and its message under it, and a rename's changes. Each file has a header with its name and folder; the gutter shows each line's number in its file, its change bars and breakpoints (click one to toggle it), and the excerpts show the file's diagnostics. Typing in an excerpt edits the file itself (unsaved, as in its tab, which shows the change at once, and the other way around); ⌘S saves the files the tab changed, and one ⌘Z undoes one edit across every file it touched, in step with each file's own undo. Click a header or a line number, or ⌥↩, to open the file there; ⇧↩ or a header's ↕ shows three more lines around an excerpt. Find ▸ Find and Replace in Workspace adds a Replace field whose Replace All edits the results this way. A search over thousands of files opens a page of files at a time as the tab scrolls. | ⌥⇧⌘F, ⌥↩, ⇧↩ |
 | | Comment selection, duplicate, move line, select next occurrence, soft wrap and font size. | ⌘/, ⌘D, ⌥⌘[ ⌥⌘], ⌥⌘E, ⌃⇧⌘L, ⌘+ ⌘- ⌃⌘0 |
 | | Xcode-style `<#placeholder#>` snippets from completions, with Tab or ⌃/ jumping to the next placeholder. | Tab, ⌃/, ⌃⇧/ |
-| **Settings** (from Zed) | zcode ▸ Settings… opens `~/.config/zcode/settings.json`: JSON with comments in Zed's format, applied the moment it's saved, in every window. `theme` (a name, or one for light and one for dark appearance), `buffer_font_family`, `buffer_font_size`, `tab_size`, `hard_tabs`, `soft_wrap`, `show_whitespaces`, `gutter.line_numbers`, `indent_guides`, `format_on_save` (through sourcekit-lsp, on ⌘S, Save All and `:w`), `remove_trailing_whitespace_on_save`, `ensure_final_newline_on_save`, `inlay_hints`, `vim_mode`, `git.inline_blame`, `git.show_authors`, `git.side_by_side_comparison`, `terminal.shell`, `agent_servers` and `agent` (the agent panel's agents, which one a conversation starts with, and `always_allow_tool_actions`), `edit_predictions` (predictive completion's provider, model, key and when it asks), `profiling.time_limit` (Profile stops recording after it); zcode ▸ Open Default Settings lists them with their defaults (read-only). A project's `.zcode/settings.json` (zcode ▸ Open Project Settings File) wins over yours for its window, except the theme, font family, Vim mode, the agent settings and predictions (a cloned project can't name programs to run, or where your code and key are sent; it can only turn predictions off). The Editor menu's toggles (Authors, Inline Blame, Inlay Hints, Vim Mode, Wrap Lines, Invisibles, Side by Side / Inline Comparison) and ⌘+ ⌘- ⌃⌘0 write the file, keeping its comments, and show checkmarks. A mistake (a missing comma, `"tab_size": "four"`, an unknown setting) is shown with its line and column, and the settings it gave last stay until it's fixed. The toggles zcode kept in its session before move into the file once. | ⌘, |
+| **Settings** (from Zed) | zcode ▸ Settings… opens `~/.config/zcode/settings.json`: JSON with comments in Zed's format, applied the moment it's saved, in every window. `theme` (a name, or one for light and one for dark appearance), `buffer_font_family`, `buffer_font_size`, `tab_size`, `hard_tabs`, `soft_wrap`, `show_whitespaces`, `gutter.line_numbers`, `indent_guides`, `format_on_save` (through sourcekit-lsp, on ⌘S, Save All and `:w`), `remove_trailing_whitespace_on_save`, `ensure_final_newline_on_save`, `inlay_hints`, `vim_mode`, `git.inline_blame`, `git.show_authors`, `git.side_by_side_comparison`, `terminal.shell`, `agent_servers` and `agent` (the agent panel's agents, which one a conversation starts with, and `always_allow_tool_actions`), `edit_predictions` (predictive completion's provider, model, key and when it asks), `profiling.time_limit` (Profile stops recording after it), `distribution.notary_keychain_profile` (Distribute App's notarization credentials); zcode ▸ Open Default Settings lists them with their defaults (read-only). A project's `.zcode/settings.json` (zcode ▸ Open Project Settings File) wins over yours for its window, except the theme, font family, Vim mode, the agent settings, predictions and the notarization profile (a cloned project can't name programs to run, or where your code and key are sent; it can only turn predictions off). The Editor menu's toggles (Authors, Inline Blame, Inlay Hints, Vim Mode, Wrap Lines, Invisibles, Side by Side / Inline Comparison) and ⌘+ ⌘- ⌃⌘0 write the file, keeping its comments, and show checkmarks. A mistake (a missing comma, `"tab_size": "four"`, an unknown setting) is shown with its line and column, and the settings it gave last stay until it's fixed. The toggles zcode kept in its session before move into the file once. | ⌘, |
 | | zcode ▸ Key Bindings… opens `keymap.json`: blocks of bindings with an optional `context` (`Editor`, `Editor && vim_mode == normal`, `multibuffer`, `Terminal`, `Navigator && navigator == find`, `PlistEditor`, `Picker`, `Workspace`, …), over zcode's; an action by name (`zcode::Build` or `Build`, `[name, arguments]`), `null` to free a key, `["zed::Unbind", action]` to take a key off one action; multi-key sequences (`ctrl-x ctrl-s`). Bindings for a Vim mode come before Vim's own keys. Bindings that can't be made are reported; the rest apply. zcode ▸ Open Default Key Bindings lists zcode's. | — |
 | | Themes are JSON files in `~/.config/zcode/themes`: gpui-component's format (the window's colors, the editor's and its syntax colors, a monospace font) or Zed's theme files. zcode ▸ Select Theme… lists them with Default Light and Default Dark. zcode ▸ Import Xcode Theme… converts one of Xcode's `.xccolortheme` themes (yours from `~/Library/Developer/Xcode/UserData/FontAndColorThemes`, or one Xcode ships) into a theme file and shows it: the editor's background, text, current line, selection, insertion point, invisibles, syntax colors with their bold and italic, and the font when it's installed. zcode ▸ Import Xcode Key Bindings… turns a set from `~/Library/Developer/Xcode/UserData/KeyBindings` into blocks of `keymap.json`: each command zcode has gets its shortcut, and loses zcode's default ones as in Xcode, and text editing bindings go to the editor; importing again replaces them. Xcode's files are only read. | — |
 | **Vim mode** | Editor ▸ Vim Mode (off by default; `vim_mode` in the settings, for every window) in every editor tab: files in every pane, both sides of Code Review and multibuffers. Normal, insert, replace, visual, visual line and visual block modes, with the mode in the status bar (`-- INSERT --`, then any keys of a command not finished yet). Motions (`h j k l w W b B e E ge 0 ^ $ g_ \| gg G { } f F t T ; , % H M L + - _`, marks), counts, and the operators `d c y > < = g~ gu gU` over motions and text objects (`iw aw iW aW ip ap i" a" i' a' i( a( i[ a[ i{ a{ i< a< it at`, and the backtick quotes); `x X s S C D Y p P gp gP J gJ r R ~ o O i a I A gi gI ⌃A ⌃X`; registers (`"a`–`"z`, `"A`–`"Z` to append, `"0`–`"9`, `"-`, `"_`, `"+` `"*`, `".` `"/` `":`), the unnamed one being the system clipboard (as in Zed); `.` repeats the last change with what its insert typed (completions and closed brackets included); `u` and `⌃R`, an insert undoing in one step with the change that started it; `/ ? n N * #` with Vim's patterns and the matches highlighted; `m` with `'` and the backtick to go to marks; scrolling (`⌃D ⌃U ⌃F ⌃B ⌃E ⌃Y zz zt zb`) and folds (`zo zc za zR zM`); visual block `I`, `A` and `c` typing on every row at once. `:` commands: `:w`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `ZZ`, `ZQ` (`:q` closes the tab, as in Zed, and refuses unsaved changes without `!`; in a multibuffer `:w` saves the files the tab changed), `:s` with ranges (`%`, `.`, `$`, numbers, marks, `'<,'>`, `+N`) and the `g`, `i`, `I`, `n` flags, `:<line>`, `:d`, `:y`, `:j`, `:>`, `:<`, `:noh`, `:undo`, `:redo`, with ↑/↓ history. Every cursor of a multi-cursor editor moves and operates; a selection made with the mouse, ⌘D or a placeholder is visual mode. Escape closes completion, signature help and Find before it leaves insert mode. `gd` jumps to the definition, `gt` / `gT` switch tabs, `⌃O` / Tab go back and forward, `=` re-indents through sourcekit-lsp. zcode's own ⌃ shortcuts (⌃6, ⌃I, ⌃/, ⌃\`…) and every ⌘ key keep working; terminals, property list outlines and text fields aren't affected. | Editor ▸ Vim Mode |
@@ -58,6 +58,8 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | **Build & run** | Scheme, configuration and run destination pickers. Destinations are grouped as in Xcode: My Mac, connected iOS, iPadOS, watchOS, tvOS and visionOS devices (from `devicectl`, with how they're connected or why they can't be used: not paired, Developer Mode disabled, unavailable), Any iOS Device (arm64) for building, then every available simulator, filtered by the scheme's `SUPPORTED_PLATFORMS`. Devices appear and disappear as they connect, without a refresh. | ⌃0, ⌃⇧0 |
 | | Build, Run, Test, Stop and Clean. Files are saved first. Stop ends the app however it was started (on its own, under lldb-dap, which can leave it to launchd, or by a recording), and so do quitting zcode and closing the window. | ⌘B, ⌘R, ⌘U, ⌘., ⇧⌘K |
 | | Profile: builds with the scheme's Profile action's configuration (Release unless the scheme says otherwise), then records the app under Instruments with `xctrace record --launch`, on the Mac, a simulator (booted and installed first) or a device (installed with `devicectl`), with the Run action's arguments and environment (or the Profile action's own). A template chooser lists `xctrace list templates` (Time Profiler, Allocations, Leaks, Animation Hitches, SwiftUI and App Launch first, then the rest and your own), unless the scheme's Profile action names its instrument; Profile… asks either way. The app's output streams into the console while it records. Stop ends the recording (xctrace saves the trace; a second Stop ends it outright), as does `profiling.time_limit` in `settings.json`; the trace opens in Instruments, and for Time Profiler the console lists the functions with the most samples, with their self and total share, from `xctrace export`. Profile Without Building and Build For ▸ Profiling too. Traces are kept in `~/Library/Caches/zcode/Traces` (the newest 20). | ⌘I, ⌥⌘I, ⌃⌘I, ⇧⌘I |
+| | Archive: builds with the scheme's Archive action's configuration (Release unless the scheme says otherwise) for a generic device of the run destination's platform (Any iOS Device for an iOS simulator, any Mac for My Mac, or the first platform the scheme supports), signing with automatic provisioning as Xcode does, into Xcode's own Archives folder (`~/Library/Developer/Xcode/Archives/<date>/<Scheme> <date>, <time>.xcarchive`), so Xcode's Organizer lists zcode's archives and the other way around. The output goes to the build log and the Reports navigator; a signing error says to choose the team in the target's Signing & Capabilities tab. Then the Organizer opens on the new archive (unless the scheme's Reveal Archive in Organizer is off). | Product ▸ Archive |
+| | Window ▸ Organizer: the Archives folder as a tab, archives grouped by app (iOS, macOS… and Other Items) with their creation date, version, description, identifier, team, signing identity and architectures; Show in Finder, Delete Archive (to the Trash), Refresh. Distribute App offers Xcode's methods: App Store Connect and TestFlight Internal Only (uploaded to App Store Connect, or exported), Release Testing, Enterprise and Debugging for device apps, Developer ID and Copy App for Mac apps, with their options (symbols, version and build number management, stripping Swift symbols) and the folder to export to. zcode writes the `ExportOptions.plist` and runs `xcodebuild -exportArchive -allowProvisioningUpdates` (`destination: upload` to upload). Developer ID apps can be notarized: zipped, submitted with `notarytool submit --wait` and the keychain profile you stored once with `xcrun notarytool store-credentials` (remembered as `distribution.notary_keychain_profile`), and the ticket stapled; a rejection lists Apple's reasons in the Issue navigator. | ⌥⇧⌘O |
 | | Edit Scheme for the Run and Test actions: build configuration, Debug executable, arguments passed on launch and environment variables (each with its checkbox; `$(BUILD_SETTING)`s expand), working directory, launching without state restoration, and the Address, Thread and Undefined Behavior Sanitizers, Main Thread Checker, Malloc Scribble, Guard Edges and Stack Logging, and Zombie Objects. Changes are written in place to the scheme's `.xcscheme` (shared or the user's), the rest of the file left byte for byte; Swift packages keep them in zcode's session. Run… and Test… open the editor with a button that starts the action. Product ▸ Scheme also has Next and Previous Scheme. | ⌘<, ⌥⌘R, ⌥⌘U, ⌃⌘] ⌃⌘[ |
 | | The scheme's options reach every launch: simulator apps (`simctl launch` with `SIMCTL_CHILD_` variables), Mac apps, package products and lldb-dap; sanitizers reach `xcodebuild` and `swift build`/`swift test`, tests build with the Test action's configuration, and the Test action's environment reaches `swift test` and the in-simulator runner. The toolbar's build configuration is the Run action's. Mac executables and package products run on a pseudo-terminal, as in Xcode's console, so their output streams as it is printed. | — |
 | | Running on a simulator boots it, opens Simulator.app, installs and launches the app, and streams the app's stdout/stderr into the console. Mac executables and Swift packages run directly. | — |
@@ -133,6 +135,7 @@ always works on its own window's project.
 | `EvaluateInDebugger` | An LLDB command (`po`, `p`, `v`, `bt`, `expr`) in the paused frame, shown in the console |
 | `TakeScreenshot` | A PNG of the project window (a pixel per point) or of a simulator's screen (`simctl io screenshot`); never a device |
 | `ProfileProject` | Product ▸ Profile for a time limit (10 s unless told; Time Profiler unless another template is named): the trace, opened in Instruments, and the heaviest functions |
+| `ArchiveProject` | Product ▸ Archive: the archive's path, app, version and team, or the errors. It never exports or uploads; Distribute App in the Organizer does that |
 
 Xcode 27 has an MCP server too (`xcrun mcpbridge`, for a running Xcode);
 where it has the tool, zcode's has its name, so instructions written for
@@ -156,7 +159,7 @@ anything; `zcode mcp` checks that the socket's other end is the same user
 too. The control channel (`ZCODE_DEBUG_DIR`) is a separate test hook and
 isn't reachable through MCP. Tools that start, stop or evaluate something
 (`BuildProject`, `RunProject`, `StopProject`, `RunAllTests`,
-`RunSomeTests`, `EvaluateInDebugger`, `ProfileProject`) called by the agent panel's agent
+`RunSomeTests`, `EvaluateInDebugger`, `ProfileProject`, `ArchiveProject`) called by the agent panel's agent
 ask in the panel's thread first, with Allow, Always Allow (for the
 conversation) and Reject, unless `agent.always_allow_tool_actions` is on;
 the panel knows its agent by a random token in the server's environment.
@@ -297,6 +300,13 @@ if zcode is not faster.
   alternating rounds of 15 against `master` (load average 10–25): the
   welcome window's first pixels at 236.6, 234.9 and 237.7 ms against
   231.8, 240.4 and 235.3 ms.
+* Archive and the Organizer cost nothing until used: the Organizer reads
+  the Archives folder on a thread of its own when it opens (and after
+  zcode archives, exports or deletes), and Distribute App's export,
+  notarization and stapling stream like a build. Cold launch, three
+  alternating rounds of 12 against `master` (load average ~8): the
+  welcome window's first pixels at 237.1, 228.5 and 237.2 ms against
+  230.5, 234.6 and 230.1 ms.
 * Settings cost nothing measurable at startup: the user's settings,
   keymap and the theme they name are read and parsed on a thread of their
   own started at the top of `main()`, and the first window takes what it
@@ -338,13 +348,16 @@ src/
                     views, Settings… and the theme and import pickers; the agent panel (agent/: the
                     conversation, the agent's file reads and writes through buffers, @-mentions);
                     predictive completion (predictions.rs: when to ask, cancelling, the status bar);
-                    Profile's template chooser (profile.rs)
+                    Profile's template chooser (profile.rs); Archive, the Organizer tab and Distribute App's
+                    sheet (archive.rs, organizer.rs, distribute_sheet.rs)
   lsp/              JSON-RPC client, document sync store, editor provider adapters, what the server offers;
                     inlay hints, semantic tokens and call/type hierarchies converted for the editor
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner (programs started with
                     no signals blocked, ended by Stop wherever they ended up), log/issue/test parsing,
                     compilation-database extraction; profile/: Product ▸ Profile (xctrace's templates and
-                    recording, opening Instruments, a Time Profiler export's heaviest functions)
+                    recording, opening Instruments, a Time Profiler export's heaviest functions); archive/:
+                    Product ▸ Archive and Distribute App (archives in Xcode's folder read from their
+                    Info.plist, ExportOptions.plist and xcodebuild -exportArchive, notarytool and stapler)
   packages/         Swift package dependencies: rules and versions, Package.resolved, checkouts,
                     Package.swift edits, git queries, resolve/update/reset
   testing/          tests found in source, test plans, test selections per runner, results → tests
@@ -402,6 +415,8 @@ scripts/
                     answers inlineCompletion itself
   fake_xctrace.py   xctrace for Profile's tests: templates, a recording until SIGINT, a time limit or
                     the app's exit, and a Time Profiler export (no Instruments, no Developer Tools access)
+  fake_distribute.py  xcodebuild -exportArchive, notarytool and stapler for Distribute App's tests: exports
+                    copy the app, uploads and notarization are pretended (nothing reaches Apple)
   appkit_floor.swift  minimal native AppKit app, the cold-launch reference
 ```
 
@@ -483,6 +498,11 @@ Xcode), and opens its traces in Instruments; its commands, keys
 (⌘I, ⌥⌘I, ⌃⌘I, ⇧⌘I) and the Profile action read from the scheme are
 Xcode's. The summary reads `xctrace export`'s XML with `roxmltree` (MIT
 OR Apache-2.0, already built for gpui's SVGs).
+Archive and Distribute App run Xcode's command line tools (`xcodebuild
+archive` and `-exportArchive`, `notarytool`, `stapler`, `ditto`); the
+archive layout, the Archives folder, the method names, Window ▸ Organizer
+and ⌥⇧⌘O are Xcode's, and the `ExportOptions.plist` keys are those
+`xcodebuild -help` documents. No new dependencies.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -669,6 +689,20 @@ themes or session. It covers:
   `profiling.time_limit`; the scheme's instrument skipping the chooser and
   Profile… asking anyway; Build For ▸ Profiling. On the fake device
   (installed, recorded there) and, with `--simulator`, on a simulator
+* Archive and Distribute App on a copy of HelloClassic, in the run's own
+  Archives folder (never `~/Library/Developer/Xcode/Archives`): a real
+  `xcodebuild archive` for any Mac (Sign to Run Locally, so it signs on any
+  Mac) revealed in the Organizer with a report; an archive as Xcode leaves
+  one listed beside it, with each platform's methods and export options;
+  a real Copy App export, and a real Developer ID export refused for want
+  of a team (pointing at Signing & Capabilities); HelloZ's archive
+  refused for want of a team. Then through `scripts/fake_distribute.py`,
+  which pretends (nothing is uploaded or sent to Apple): an App Store
+  Connect upload and a TestFlight Internal Only export with their
+  `ExportOptions.plist`, Developer ID notarized with a keychain profile and
+  stapled (the profile kept in `settings.json`), a rejected notarization
+  with Apple's log, missing credentials, a refused upload;
+  `ArchiveProject` over MCP; Delete Archive; ⌥⇧⌘O
 * bookmarks on a copy of ZKit: Bookmark Line and File, ribbons, edits and
   undo (a deleted line's bookmark back with ⌘Z), next and previous in the file and the workspace, descriptions
   edited in place, completion, the filter, drag and drop (real mouse
@@ -878,6 +912,25 @@ The control channel also takes window screenshots
   to a running app, Profile Test and the Profile action's working
   directory aren't offered; the scheme's Profile action is read, not
   edited.
+* Archive and distribution: no upload or notarization was made from this
+  machine; uploads to App Store Connect, TestFlight and Apple's notary
+  service were only exercised against a fake `xcodebuild -exportArchive`
+  and `notarytool` (`scripts/fake_distribute.py`), and the App Store,
+  Release Testing, Enterprise, Debugging and Developer ID exports never
+  ran for real (the Mac has no distribution certificate; only Copy App
+  and a Developer ID export refused for want of a team did). Exports use
+  automatic signing (`-allowProvisioningUpdates`): there's no manual
+  signing with chosen certificates and profiles, no Validate App,
+  Download Debug Symbols, App Thinning variants, distribution manifests,
+  `distributionBundleIdentifier` or Custom flows, and no Mac installer
+  package (`.pkg`) export. Notarization takes a keychain profile only
+  (store it with `xcrun notarytool store-credentials`), notarizes an
+  exported app (not a disk image or package) and isn't offered for
+  uploads. The Organizer shows archives, not Xcode's crashes, energy,
+  metrics or feedback; an archive's description is shown, not edited.
+  Archive builds into Xcode's DerivedData, not zcode's index folder, and
+  doesn't edit the scheme's Archive action. Swift packages can't be
+  archived.
 * Devices: there's no Devices and Simulators window (⇧⌘2), so pairing a new
   device, turning on Developer Mode and copying a device's system symbols
   still happen in Xcode. Without those symbols for the device's OS build
@@ -892,8 +945,8 @@ The control channel also takes window screenshots
   Watch, Apple TV and Vision Pro hardware were only exercised against
   recorded `devicectl` output and a fake `devicectl`.
 * Edit Scheme covers the Run and Test actions only (not Build, Profile,
-  Analyze or Archive, nor pre- and post-actions; Profile reads its action
-  from the file), and doesn't create,
+  Analyze or Archive, nor pre- and post-actions; Profile and Archive read
+  their actions from the file), and doesn't create,
   duplicate, share or delete schemes. It has no App Language or Region,
   location simulation, StoreKit or "Pause on issues" options. Main Thread
   Checker applies under the debugger, as in Xcode.

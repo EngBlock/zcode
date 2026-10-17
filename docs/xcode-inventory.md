@@ -304,7 +304,7 @@ Invisibles is Xcode's `toggleInvisibleCharactersShown:`.
 - Reports navigator (build log history), timing summary.
 - Profile (⌘I) by handing off to Instruments with `xctrace`. Done in zcode (Phase 4.1), with Profile… (⌥⌘I), Profile Without Building (⌃⌘I) and Build For ▸ Profiling (⇧⌘I).
 - Simulate Location, view-hierarchy capture, memory graph.
-- Archive and export (`xcodebuild archive` / `-exportArchive`), Organizer.
+- Archive and export (`xcodebuild archive` / `-exportArchive`), Organizer. Done in zcode (Phase 4.2): Product ▸ Archive, Window ▸ Organizer (⌥⇧⌘O) with the Archives and Distribute App (App Store Connect, TestFlight Internal Only, Release Testing, Enterprise, Debugging, Developer ID with notarization, Copy App).
 - SwiftUI Previews canvas. This is hard because it needs private preview infrastructure, so consider a "run in simulator with hot reload" alternative.
 - Bookmarks navigator, snippets library, coding-assistant chat.
 
