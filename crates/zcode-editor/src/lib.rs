@@ -76,6 +76,7 @@ mod rope_ext;
 mod search;
 #[path = "base/selection.rs"]
 mod selection;
+pub mod snippet;
 #[path = "base/state.rs"]
 mod state;
 mod textarea;
@@ -161,7 +162,7 @@ pub use language_config::{AutoClosingPair, BracketPair, IndentationRules};
 pub use lsp::{
     CodeActionItem, CodeActionMenuState, CodeActionProvider, CompletionMenuOptions,
     CompletionMenuState, CompletionProvider, DefinitionProvider, DocumentColorProvider,
-    HoverPopoverState, HoverProvider, InputOverlayKind, Lsp, ShowDocumentHandler,
+    HoverPopoverState, HoverProvider, InputOverlayKind, Lsp, ShowDocumentHandler, SnippetSession,
     SignatureHelpProvider, SignatureHelpState, split_signature_label,
 };
 pub use lsp_types::Position;

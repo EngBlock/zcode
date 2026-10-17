@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::*;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::{Target, Workspace};
 use crate::build::BuildController;
@@ -64,7 +64,7 @@ pub struct OpenQuicklyDelegate {
     root: PathBuf,
     files: Arc<Vec<PathBuf>>,
     labels: Arc<Vec<String>>,
-    server: Option<Arc<LanguageServer>>,
+    servers: Vec<Arc<LanguageServer>>,
     items: Vec<PickerItem>,
     matches: Vec<OpenQuicklyMatch>,
     symbol_task: Option<Task<()>>,
@@ -75,7 +75,7 @@ impl OpenQuicklyDelegate {
         workspace: WeakEntity<Workspace>,
         root: PathBuf,
         files: Arc<Vec<PathBuf>>,
-        server: Option<Arc<LanguageServer>>,
+        servers: Vec<Arc<LanguageServer>>,
     ) -> Self {
         let labels = Arc::new(files.iter().map(|p| p.to_string_lossy().to_string()).collect());
         Self {
@@ -83,7 +83,7 @@ impl OpenQuicklyDelegate {
             root,
             files,
             labels,
-            server,
+            servers,
             items: vec![],
             matches: vec![],
             symbol_task: None,
@@ -154,10 +154,9 @@ impl PickerDelegate for OpenQuicklyDelegate {
         // Workspace symbols arrive asynchronously, below the files.
         self.symbol_task = None;
         if file_query.chars().count() >= 2
-            && let Some(server) = self.server.clone()
-            && server.supports("/workspaceSymbolProvider")
+            && !self.servers.is_empty()
         {
-            let request = server.request_raw("workspace/symbol", json!({ "query": file_query }));
+            let request = lsp::workspace_symbols(&self.servers, &file_query);
             let root = self.root.clone();
             self.symbol_task = Some(cx.spawn(async move |picker, cx| {
                 let Ok(value) = request.await else { return };

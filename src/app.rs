@@ -388,6 +388,7 @@ pub fn run() {
             zcode_editor::init(cx);
             mark("gpui_kit::init");
             crate::languages::register();
+            crate::languages::configure(cx);
             cx.set_global(Perf::new(main_started));
             crate::settings::init(cx);
             mark("settings");

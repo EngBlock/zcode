@@ -134,5 +134,27 @@
   },
   // Check for a new zcode once a day (zcode ▸ Check for Updates… always
   // does). Yours only.
-  "auto_update": true
+  "auto_update": true,
+  // Language servers, by id: sourcekit-lsp; for web apps vtsls
+  // (JavaScript, TypeScript), vscode-html-language-server,
+  // vscode-css-language-server, vscode-json-language-server, eslint,
+  // biome, tailwindcss-language-server, vue-language-server,
+  // svelte-language-server and astro-language-server. Each can have
+  //   "enabled": false,
+  //   "binary": { "path": "/path/to/server", "arguments": ["--stdio"] },
+  //   "initialization_options": { … },
+  //   "settings": { … }
+  // the last two merged over what zcode gives it, e.g.
+  //   "vtsls": { "settings": { "typescript": { "preferences": { "quoteStyle": "single" } } } }
+  // "binary" is yours only.
+  "lsp": {},
+  // The web's language servers are npm packages: zcode uses a web app's
+  // own (node_modules/.bin), then your PATH's, and otherwise installs them
+  // with npm into ~/Library/Application Support/zcode/language-servers the
+  // first time one is needed. false: only ones you've installed. Yours only.
+  "auto_install_language_servers": true,
+  // What Editor ▸ Format File and format_on_save use: "language_server",
+  // "prettier" (the web app's own, from its node_modules), or "auto":
+  // Prettier for a web app that has it, the language server otherwise.
+  "formatter": "auto"
 }

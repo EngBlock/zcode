@@ -56,6 +56,12 @@ pub struct Buffer {
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
+/// An npm package's file (a definition in a library's `.d.ts`): shown,
+/// never edited.
+fn is_installed_package(path: &Path) -> bool {
+    path.components().any(|c| c.as_os_str() == "node_modules")
+}
+
 impl Buffer {
     pub fn title(&self) -> String {
         super::pane::file_title(&self.path)
@@ -134,19 +140,27 @@ impl Workspace {
         match (name, ext) {
             ("Podfile" | "Fastfile" | "Gemfile", _) => "ruby",
             ("Makefile", _) => "make",
+            _ if name.starts_with(".env") => "bash",
+            (".prettierrc" | ".eslintrc" | ".babelrc" | ".swcrc", _) => "json",
             (_, "swift" | "swiftinterface") => "swift",
             (_, "m" | "h" | "c") => "c",
             (_, "mm" | "cc" | "cpp" | "cxx" | "hpp" | "hh") => "cpp",
-            (_, "json" | "xcscheme" | "resolved") if ext != "xcscheme" => "json",
-            (_, "plist" | "entitlements" | "xcscheme" | "xml" | "storyboard" | "xib" | "html") => {
-                "html"
-            }
-            (_, "md" | "markdown") => "markdown",
+            (_, "json" | "jsonc" | "json5" | "resolved") => "json",
+            (_, "plist" | "entitlements" | "xcscheme" | "xml" | "storyboard" | "xib" | "html" | "htm" | "svg") => "html",
+            (_, "md" | "markdown" | "mdx") => "markdown",
             (_, "yml" | "yaml") => "yaml",
             (_, "toml") => "toml",
             (_, "sh" | "bash" | "zsh") => "bash",
             (_, "rs") => "rust",
-            (_, "js" | "mjs" | "ts") => "javascript",
+            (_, "js" | "mjs" | "cjs") => "javascript",
+            (_, "jsx") => "jsx",
+            (_, "ts" | "mts" | "cts") => "typescript",
+            (_, "tsx") => "tsx",
+            (_, "css" | "scss" | "pcss" | "postcss") => "css",
+            (_, "less") => "less",
+            (_, "vue") => "vue",
+            (_, "svelte") => "svelte",
+            (_, "astro") => "astro",
             (_, "py") => "python",
             _ => "text",
         }
@@ -218,6 +232,7 @@ impl Workspace {
         // (Open Default Settings) can't be edited.
         let read_only = crate::packages::location::is_package_checkout(path)
             || crate::toolchain::is_in_developer_dir(path)
+            || is_installed_package(path)
             || super::settings::is_generated(path);
         let config = self.editor_config();
         let editor = if headless {
@@ -527,25 +542,49 @@ impl Workspace {
         }
     }
 
-    /// ⌘S, Save All and `:w`: with `format_on_save`, the language server
-    /// formats the file first (waiting at most a moment for it); otherwise
-    /// as `save_path`. Saves before a build don't format.
+    /// How `path` is formatted, as `formatter` says: Prettier's output as
+    /// line edits, or its language server's `textDocument/formatting`
+    /// (Biome's, when the web app uses Biome). Both in the server's
+    /// coordinates. `None` when nothing formats it.
+    pub(super) fn document_formatting(&mut self, path: &Path, cx: &mut Context<Self>) -> Option<Task<anyhow::Result<Vec<lsp_types::TextEdit>>>> {
+        let text = self.buffer(path)?.editor.read(cx).text().clone();
+        let prettier = match self.settings.current.formatter {
+            crate::settings::Formatter::LanguageServer => None,
+            crate::settings::Formatter::Prettier => Some(lsp::prettier::find(path, &self.project.root)),
+            crate::settings::Formatter::Auto => lsp::prettier::find(path, &self.project.root).filter(|_| lsp::prettier::supports(path)).map(Some),
+        };
+        if let Some(prettier) = prettier {
+            let path = path.to_path_buf();
+            return Some(cx.background_spawn(async move {
+                let prettier = anyhow::Context::context(prettier, "Prettier isn’t installed in this web app (npm install --save-dev prettier)")?;
+                let before = text.to_string();
+                let after = lsp::prettier::format(&prettier, &path, &before)?;
+                Ok(lsp::prettier::line_edits(&before, &after))
+            }));
+        }
+        let servers = self.lsp.update(cx, |lsp, _| lsp.synced_servers(path, Some(&text), Some("/documentFormattingProvider")));
+        let (_, server) = servers.iter().find(|(_, s)| s.name() == "biome").or(servers.first())?.clone();
+        let request = server.request_raw(
+            "textDocument/formatting",
+            serde_json::json!({ "textDocument": { "uri": lsp::path_to_uri(path).as_str() }, "options": self.formatting_options() }),
+        );
+        Some(cx.background_spawn(async move { Ok(serde_json::from_value(request.await?).unwrap_or_default()) }))
+    }
+
+    /// ⌘S, Save All and `:w`: with `format_on_save`, the file is formatted
+    /// first (waiting at most a moment); otherwise as `save_path`. Saves
+    /// before a build don't format.
     pub(super) fn save_path_from_user(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
-        let server = if self.settings.current.format_on_save && self.buffer(path).is_some_and(|b| !b.read_only && b.plist_format.is_none()) {
-            self.lsp.update(cx, |lsp, cx| lsp.synced_server(path, cx)).filter(|s| s.supports("/documentFormattingProvider"))
+        let request = if self.settings.current.format_on_save && self.buffer(path).is_some_and(|b| !b.read_only && b.plist_format.is_none()) {
+            self.document_formatting(path, cx)
         } else {
             None
         };
-        let Some(server) = server else {
+        let Some(request) = request else {
             self.save_path(path, window, cx);
             return;
         };
         let Some(before) = self.buffer(path).map(|b| b.editor.read(cx).text().to_string()) else { return };
-        let uri = lsp::path_to_uri(path);
-        let request = server.request_raw(
-            "textDocument/formatting",
-            serde_json::json!({ "textDocument": { "uri": uri.as_str() }, "options": self.formatting_options() }),
-        );
         let path = path.to_path_buf();
         cx.spawn_in(window, async move |this, cx| {
             let timeout = cx.background_executor().timer(super::settings::FORMAT_ON_SAVE_TIMEOUT);
@@ -555,7 +594,7 @@ impl Workspace {
             };
             this.update_in(cx, |this, window, cx| {
                 let unchanged = this.buffer(&path).is_some_and(|b| b.editor.read(cx).text().to_string() == before);
-                let edits: Vec<lsp_types::TextEdit> = result.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+                let edits: Vec<lsp_types::TextEdit> = result.unwrap_or_default();
                 if unchanged && !edits.is_empty() {
                     this.apply_file_edits(vec![(path.clone(), edits)], window, cx);
                 }
@@ -715,7 +754,7 @@ impl Workspace {
                     text = zcode_editor::Rope::from(s.as_str());
                 }
                 std::fs::write(&path, text.to_string()).ok();
-                self.lsp.read(cx).files_changed(std::slice::from_ref(&path));
+                self.lsp.update(cx, |lsp, cx| lsp.files_changed(std::slice::from_ref(&path), cx));
             }
             touched += 1;
         }

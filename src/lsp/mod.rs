@@ -1,23 +1,39 @@
-//! Language-server integration (sourcekit-lsp for Swift, C, C++, Objective-C).
+//! Language-server integration: sourcekit-lsp for Swift, C, C++ and
+//! Objective-C, and the web's servers (vtsls, HTML, CSS, JSON, ESLint,
+//! Tailwind, Vue, Svelte, Astro) for web apps (`servers`).
 
 mod client;
 pub mod hierarchy;
 pub mod inlay_hints;
+pub mod install;
+pub mod prettier;
 mod providers;
 pub mod semantic_tokens;
+pub mod servers;
 mod store;
 
 pub use client::{LanguageServer, ServerEvent};
-pub use providers::{ApplyEditFn, DocumentProviders, definition_links};
-pub use store::{Features, LspStatus, LspStore, LspStoreEvent, SignatureTriggers};
+pub use providers::{ApplyEditFn, DocumentProviders, LocalCompletions, definition_links};
+pub use store::{Features, LspConfig, LspStatus, LspStore, LspStoreEvent, ServerSummary, SignatureTriggers};
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr as _;
 
 use zcode_editor::{Rope, RopeExt as _};
 
-/// LSP `languageId` for a file, or `None` when sourcekit-lsp can't serve it.
+/// LSP `languageId` for a file, or `None` when no language server serves it.
 pub fn language_id_for(path: &Path) -> Option<&'static str> {
+    let name = path.file_name()?.to_str()?;
+    // JSON with comments, as TypeScript and VS Code read them.
+    if name.starts_with("tsconfig") && name.ends_with(".json") || name.starts_with("jsconfig") && name.ends_with(".json") {
+        return Some("jsonc");
+    }
+    if matches!(name, ".eslintrc" | ".eslintrc.json" | ".babelrc" | ".swcrc" | "biome.jsonc") {
+        return Some("jsonc");
+    }
+    if matches!(name, ".prettierrc") {
+        return Some("json");
+    }
     let ext = path.extension()?.to_str()?;
     Some(match ext {
         "swift" | "swiftinterface" => "swift",
@@ -26,8 +42,43 @@ pub fn language_id_for(path: &Path) -> Option<&'static str> {
         "c" => "c",
         "h" => "objective-c",
         "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => "cpp",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "scss" => "scss",
+        "less" => "less",
+        "js" | "mjs" | "cjs" => "javascript",
+        "jsx" => "javascriptreact",
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "typescriptreact",
+        "json" => "json",
+        "jsonc" => "jsonc",
+        "vue" => "vue",
+        "svelte" => "svelte",
+        "astro" => "astro",
         _ => return None,
     })
+}
+
+/// `workspace/symbol` asked of every server in `servers`, their answers
+/// together (only symbols with a location range, as `SymbolInformation`).
+pub fn workspace_symbols(
+    servers: &[std::sync::Arc<LanguageServer>],
+    query: &str,
+) -> impl std::future::Future<Output = anyhow::Result<serde_json::Value>> + Send + 'static + use<> {
+    let requests: Vec<_> = servers
+        .iter()
+        .filter(|server| server.supports("/workspaceSymbolProvider"))
+        .map(|server| server.request_raw("workspace/symbol", serde_json::json!({ "query": query })))
+        .collect();
+    async move {
+        let mut symbols = vec![];
+        for answer in futures::future::join_all(requests).await {
+            if let Ok(serde_json::Value::Array(found)) = answer {
+                symbols.extend(found.into_iter().filter(|s| s.pointer("/location/range").is_some()));
+            }
+        }
+        Ok(serde_json::Value::Array(symbols))
+    }
 }
 
 const URI_SAFE: &[u8] = b"-_.~/!$&'()*+,;=:@";
@@ -106,64 +157,7 @@ pub fn lsp_range_to_offsets(text: &Rope, range: lsp_types::Range) -> std::ops::R
 /// Converts an LSP snippet into Xcode-style editor placeholders:
 /// `foo(${1:Int})$0` → `foo(<#Int#>)`.
 pub fn snippet_to_placeholders(snippet: &str) -> String {
-    let mut out = String::with_capacity(snippet.len());
-    let chars: Vec<char> = snippet.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        match chars[i] {
-            '\\' if i + 1 < chars.len() => {
-                out.push(chars[i + 1]);
-                i += 2;
-            }
-            '$' if i + 1 < chars.len() && chars[i + 1] == '{' => {
-                // ${N:placeholder} or ${N}
-                let mut j = i + 2;
-                while j < chars.len() && chars[j].is_ascii_digit() {
-                    j += 1;
-                }
-                if j < chars.len() && chars[j] == ':' {
-                    let mut depth = 1;
-                    let mut k = j + 1;
-                    let mut inner = String::new();
-                    while k < chars.len() {
-                        match chars[k] {
-                            '{' => depth += 1,
-                            '}' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                        inner.push(chars[k]);
-                        k += 1;
-                    }
-                    out.push_str("<#");
-                    out.push_str(&snippet_to_placeholders(&inner));
-                    out.push_str("#>");
-                    i = k + 1;
-                } else {
-                    // ${N} — skip to the closing brace.
-                    while j < chars.len() && chars[j] != '}' {
-                        j += 1;
-                    }
-                    i = j + 1;
-                }
-            }
-            '$' if i + 1 < chars.len() && chars[i + 1].is_ascii_digit() => {
-                i += 1;
-                while i < chars.len() && chars[i].is_ascii_digit() {
-                    i += 1;
-                }
-            }
-            ch => {
-                out.push(ch);
-                i += 1;
-            }
-        }
-    }
-    out
+    zcode_editor::snippet::to_placeholders(snippet)
 }
 
 /// Finds the next `<#placeholder#>` at or after `from`, wrapping around.
@@ -204,6 +198,21 @@ mod tests {
         assert_eq!(next_placeholder(text, 0), Some(4..11));
         assert_eq!(next_placeholder(text, 11), Some(13..23));
         assert_eq!(next_placeholder(text, 23), Some(4..11));
+    }
+
+    #[test]
+    fn web_files_have_language_ids() {
+        let id = |name: &str| language_id_for(Path::new(name));
+        assert_eq!(id("web/src/App.tsx"), Some("typescriptreact"));
+        assert_eq!(id("web/vite.config.mts"), Some("typescript"));
+        assert_eq!(id("web/src/main.jsx"), Some("javascriptreact"));
+        assert_eq!(id("web/tsconfig.app.json"), Some("jsonc"));
+        assert_eq!(id("web/package.json"), Some("json"));
+        assert_eq!(id("web/src/App.vue"), Some("vue"));
+        assert_eq!(id("web/index.html"), Some("html"));
+        assert_eq!(id("web/src/app.scss"), Some("scss"));
+        assert_eq!(id("App/Model.swift"), Some("swift"));
+        assert_eq!(id("README.md"), None);
     }
 
     #[test]

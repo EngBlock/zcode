@@ -60,6 +60,11 @@ pub trait CompletionProvider {
     ///
     /// This is called on the main thread.
     fn is_completion_trigger(&self, offset: usize, new_text: &str, cx: &mut App) -> bool;
+
+    /// `item` was just inserted: the provider may resolve it for edits it
+    /// makes elsewhere (an auto-import). Called while the editor is being
+    /// updated, so edits to it must be deferred.
+    fn completion_inserted(&self, _item: &CompletionItem, _window: &mut Window, _cx: &mut App) {}
 }
 
 impl InputBaseState<EditorMode> {

@@ -71,6 +71,8 @@ pub struct HierarchyState {
     /// Asking for the symbol at the cursor; replacing it cancels it.
     prepare: Option<Task<()>>,
     pub message: Option<String>,
+    /// The server the hierarchy is from: its nodes expand there.
+    server: Option<std::sync::Arc<crate::lsp::LanguageServer>>,
 }
 
 /// A row of the tree as shown: depth, path from the root, node.
@@ -105,23 +107,23 @@ pub fn title(kind: HierarchyKind) -> &'static str {
 impl Workspace {
     /// Starts a hierarchy of `kind` at the focused pane's cursor.
     pub fn find_hierarchy(&mut self, kind: HierarchyKind, window: &mut Window, cx: &mut Context<Self>) {
-        let features = self.lsp.read(cx).features().clone();
-        let supported = if kind.is_calls() { features.call_hierarchy } else { features.type_hierarchy };
         let Some(item) = self.active_item() else { return };
         let path = item.path.clone();
         let (text, cursor) = {
             let state = item.editor.read(cx);
             (state.text().clone(), state.cursor())
         };
-        let Some(server) = self.lsp.update(cx, |lsp, cx| lsp.synced_server(&path, cx)) else {
-            self.lsp_unavailable(window, cx);
+        let capability = if kind.is_calls() { "/callHierarchyProvider" } else { "/typeHierarchyProvider" };
+        let Some(server) = self.lsp.update(cx, |lsp, _| lsp.synced_server_supporting(&path, None, Some(capability))) else {
+            if self.lsp.update(cx, |lsp, cx| lsp.synced_server(&path, cx)).is_some() {
+                let what = if kind.is_calls() { "call hierarchies" } else { "type hierarchies" };
+                self.notify_error(format!("The language server doesn’t offer {what}."), window, cx);
+            } else {
+                self.lsp_unavailable(window, cx);
+            }
             return;
         };
-        if !supported {
-            let what = if kind.is_calls() { "call hierarchies" } else { "type hierarchies" };
-            self.notify_error(format!("The language server doesn’t offer {what}."), window, cx);
-            return;
-        }
+        self.hierarchy.server = Some(server.clone());
         self.navigator = NavigatorTab::Find;
         self.show_navigator = true;
         self.hierarchy.shown = true;
@@ -186,7 +188,7 @@ impl Workspace {
             return;
         }
         let item = node.item.clone();
-        let Some(server) = self.lsp.read(cx).server() else { return };
+        let Some(server) = self.hierarchy.server.clone().filter(|s| s.is_alive()) else { return };
         let key = path.clone();
         let task = cx.spawn(async move |this, cx| {
             let children = hierarchy::children(server, kind, &item).await;
@@ -247,14 +249,6 @@ impl Workspace {
     /// Editor ▸ Show Callers…: the callers of the symbol at the cursor, in a
     /// menu at the cursor; choosing one opens the call.
     pub fn show_callers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.lsp.read(cx).features().call_hierarchy {
-            if self.lsp.read(cx).server().is_some() {
-                self.notify_error("The language server doesn’t offer call hierarchies.".into(), window, cx);
-            } else {
-                self.lsp_unavailable(window, cx);
-            }
-            return;
-        }
         let Some(item) = self.active_item() else { return };
         let path = item.path.clone();
         let editor = item.editor.clone();
@@ -262,8 +256,12 @@ impl Workspace {
             let state = editor.read(cx);
             (state.text().clone(), state.cursor())
         };
-        let Some(server) = self.lsp.update(cx, |lsp, cx| lsp.synced_server(&path, cx)) else {
-            self.lsp_unavailable(window, cx);
+        let Some(server) = self.lsp.update(cx, |lsp, _| lsp.synced_server_supporting(&path, None, Some("/callHierarchyProvider"))) else {
+            if self.lsp.update(cx, |lsp, cx| lsp.synced_server(&path, cx)).is_some() {
+                self.notify_error("The language server doesn’t offer call hierarchies.".into(), window, cx);
+            } else {
+                self.lsp_unavailable(window, cx);
+            }
             return;
         };
         let position = offset_to_lsp(&text, cursor);

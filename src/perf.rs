@@ -69,15 +69,53 @@ fn pids_with_path_suffix(suffix: &str) -> Vec<i32> {
 /// sourcekit-lsp does its heavy lifting in `SourceKitService` XPC helpers
 /// (launched by launchd, so not our children); include them.
 pub fn sample_language_server(pid: i32) -> Option<MemorySample> {
-    let mut total = sample_pid(pid)?;
-    for helper in pids_with_path_suffix("/SourceKitService") {
-        if let Some(s) = sample_pid(helper) {
-            total.footprint += s.footprint;
-            total.resident += s.resident;
-            total.lifetime_peak += s.lifetime_peak;
+    sample_language_servers(&[pid])
+}
+
+/// Every language server's memory together: theirs, their children's
+/// (vtsls runs TypeScript's tsserver in processes of its own) and
+/// SourceKitService's.
+pub fn sample_language_servers(pids: &[i32]) -> Option<MemorySample> {
+    let mut total: Option<MemorySample> = None;
+    let mut add = |s: MemorySample| {
+        let t = total.get_or_insert_with(MemorySample::default);
+        t.footprint += s.footprint;
+        t.resident += s.resident;
+        t.lifetime_peak += s.lifetime_peak;
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut queue: Vec<(i32, u8)> = pids.iter().map(|&pid| (pid, 0)).collect();
+    while let Some((pid, depth)) = queue.pop() {
+        if !seen.insert(pid) {
+            continue;
+        }
+        if let Some(s) = sample_pid(pid) {
+            add(s);
+        }
+        if depth < 3 {
+            queue.extend(child_pids(pid).into_iter().map(|child| (child, depth + 1)));
         }
     }
-    Some(total)
+    if seen.iter().all(|&pid| sample_pid(pid).is_none()) {
+        return None;
+    }
+    for helper in pids_with_path_suffix("/SourceKitService") {
+        if let Some(s) = sample_pid(helper) {
+            add(s);
+        }
+    }
+    total
+}
+
+fn child_pids(pid: i32) -> Vec<i32> {
+    let mut pids = vec![0i32; 256];
+    let count = unsafe { libc::proc_listchildpids(pid, pids.as_mut_ptr() as *mut libc::c_void, (pids.len() * std::mem::size_of::<i32>()) as i32) };
+    if count <= 0 {
+        return vec![];
+    }
+    pids.truncate((count as usize).min(pids.len()));
+    pids.retain(|&p| p > 0);
+    pids
 }
 
 pub fn sample_self() -> MemorySample {
@@ -157,8 +195,10 @@ pub struct Perf {
     pub startup: StartupTimings,
     pub history: VecDeque<MemorySample>,
     pub peak_footprint: u64,
-    /// Footprints of child processes we spawned (e.g. the language server).
+    /// The language servers' footprint together (the first one's pid).
     pub language_server: Option<(i32, MemorySample)>,
+    /// Every running language server's pid.
+    pub language_server_pids: Vec<i32>,
     /// When set (`--perf-log <file>` / `ZCODE_PERF_LOG`), every sample is
     /// appended to this file as a JSON line for long-running monitoring.
     pub log_path: Option<PathBuf>,
@@ -186,8 +226,17 @@ impl Perf {
             history: VecDeque::with_capacity(HISTORY_LEN),
             peak_footprint: 0,
             language_server: None,
+            language_server_pids: vec![],
             log_path: std::env::var_os("ZCODE_PERF_LOG").map(PathBuf::from),
         }
+    }
+
+    /// The language servers running now (none: no figure).
+    pub fn set_language_servers(&mut self, pids: Vec<i32>) {
+        if pids.is_empty() {
+            self.language_server = None;
+        }
+        self.language_server_pids = pids;
     }
 
     pub fn main_started(&self) -> Instant {
@@ -303,12 +352,12 @@ pub fn start_sampler(cx: &mut App) {
     cx.spawn(async move |cx| {
         loop {
             let me = sample_self();
-            let ls_pid = cx.update(|cx| cx.global::<Perf>().language_server.map(|(pid, _)| pid));
-            let ls = ls_pid.and_then(|pid| sample_language_server(pid).map(|s| (pid, s)));
+            let pids = cx.update(|cx| cx.global::<Perf>().language_server_pids.clone());
+            let ls = pids.first().and_then(|&pid| sample_language_servers(&pids).map(|s| (pid, s)));
             let log = cx.update(|cx| {
                 let perf = cx.global_mut::<Perf>();
                 perf.record(me);
-                if ls_pid.is_some() {
+                if !pids.is_empty() {
                     perf.language_server = ls;
                 }
                 if perf.memory_warning() {

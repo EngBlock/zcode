@@ -293,7 +293,7 @@ impl Workspace {
             match self.project.kind {
                 ProjectKind::SwiftPackage => {
                     let changed = vec![self.project.root.join("Package.swift"), self.project.root.join("Package.resolved")];
-                    self.lsp.read(cx).files_changed(&changed);
+                    self.lsp.update(cx, |lsp, cx| lsp.files_changed(&changed, cx));
                 }
                 _ => self.build.update(cx, |build, cx| build.refresh_index(cx)),
             }

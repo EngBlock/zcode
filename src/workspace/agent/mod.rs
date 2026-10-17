@@ -1216,8 +1216,8 @@ impl Workspace {
     }
 
     pub(super) fn show_mention_picker(&mut self, panel: WeakEntity<AgentPanel>, at: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
-        let server = self.lsp.read(cx).server();
-        let delegate = MentionDelegate::new(cx.weak_entity(), panel, at, self.project.root.clone(), self.files.clone(), server);
+        let servers = self.lsp.read(cx).workspace_symbol_servers();
+        let delegate = MentionDelegate::new(cx.weak_entity(), panel, at, self.project.root.clone(), self.files.clone(), servers);
         let picker = cx.new(|cx| crate::picker::Picker::new(delegate, window, cx));
         self.agent.mention_open = true;
         self.show_modal(picker, window, cx);

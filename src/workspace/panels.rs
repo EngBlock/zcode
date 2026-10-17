@@ -665,22 +665,52 @@ impl Workspace {
     // ------------------------------------------------------------------
     // Status bar
 
-    fn render_status_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme().clone();
+    /// The status bar's language server item: the focused file's first
+    /// server and what it's doing, and how many more it has (or
+    /// sourcekit-lsp's, for a file with none).
+    fn language_server_status(&self, cx: &App) -> (IconName, Hsla, String) {
+        let theme = cx.theme();
         let lsp = self.lsp.read(cx);
-        let (lsp_icon, lsp_color, lsp_text) = match lsp.status() {
-            LspStatus::Idle => (IconName::Circle, theme.muted_foreground, "sourcekit-lsp: idle".to_string()),
-            LspStatus::Starting => (IconName::Loader, theme.warning, "sourcekit-lsp: starting…".to_string()),
+        let mut servers = self.active_item().map(|item| lsp.servers_for(&item.path)).unwrap_or_default();
+        if servers.is_empty() {
+            servers = lsp.all_servers().into_iter().filter(|s| s.id == "sourcekit-lsp").take(1).collect();
+        }
+        let Some(first) = servers.first() else {
+            return match self.project.kind {
+                crate::project::ProjectKind::Folder => (IconName::Circle, theme.muted_foreground, "No language server".into()),
+                _ => (IconName::Circle, theme.muted_foreground, "sourcekit-lsp: idle".into()),
+            };
+        };
+        let more = match servers.len() {
+            1 => String::new(),
+            n => format!(" +{}", n - 1),
+        };
+        let name = first.id;
+        let (icon, color, text) = match &first.status {
+            LspStatus::Idle => (IconName::Circle, theme.muted_foreground, format!("{name}: idle")),
+            LspStatus::Installing => (IconName::Loader, theme.warning, format!("{name}: installing…")),
+            LspStatus::Starting => (IconName::Loader, theme.warning, format!("{name}: starting…")),
             LspStatus::Ready => (
                 IconName::CircleCheck,
                 theme.success,
-                lsp.progress_message()
-                    .map(|p| format!("sourcekit-lsp: {p}"))
-                    .unwrap_or_else(|| "sourcekit-lsp".to_string()),
+                first.progress.as_ref().map(|p| format!("{name}: {p}")).unwrap_or_else(|| name.to_string()),
             ),
-            LspStatus::Failed(err) => (IconName::CircleX, theme.danger, format!("sourcekit-lsp failed: {err}")),
-            LspStatus::Exited => (IconName::CircleX, theme.danger, "sourcekit-lsp exited".to_string()),
+            LspStatus::Failed(err) => (IconName::CircleX, theme.danger, format!("{name} failed: {err}")),
+            LspStatus::Exited => (IconName::CircleX, theme.danger, format!("{name} exited")),
         };
+        // Another of the file's servers that failed is worth knowing about.
+        match servers.iter().skip(1).find(|s| matches!(s.status, LspStatus::Failed(_))) {
+            Some(failed) if first.status == LspStatus::Ready => {
+                let LspStatus::Failed(err) = &failed.status else { unreachable!() };
+                (IconName::CircleX, theme.danger, format!("{text}{more} · {} failed: {err}", failed.id))
+            }
+            _ => (icon, color, format!("{text}{more}")),
+        }
+    }
+
+    fn render_status_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let (lsp_icon, lsp_color, lsp_text) = self.language_server_status(cx);
         // A property list's outline has no text cursor to show.
         let language = self.active_buffer().map(|b| b.language.clone()).unwrap_or_default();
         let cursor = self.active_editor().map(|editor| {
@@ -792,12 +822,12 @@ impl Workspace {
     // Actions that open pickers
 
     pub(super) fn open_quickly(&mut self, _: &OpenQuickly, window: &mut Window, cx: &mut Context<Self>) {
-        let server = self.lsp.read(cx).server();
+        let servers = self.lsp.read(cx).workspace_symbol_servers();
         let delegate = pickers::OpenQuicklyDelegate::new(
             cx.weak_entity(),
             self.project.root.clone(),
             self.files.clone(),
-            server,
+            servers,
         );
         let picker = cx.new(|cx| Picker::new(delegate, window, cx));
         self.show_modal(picker, window, cx);

@@ -30,6 +30,13 @@ gpui-kit = { version = "=0.7.3", features = [
     "tree-sitter-rust",
     "tree-sitter-javascript",
     "tree-sitter-python",
+    # Web apps (Vite's languages).
+    "tree-sitter-css",
+    "tree-sitter-typescript",
+    "tree-sitter-tsx",
+    "tree-sitter-jsdoc",
+    "tree-sitter-svelte",
+    "tree-sitter-astro",
 ] }
 anyhow = "1"
 futures = "0.3"

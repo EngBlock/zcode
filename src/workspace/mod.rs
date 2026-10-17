@@ -180,9 +180,6 @@ pub struct Workspace {
     /// Product ▸ Profile is waiting for Instruments' templates to show its
     /// chooser (whether it then builds).
     profile_chooser: Option<bool>,
-    /// Whether the language server was ready last time it said anything,
-    /// so its features are asked for again once it is (again).
-    lsp_ready: bool,
     pub outline: Vec<pickers::OutlineEntry>,
     outline_path: Option<PathBuf>,
     /// The repository, its status, and git's state in the editors.
@@ -216,7 +213,7 @@ impl Workspace {
     ) -> Self {
         let cache_dir = crate::paths::project_cache_dir(&project.root);
         let lsp_args = Self::lsp_args(&project, &cache_dir);
-        let lsp = cx.new(|_| LspStore::new(project.root.clone(), lsp_args));
+        let lsp = cx.new(|_| LspStore::new(project.root.clone(), lsp_args, Default::default()));
         let t0 = std::time::Instant::now();
         let trace = std::env::var_os("ZCODE_TRACE_STARTUP").is_some();
         let mark = move |label: &str| {
@@ -237,6 +234,7 @@ impl Workspace {
         session.save();
         crate::settings::open_project(&project.root, cx);
         let current_settings = crate::settings::Settings::for_project(&project.root, cx);
+        lsp.update(cx, |lsp, cx| lsp.set_config(crate::lsp::LspConfig::from_settings(&current_settings), cx));
 
         let mut subscriptions = vec![
             cx.subscribe_in(&lsp, window, Self::on_lsp_event),
@@ -339,7 +337,6 @@ impl Workspace {
             predictions: predictions::Predictions::new(&current_settings.edit_predictions),
             canvas_request: None,
             profile_chooser: None,
-            lsp_ready: false,
             outline: vec![],
             outline_path: None,
             git: source_control::GitState::new(&current_settings),
@@ -843,7 +840,7 @@ impl Workspace {
             "navigator": format!("{:?}", self.navigator),
             "show_navigator": self.show_navigator,
             "show_debug_area": self.show_debug_area,
-            "lsp": format!("{:?}", self.lsp.read(cx).status()),
+            "lsp": format!("{:?}", self.lsp.read(cx).status_for(self.active_item().map(|i| i.path.as_path()))),
             "lsp_progress": self.lsp.read(cx).progress_message(),
             "scheme": build.scheme,
             "configuration": build.configuration,
@@ -893,8 +890,9 @@ impl Workspace {
         state["agent"] = self.agent_summary(window, cx);
         state["predictions"] = self.predictions_summary(cx);
         state["previews"] = self.previews_summary(cx);
+        state["language_servers"] = self.lsp.read(cx).summary();
         state["language_features"] = serde_json::json!({
-            "server": self.lsp.read(cx).features().summary(),
+            "server": self.active_item().map(|i| self.lsp.read(cx).features_for(&i.path)).unwrap_or_default().summary(),
             "inlay_hints": self.inlay_hints_summary(cx),
             "semantic_tokens": self.semantic_tokens_summary(cx),
             "signature_help": self.signature_help_summary(cx),

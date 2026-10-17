@@ -26,8 +26,8 @@ use gpui_kit::{App, BorrowAppContext as _, Global};
 use serde_json::Value;
 
 pub use content::{
-    ClaudeSettings, DEFAULT_FONT_SIZE, EditPredictionSettings, PredictionProvider, Secret, Settings, SettingsContent, ThemeMode,
-    ThemeSelection,
+    ClaudeSettings, DEFAULT_FONT_SIZE, EditPredictionSettings, Formatter, LspBinary, LspServerSettings, PredictionProvider, Secret, Settings,
+    SettingsContent, ThemeMode, ThemeSelection,
 };
 
 pub fn settings_path() -> PathBuf {

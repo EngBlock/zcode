@@ -4,6 +4,16 @@ use std::ops::Range;
 
 use lsp_types::{CompletionItem, Hover};
 
+use crate::{Anchor, AnchorBias};
+
+/// A snippet's tab stops Tab hasn't visited, and the snippet's extent (Tab
+/// outside it ends the session).
+#[derive(Clone, Debug)]
+pub struct SnippetSession {
+    pub(crate) stops: Vec<(Anchor, Anchor)>,
+    pub(crate) bounds: (Anchor, Anchor),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct CompletionMenuState {
     pub open: bool,
@@ -189,11 +199,92 @@ impl InputBaseState<EditorMode> {
             new_text.clone_from(insert_text);
             range = range.end..range.end;
         }
-        self.completion_inserting = true;
-        let range = self.range_to_utf16(&range);
-        self.replace_text_in_range_silent(Some(range), &new_text, window, cx);
-        self.completion_inserting = false;
+        if item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET) {
+            self.insert_snippet(range, &new_text, window, cx);
+        } else {
+            self.end_snippet();
+            self.completion_inserting = true;
+            let range = self.range_to_utf16(&range);
+            self.replace_text_in_range_silent(Some(range), &new_text, window, cx);
+            self.completion_inserting = false;
+        }
+        if let Some(provider) = self.extras.lsp.completion_provider.clone() {
+            provider.completion_inserted(item, window, cx);
+        }
         self.focus(window, cx);
+    }
+
+    /// Replaces `range` (byte offsets) with an LSP snippet
+    /// ([`crate::snippet::expand`]): placeholders as `<#…#>` tokens, the
+    /// first tab stop selected, Tab ([`Self::next_snippet_stop`]) visiting
+    /// the rest.
+    pub fn insert_snippet(&mut self, range: Range<usize>, snippet: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.end_snippet();
+        let expansion = crate::snippet::expand(snippet);
+        let start = range.start.min(self.text.len());
+        self.completion_inserting = true;
+        let utf16 = self.range_to_utf16(&range);
+        self.replace_text_in_range_silent(Some(utf16), &expansion.text, window, cx);
+        self.completion_inserting = false;
+        let mut stops = expansion.stops.iter().map(|r| start + r.start..start + r.end);
+        if let Some(first) = stops.next() {
+            self.set_selected_range(first, cx);
+        }
+        let rest: Vec<(Anchor, Anchor)> =
+            stops.map(|r| (self.anchor(r.start, AnchorBias::Left), self.anchor(r.end, AnchorBias::Right))).collect();
+        if !rest.is_empty() {
+            let bounds = (self.anchor(start, AnchorBias::Left), self.anchor(start + expansion.text.len(), AnchorBias::Right));
+            self.extras.snippet = Some(SnippetSession { stops: rest, bounds });
+        }
+    }
+
+    /// Selects the inserted snippet's next tab stop. `false` when there is
+    /// none, or the cursor has left the snippet (which ends it).
+    pub fn next_snippet_stop(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(session) = self.extras.snippet.as_mut() else { return false };
+        let bounds = session.bounds;
+        let selected = self.selected_range();
+        let cursor = selected.start.min(selected.end);
+        let inside = match (self.anchor_offset(bounds.0), self.anchor_offset(bounds.1)) {
+            (Some(start), Some(end)) => (start..=end).contains(&cursor),
+            _ => false,
+        };
+        let Some(session) = self.extras.snippet.as_mut().filter(|s| inside && !s.stops.is_empty()) else {
+            self.end_snippet();
+            return false;
+        };
+        let (start, end) = session.stops.remove(0);
+        let range = self.anchor_offset(start).zip(self.anchor_offset(end));
+        for anchor in [start, end] {
+            self.remove_anchor(anchor);
+        }
+        if self.extras.snippet.as_ref().is_some_and(|s| s.stops.is_empty()) {
+            self.end_snippet();
+        }
+        match range {
+            Some((start, end)) => {
+                self.set_selected_range(start..end.max(start), cx);
+                true
+            }
+            None => self.next_snippet_stop(cx),
+        }
+    }
+
+    /// Whether Tab would move to a snippet's next tab stop.
+    pub fn has_snippet_stops(&self) -> bool {
+        self.extras.snippet.as_ref().is_some_and(|s| !s.stops.is_empty())
+    }
+
+    /// Forgets the snippet's remaining tab stops.
+    pub fn end_snippet(&mut self) {
+        if let Some(session) = self.extras.snippet.take() {
+            for (start, end) in session.stops {
+                self.remove_anchor(start);
+                self.remove_anchor(end);
+            }
+            self.remove_anchor(session.bounds.0);
+            self.remove_anchor(session.bounds.1);
+        }
     }
 
     #[doc(hidden)]

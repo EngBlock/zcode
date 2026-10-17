@@ -41,14 +41,11 @@ impl Workspace {
                 self.semantic_tokens_diagnosed(path, cx);
                 cx.notify();
             }
-            LspStoreEvent::StatusChanged => {
-                // Ready (again, after a restart): what it offers may have changed.
-                let ready = *self.lsp.read(cx).status() == crate::lsp::LspStatus::Ready;
-                if ready && !self.lsp_ready {
-                    self.refresh_semantic_tokens(cx);
-                    self.refresh_inlay_hints(cx);
-                }
-                self.lsp_ready = ready;
+            LspStoreEvent::StatusChanged => cx.notify(),
+            // Ready (again, after a restart): what it offers may have changed.
+            LspStoreEvent::ServerReady => {
+                self.refresh_semantic_tokens(cx);
+                self.refresh_inlay_hints(cx);
                 cx.notify();
             }
             LspStoreEvent::ApplyEdit(edit) => {
@@ -79,7 +76,7 @@ impl Workspace {
                 let db = path.clone();
                 self.lsp.update(cx, |lsp, cx| {
                     lsp.set_extra_args(args, cx);
-                    lsp.files_changed(&[db]);
+                    lsp.files_changed(&[db], cx);
                 });
             }
             BuildEvent::TestsChanged => {}

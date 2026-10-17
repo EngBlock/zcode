@@ -54,9 +54,7 @@ impl Workspace {
     }
 
     pub(super) fn schedule_semantic_tokens(&mut self, path: &Path, delay: Duration, cx: &mut Context<Self>) {
-        let Some(legend) = self.lsp.read(cx).features().semantic_tokens.clone() else { return };
-        let full = self.lsp.read(cx).features().semantic_tokens_full;
-        if crate::lsp::language_id_for(path).is_none() {
+        if !self.lsp.read(cx).document_features(path).iter().any(|f| f.semantic_tokens.is_some()) {
             return;
         }
         let Some(ix) = self.buffers.iter().position(|b| b.path == path) else { return };
@@ -67,18 +65,19 @@ impl Workspace {
             }
             let request = this.update(cx, |this, cx| {
                 let text = this.buffer(&path)?.editor.read(cx).text().clone();
-                let server = this.lsp.update(cx, |lsp, cx| lsp.synced_server_with_text(&path, &text, cx))?;
+                let (server, features) = this.lsp.update(cx, |lsp, _| lsp.synced_server_with(&path, &text, |f| f.semantic_tokens.is_some()))?;
+                let legend = features.semantic_tokens?;
                 let version = this.lsp.read(cx).document_version(&path)?;
                 let document = json!({ "uri": path_to_uri(&path).as_str() });
-                let request = if full {
+                let request = if features.semantic_tokens_full {
                     server.request_raw("textDocument/semanticTokens/full", json!({ "textDocument": document }))
                 } else {
                     let range = lsp_types::Range::new(lsp_types::Position::new(0, 0), offset_to_lsp(&text, text.len()));
                     server.request_raw("textDocument/semanticTokens/range", json!({ "textDocument": document, "range": range }))
                 };
-                Some((request, text, version))
+                Some((request, text, version, legend))
             });
-            let Ok(Some((request, text, version))) = request else {
+            let Ok(Some((request, text, version, legend))) = request else {
                 this.update(cx, |this, _| this.semantic_tokens_done(&path)).ok();
                 return;
             };

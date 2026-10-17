@@ -115,7 +115,7 @@ impl Workspace {
     }
 
     fn schedule_inlay_hints(&mut self, editor: Entity<EditorState>, path: PathBuf, delay: Duration, cx: &mut Context<Self>) {
-        if !self.lsp.read(cx).features().inlay_hints || crate::lsp::language_id_for(&path).is_none() {
+        if !self.lsp.read(cx).document_features(&path).iter().any(|f| f.inlay_hints) {
             return;
         }
         let view = editor.entity_id();
@@ -129,7 +129,7 @@ impl Workspace {
                 let margin = rows.len() as u32;
                 let rows = rows.start.saturating_sub(margin)..rows.end + margin;
                 let text = editor.read(cx).text().clone();
-                let server = this.lsp.update(cx, |lsp, cx| lsp.synced_server_with_text(&path, &text, cx))?;
+                let (server, _) = this.lsp.update(cx, |lsp, _| lsp.synced_server_with(&path, &text, |f| f.inlay_hints))?;
                 let version = this.lsp.read(cx).document_version(&path)?;
                 let params = json!({
                     "textDocument": { "uri": path_to_uri(&path).as_str() },

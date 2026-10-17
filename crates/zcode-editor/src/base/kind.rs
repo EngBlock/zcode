@@ -353,6 +353,8 @@ pub struct EditorExtras {
     pub(crate) context_menu_task: Task<anyhow::Result<()>>,
     /// Vim mode's state, while it's on (`vim/`).
     pub(crate) vim: Option<Box<crate::vim::Vim>>,
+    /// The tab stops of the snippet inserted last that Tab hasn't visited.
+    pub(crate) snippet: Option<crate::lsp::SnippetSession>,
 }
 
 impl Default for EditorExtras {
@@ -368,6 +370,7 @@ impl Default for EditorExtras {
             hover_definition: HoverDefinition::default(),
             context_menu_task: Task::ready(Ok(())),
             vim: None,
+            snippet: None,
         }
     }
 }

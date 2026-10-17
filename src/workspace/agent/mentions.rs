@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui_kit::*;
-use serde_json::json;
+
 
 use super::AgentPanel;
 use crate::fuzzy::fuzzy_match;
@@ -33,16 +33,16 @@ pub struct MentionDelegate {
     root: PathBuf,
     files: Arc<Vec<PathBuf>>,
     labels: Vec<String>,
-    server: Option<Arc<LanguageServer>>,
+    servers: Vec<Arc<LanguageServer>>,
     items: Vec<PickerItem>,
     matches: Vec<Mention>,
     symbol_task: Option<Task<()>>,
 }
 
 impl MentionDelegate {
-    pub fn new(workspace: WeakEntity<Workspace>, panel: WeakEntity<AgentPanel>, at: Option<usize>, root: PathBuf, files: Arc<Vec<PathBuf>>, server: Option<Arc<LanguageServer>>) -> Self {
+    pub fn new(workspace: WeakEntity<Workspace>, panel: WeakEntity<AgentPanel>, at: Option<usize>, root: PathBuf, files: Arc<Vec<PathBuf>>, servers: Vec<Arc<LanguageServer>>) -> Self {
         let labels = files.iter().map(|p| p.to_string_lossy().to_string()).collect();
-        Self { workspace, panel, at, root, files, labels, server, items: vec![], matches: vec![], symbol_task: None }
+        Self { workspace, panel, at, root, files, labels, servers, items: vec![], matches: vec![], symbol_task: None }
     }
 }
 
@@ -78,10 +78,9 @@ impl PickerDelegate for MentionDelegate {
         // Symbols arrive from the language server below the files.
         self.symbol_task = None;
         if query.chars().count() >= 2
-            && let Some(server) = self.server.clone()
-            && server.supports("/workspaceSymbolProvider")
+            && !self.servers.is_empty()
         {
-            let request = server.request_raw("workspace/symbol", json!({ "query": query }));
+            let request = lsp::workspace_symbols(&self.servers, &query);
             let root = self.root.clone();
             self.symbol_task = Some(cx.spawn(async move |picker, cx| {
                 let Ok(value) = request.await else { return };

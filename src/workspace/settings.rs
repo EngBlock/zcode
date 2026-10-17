@@ -110,6 +110,8 @@ impl Workspace {
 
     fn apply_settings(&mut self, old: &Settings, window: &mut Window, cx: &mut Context<Self>) {
         let new = self.settings.current.clone();
+        let config = crate::lsp::LspConfig::from_settings(&new);
+        self.lsp.update(cx, |lsp, cx| lsp.set_config(config, cx));
         self.font_size = new.buffer_font_size;
         let config = self.editor_config();
         let old_config = EditorConfig {

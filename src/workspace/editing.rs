@@ -57,51 +57,98 @@ fn is_whole_line(item: &ClipboardItem) -> bool {
         .is_some_and(|m| m[WHOLE_LINE_KEY] == json!(true))
 }
 
-fn comment_prefix(language: &str) -> Option<&'static str> {
-    match language {
-        "swift" | "c" | "cpp" | "rust" | "javascript" | "typescript" | "go" | "java" | "kotlin" => {
-            Some("//")
-        }
-        "yaml" | "toml" | "bash" | "python" | "ruby" | "make" => Some("#"),
-        _ => None,
-    }
+/// How a language comments a line out: a prefix, or a pair around it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommentStyle {
+    Line(&'static str),
+    Block(&'static str, &'static str),
 }
 
-/// Comments or uncomments every line of `block` (Xcode's ⌘/).
-pub fn toggle_comment_text(block: &str, prefix: &str) -> String {
+/// `language`'s comments at `offset` of `text`: in markup, a `<script>`
+/// block's are JavaScript's and a `<style>` block's CSS's.
+fn comment_style(language: &str, text: &str, offset: usize) -> Option<CommentStyle> {
+    Some(match language {
+        "swift" | "c" | "cpp" | "rust" | "javascript" | "jsx" | "typescript" | "tsx" | "go" | "java" | "kotlin" | "json" => {
+            CommentStyle::Line("//")
+        }
+        "yaml" | "toml" | "bash" | "python" | "ruby" | "make" => CommentStyle::Line("#"),
+        "css" => CommentStyle::Block("/*", "*/"),
+        // SCSS and Less have line comments.
+        "less" => CommentStyle::Line("//"),
+        "html" | "vue" | "svelte" | "astro" | "markdown" => match markup_block_at(text, offset) {
+            Some("script") => CommentStyle::Line("//"),
+            Some("style") => CommentStyle::Block("/*", "*/"),
+            _ => CommentStyle::Block("<!--", "-->"),
+        },
+        _ => return None,
+    })
+}
+
+/// The `<script>` or `<style>` block `offset` is in, if any; for Astro, its
+/// `---` frontmatter is a script.
+fn markup_block_at(text: &str, offset: usize) -> Option<&'static str> {
+    let before = &text[..offset.min(text.len())];
+    let lower = before.to_ascii_lowercase();
+    let last = |tag: &str| lower.rfind(tag);
+    for name in ["script", "style"] {
+        let open = last(&format!("<{name}"));
+        let close = last(&format!("</{name}"));
+        if open.is_some_and(|open| close.is_none_or(|close| close < open)) {
+            // Inside the block once its start tag has ended.
+            let open = open.unwrap_or_default();
+            if lower[open..].contains('>') {
+                return Some(if name == "script" { "script" } else { "style" });
+            }
+        }
+    }
+    if before.starts_with("---") && before.matches("\n---").count() == 0 && before.len() > 3 {
+        return Some("script");
+    }
+    None
+}
+
+/// Comments or uncomments every line of `block` (Xcode's ⌘/): a prefix after
+/// the block's indentation, or each line wrapped in a block comment.
+pub fn toggle_comment_text(block: &str, style: CommentStyle) -> String {
     let lines: Vec<&str> = block.split('\n').collect();
     let non_blank: Vec<&&str> = lines.iter().filter(|l| !l.trim().is_empty()).collect();
-    let all_commented = !non_blank.is_empty()
-        && non_blank.iter().all(|l| l.trim_start().starts_with(prefix));
+    let commented = |line: &str| match style {
+        CommentStyle::Line(prefix) => line.trim_start().starts_with(prefix),
+        CommentStyle::Block(open, close) => line.trim_start().starts_with(open) && line.trim_end().ends_with(close),
+    };
+    let all_commented = !non_blank.is_empty() && non_blank.iter().all(|l| commented(l));
+    let indent_of = |line: &str| line.len() - line.trim_start().len();
     if all_commented {
         lines
             .iter()
             .map(|line| {
-                let indent = line.len() - line.trim_start().len();
+                let indent = indent_of(line);
                 let rest = &line[indent..];
-                match rest.strip_prefix(prefix) {
-                    Some(after) => {
-                        let after = after.strip_prefix(' ').unwrap_or(after);
-                        format!("{}{}", &line[..indent], after)
-                    }
+                let uncommented = match style {
+                    CommentStyle::Line(prefix) => rest.strip_prefix(prefix).map(|after| after.strip_prefix(' ').unwrap_or(after).to_string()),
+                    CommentStyle::Block(open, close) => rest.trim_end().strip_prefix(open).and_then(|r| r.strip_suffix(close)).map(|inner| {
+                        let inner = inner.strip_prefix(' ').unwrap_or(inner);
+                        inner.strip_suffix(' ').unwrap_or(inner).to_string()
+                    }),
+                };
+                match uncommented {
+                    Some(after) => format!("{}{}", &line[..indent], after),
                     None => line.to_string(),
                 }
             })
             .collect::<Vec<_>>()
             .join("\n")
     } else {
-        let min_indent = non_blank
-            .iter()
-            .map(|l| l.len() - l.trim_start().len())
-            .min()
-            .unwrap_or(0);
+        let min_indent = non_blank.iter().map(|l| indent_of(l)).min().unwrap_or(0);
         lines
             .iter()
             .map(|line| {
                 if line.trim().is_empty() {
-                    line.to_string()
-                } else {
-                    format!("{}{} {}", &line[..min_indent], prefix, &line[min_indent..])
+                    return line.to_string();
+                }
+                match style {
+                    CommentStyle::Line(prefix) => format!("{}{} {}", &line[..min_indent], prefix, &line[min_indent..]),
+                    CommentStyle::Block(open, close) => format!("{}{open} {} {close}", &line[..min_indent], line[min_indent..].trim_end()),
                 }
             })
             .collect::<Vec<_>>()
@@ -216,11 +263,11 @@ impl Workspace {
 
     pub(super) fn toggle_comment(&mut self, _: &ToggleComment, window: &mut Window, cx: &mut Context<Self>) {
         self.transact_in_active_editor(window, cx, |state, language, window, cx| {
-            let Some(prefix) = comment_prefix(&language) else { return };
             let text = state.text().clone();
             let block = line_block(&text, &state.selected_range());
+            let Some(style) = comment_style(&language, &text.to_string(), block.start) else { return };
             let original = text.slice(block.clone()).to_string();
-            let replacement = toggle_comment_text(&original, prefix);
+            let replacement = toggle_comment_text(&original, style);
             state.set_selected_range(block.clone(), cx);
             state.replace(replacement.clone(), window, cx);
             state.set_selected_range(block.start..block.start + replacement.len(), cx);
@@ -344,8 +391,9 @@ impl Workspace {
         self.select_placeholder(false, window, cx);
     }
 
-    /// Tab jumps to the next `<#placeholder#>` on the current line (as in
-    /// Xcode), otherwise indents.
+    /// Tab moves to a snippet's next tab stop (after a completion or an
+    /// Emmet abbreviation), else to the next `<#placeholder#>` on the
+    /// current line (as in Xcode), otherwise indents.
     pub(super) fn tab_or_placeholder(
         &mut self,
         _: &TabOrPlaceholder,
@@ -363,6 +411,9 @@ impl Workspace {
             let line = text.slice_line(row).to_string();
             (state.completion_menu_state().open, line.contains("<#") && line.contains("#>"))
         };
+        if !menu_open && editor.update(cx, |state, cx| state.next_snippet_stop(cx)) {
+            return;
+        }
         if !menu_open && line_has_placeholder && self.select_placeholder(true, window, cx) {
             return;
         }
@@ -432,17 +483,17 @@ impl Workspace {
     // ------------------------------------------------------------------
     // LSP-backed commands
 
-    /// The server plus the active document's URI, text and cursor.
-    fn lsp_context(&mut self, cx: &mut Context<Self>) -> Option<(Arc<lsp::LanguageServer>, PathBuf, Rope, Range<usize>)> {
+    /// The active document's first server offering `capability` (a JSON
+    /// pointer into its capabilities), plus the document's path, text and
+    /// selection.
+    fn lsp_context(&mut self, capability: &str, cx: &mut Context<Self>) -> Option<(Arc<lsp::LanguageServer>, PathBuf, Rope, Range<usize>)> {
         let buffer = self.active_item()?;
         let path = buffer.path.clone();
         let (text, selection) = {
             let state = buffer.editor.read(cx);
             (state.text().clone(), state.selected_range())
         };
-        let server = self
-            .lsp
-            .update(cx, |lsp, cx| lsp.synced_server(&path, cx))?;
+        let server = self.lsp.update(cx, |lsp, _| lsp.synced_server_supporting(&path, Some(&text), Some(capability)))?;
         Some((server, path, text, selection))
     }
 
@@ -460,7 +511,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((server, path, text, selection)) = self.lsp_context(cx) else {
+        let Some((server, path, text, selection)) = self.lsp_context("/referencesProvider", cx) else {
             self.lsp_unavailable(window, cx);
             return;
         };
@@ -497,7 +548,7 @@ impl Workspace {
     }
 
     pub(super) fn edit_all_in_scope(&mut self, _: &EditAllInScope, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((server, path, text, selection)) = self.lsp_context(cx) else {
+        let Some((server, path, text, selection)) = self.lsp_context("/documentHighlightProvider", cx) else {
             self.lsp_unavailable(window, cx);
             return;
         };
@@ -545,48 +596,40 @@ impl Workspace {
         self.format(true, window, cx);
     }
 
+    /// Format File (the formatter the settings choose) or Re-Indent (the
+    /// selected lines, by the language server).
     fn format(&mut self, selection_only: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((server, path, text, selection)) = self.lsp_context(cx) else {
+        let ranged = if selection_only { self.lsp_context("/documentRangeFormattingProvider", cx) } else { None };
+        let request = match ranged {
+            Some((server, path, text, selection)) => {
+                let block = line_block(&text, &selection);
+                let request = server.request_raw(
+                    "textDocument/rangeFormatting",
+                    json!({
+                        "textDocument": { "uri": path_to_uri(&path).as_str() },
+                        "range": { "start": offset_to_lsp(&text, block.start), "end": offset_to_lsp(&text, block.end) },
+                        "options": self.formatting_options(),
+                    }),
+                );
+                let task = cx.background_spawn(async move { Ok(serde_json::from_value(request.await?).unwrap_or_default()) });
+                Some((path, task))
+            }
+            None => self.active_item().map(|item| item.path.clone()).and_then(|path| Some((path.clone(), self.document_formatting(&path, cx)?))),
+        };
+        let Some((path, request)) = request else {
             self.lsp_unavailable(window, cx);
             return;
         };
-        let options = self.formatting_options();
         let uri = path_to_uri(&path);
-        let request = if selection_only && server.supports("/documentRangeFormattingProvider") {
-            let block = line_block(&text, &selection);
-            server.request_raw(
-                "textDocument/rangeFormatting",
-                json!({
-                    "textDocument": { "uri": uri.as_str() },
-                    "range": { "start": offset_to_lsp(&text, block.start), "end": offset_to_lsp(&text, block.end) },
-                    "options": options,
-                }),
-            )
-        } else {
-            server.request_raw(
-                "textDocument/formatting",
-                json!({ "textDocument": { "uri": uri.as_str() }, "options": options }),
-            )
-        };
         cx.spawn_in(window, async move |this, cx| {
             let result = request.await;
             this.update_in(cx, |this, window, cx| match result {
-                Ok(value) => {
-                    let edits: Vec<lsp_types::TextEdit> =
-                        serde_json::from_value(value).unwrap_or_default();
+                Ok(edits) => {
                     if !edits.is_empty() {
                         // `WorkspaceEdit::changes` is keyed by lsp_types' Uri.
                         #[allow(clippy::mutable_key_type)]
-                        let mut changes = std::collections::HashMap::new();
-                        changes.insert(uri, edits);
-                        this.apply_workspace_edit(
-                            lsp_types::WorkspaceEdit {
-                                changes: Some(changes),
-                                ..Default::default()
-                            },
-                            window,
-                            cx,
-                        );
+                        let changes = std::collections::HashMap::from([(uri, edits)]);
+                        this.apply_workspace_edit(lsp_types::WorkspaceEdit { changes: Some(changes), ..Default::default() }, window, cx);
                     }
                 }
                 Err(err) => this.notify_error(format!("Formatting failed: {err:#}"), window, cx),
@@ -597,7 +640,7 @@ impl Workspace {
     }
 
     pub(super) fn rename(&mut self, _: &Rename, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((server, path, text, selection)) = self.lsp_context(cx) else {
+        let Some((server, path, text, selection)) = self.lsp_context("/renameProvider", cx) else {
             self.lsp_unavailable(window, cx);
             return;
         };
@@ -652,7 +695,7 @@ impl Workspace {
 
     /// Re-requests the document outline for the Symbol navigator and ⌃6.
     pub(super) fn refresh_outline(&mut self, cx: &mut Context<Self>) {
-        let Some((server, path, _, _)) = self.lsp_context(cx) else {
+        let Some((server, path, _, _)) = self.lsp_context("/documentSymbolProvider", cx) else {
             self.outline.clear();
             self.outline_path = None;
             return;
@@ -721,15 +764,35 @@ fn locations_to_matches(locations: Vec<lsp_types::Location>) -> Vec<FileMatches>
 
 #[cfg(test)]
 mod tests {
-    use super::{line_block, toggle_comment_text, whole_line};
+    use super::{CommentStyle, comment_style, line_block, toggle_comment_text, whole_line};
+
+    #[test]
+    fn markup_and_css_comment_in_blocks() {
+        let html = CommentStyle::Block("<!--", "-->");
+        let commented = toggle_comment_text("  <div>\n    <p>hi</p>", html);
+        assert_eq!(commented, "  <!-- <div> -->\n  <!--   <p>hi</p> -->");
+        assert_eq!(toggle_comment_text(&commented, html), "  <div>\n    <p>hi</p>");
+        assert_eq!(toggle_comment_text("a { color: red; }", CommentStyle::Block("/*", "*/")), "/* a { color: red; } */");
+    }
+
+    #[test]
+    fn a_components_blocks_comment_in_their_own_language() {
+        let vue = "<template>\n  <p>{{ n }}</p>\n</template>\n<script setup lang=\"ts\">\nconst n = 1\n</script>\n<style>\np { color: red }\n</style>\n";
+        let at = |needle: &str| vue.find(needle).unwrap();
+        assert_eq!(comment_style("vue", vue, at("<p>")), Some(CommentStyle::Block("<!--", "-->")));
+        assert_eq!(comment_style("vue", vue, at("const")), Some(CommentStyle::Line("//")));
+        assert_eq!(comment_style("vue", vue, at("p {")), Some(CommentStyle::Block("/*", "*/")));
+        assert_eq!(comment_style("tsx", "", 0), Some(CommentStyle::Line("//")));
+        assert_eq!(comment_style("text", "", 0), None);
+    }
     use zcode_editor::Rope;
 
     #[test]
     fn comments_and_uncomments() {
         let src = "    let a = 1\n\n    let b = 2";
-        let commented = toggle_comment_text(src, "//");
+        let commented = toggle_comment_text(src, CommentStyle::Line("//"));
         assert_eq!(commented, "    // let a = 1\n\n    // let b = 2");
-        assert_eq!(toggle_comment_text(&commented, "//"), src);
+        assert_eq!(toggle_comment_text(&commented, CommentStyle::Line("//")), src);
     }
 
     #[test]

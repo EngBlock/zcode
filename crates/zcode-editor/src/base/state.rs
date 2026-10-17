@@ -1666,6 +1666,15 @@ impl<M: InputModeKind> InputBaseState<M> {
             }
             return Some((open.len(), close.into()));
         }
+        if text == ">" && rules.auto_close_tags {
+            let line_start = self.text.line_start_offset(self.text.offset_to_point(range.start).row);
+            let before = self.text.slice(line_start..range.start).to_string();
+            if let Some(closer) = rules.closing_tag(&before)
+                && !matches!(M::editing_syntax_context(self, range.start), crate::SyntaxContext::String | crate::SyntaxContext::Comment)
+            {
+                return Some((1, closer.into()));
+            }
+        }
         None
     }
 

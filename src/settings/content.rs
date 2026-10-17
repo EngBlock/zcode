@@ -52,6 +52,43 @@ pub struct Settings {
     pub notary_keychain_profile: String,
     /// A daily check for a new zcode (`crate::updates`), as Zed's.
     pub auto_update: bool,
+    /// Each language server's settings, by id (`crate::lsp::servers`).
+    pub lsp: std::collections::BTreeMap<String, LspServerSettings>,
+    /// Install the web's language servers with npm when one is needed.
+    pub auto_install_language_servers: bool,
+    pub formatter: Formatter,
+}
+
+/// `lsp.<id>`, as in Zed.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct LspServerSettings {
+    /// `false` turns the server off.
+    pub enabled: Option<bool>,
+    /// The program, instead of the one zcode finds or installs. Yours only.
+    pub binary: Option<LspBinary>,
+    /// Merged over zcode's `initializationOptions`.
+    pub initialization_options: Option<Value>,
+    /// Merged over the settings zcode gives it (`workspace/configuration`).
+    pub settings: Option<Value>,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct LspBinary {
+    pub path: String,
+    /// `None`: the server's usual arguments (`--stdio`).
+    #[serde(default)]
+    pub arguments: Option<Vec<String>>,
+}
+
+/// What Editor ▸ Format File and format on save use.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Formatter {
+    /// Prettier for a web app that has it installed, else the language server.
+    #[default]
+    Auto,
+    LanguageServer,
+    Prettier,
 }
 
 /// Predictive code completion (`crate::predictions`).
@@ -169,6 +206,9 @@ impl Default for Settings {
             profiling_time_limit: None,
             notary_keychain_profile: String::new(),
             auto_update: true,
+            lsp: Default::default(),
+            auto_install_language_servers: true,
+            formatter: Formatter::Auto,
         }
     }
 }
@@ -256,6 +296,10 @@ pub struct SettingsContent {
     pub agent: Option<AgentContent>,
     pub edit_predictions: Option<EditPredictionsContent>,
     pub profiling: Option<ProfilingContent>,
+    pub lsp: Option<std::collections::BTreeMap<String, LspServerSettings>>,
+    pub auto_install_language_servers: Option<bool>,
+    #[serde(deserialize_with = "formatter")]
+    pub formatter: Option<Formatter>,
     pub distribution: Option<DistributionContent>,
     pub auto_update: Option<bool>,
 }
@@ -354,6 +398,10 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("profiling", &["time_limit"]),
     ("distribution", &["notary_keychain_profile"]),
     ("auto_update", &[]),
+    // Any server's id (sourcekit-lsp, vtsls, eslint…).
+    ("lsp", &[]),
+    ("auto_install_language_servers", &[]),
+    ("formatter", &[]),
 ];
 
 /// Settings a project's file can't change: they're the app's, not a window's.
@@ -362,7 +410,15 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
 /// where code is sent for predictions (or with whose key); it can only turn
 /// them off (`"edit_predictions": { "provider": "none" }`), or name the
 /// keychain credentials apps are notarized with.
-pub const USER_ONLY_KEYS: &[&str] = &["theme", "buffer_font_family", "vim_mode", "agent_servers", "agent", "distribution"];
+pub const USER_ONLY_KEYS: &[&str] = &[
+    "theme",
+    "buffer_font_family",
+    "vim_mode",
+    "agent_servers",
+    "agent",
+    "distribution",
+    "auto_install_language_servers",
+];
 
 /// What to say about the keys of a settings file zcode doesn't know
 /// (`git.inline_blam`), and those a project's file sets that only the
@@ -378,6 +434,20 @@ pub fn unknown_keys(value: &Value, project: bool) -> Vec<String> {
                     && !nested.is_empty()
                 {
                     unknown.extend(inner.keys().filter(|k| !nested.contains(&k.as_str())).map(|k| format!("unknown setting “{key}.{k}”")));
+                }
+            }
+        }
+    }
+    if let Some(servers) = object.get("lsp").and_then(Value::as_object) {
+        for (id, server) in servers {
+            if crate::lsp::servers::spec(id).is_none() {
+                unknown.push(format!("unknown language server “lsp.{id}”"));
+            }
+            if let Some(server) = server.as_object() {
+                let keys = ["enabled", "binary", "initialization_options", "settings"];
+                unknown.extend(server.keys().filter(|k| !keys.contains(&k.as_str())).map(|k| format!("unknown setting “lsp.{id}.{k}”")));
+                if project && server.contains_key("binary") {
+                    unknown.push(format!("“lsp.{id}.binary” is only read from your own settings file"));
                 }
             }
         }
@@ -428,6 +498,7 @@ impl Settings {
             if let Some(profile) = content.distribution.as_ref().and_then(|d| d.notary_keychain_profile.clone()) {
                 self.notary_keychain_profile = profile.trim().to_string();
             }
+            take!(auto_install_language_servers);
         } else if content.edit_predictions.as_ref().and_then(|p| p.provider) == Some(PredictionProvider::None) {
             self.edit_predictions.provider = PredictionProvider::None;
         }
@@ -454,6 +525,20 @@ impl Settings {
         }
         if let Some(shell) = content.terminal.as_ref().and_then(|t| t.shell.clone()) {
             self.terminal_shell = shell;
+        }
+        take!(formatter);
+        // A project's file can't name programs to run.
+        for (id, server) in content.lsp.iter().flatten() {
+            let mine = self.lsp.entry(id.clone()).or_default();
+            mine.enabled = server.enabled.or(mine.enabled);
+            if !project && server.binary.is_some() {
+                mine.binary = server.binary.clone();
+            }
+            for (value, theirs) in [(&mut mine.initialization_options, &server.initialization_options), (&mut mine.settings, &server.settings)] {
+                if let Some(theirs) = theirs {
+                    crate::lsp::servers::merge_json(value.get_or_insert(Value::Object(Default::default())), theirs);
+                }
+            }
         }
         self
     }
@@ -611,6 +696,16 @@ fn provider<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Predict
     }
 }
 
+fn formatter<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Formatter>, D::Error> {
+    match read(deserializer)? {
+        Value::Null => Ok(None),
+        Value::String(name) if name == "auto" => Ok(Some(Formatter::Auto)),
+        Value::String(name) if name == "language_server" => Ok(Some(Formatter::LanguageServer)),
+        Value::String(name) if name == "prettier" => Ok(Some(Formatter::Prettier)),
+        other => Err(expected(r#""auto", "language_server" or "prettier""#, &other)),
+    }
+}
+
 fn debounce<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
     match read(deserializer)? {
         Value::Null => Ok(None),
@@ -664,6 +759,31 @@ mod tests {
         let documented: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
         let known: Vec<&str> = KNOWN_KEYS.iter().map(|(key, _)| *key).collect();
         assert_eq!(documented, known, "every setting is documented, in the same order");
+    }
+
+    #[test]
+    fn language_servers_settings() {
+        let mine = r#"{
+            "lsp": { "vtsls": { "binary": { "path": "/opt/vtsls" }, "settings": { "typescript": { "a": 1, "b": 2 } } } },
+            "auto_install_language_servers": false,
+            "formatter": "prettier",
+        }"#;
+        let project = r#"{
+            "lsp": { "vtsls": { "binary": { "path": "/tmp/evil" }, "settings": { "typescript": { "b": 3 } } }, "eslint": { "enabled": false } },
+            "auto_install_language_servers": true,
+        }"#;
+        let settings = Settings::default().merged(&jsonc::parse(mine).unwrap(), false).merged(&jsonc::parse(project).unwrap(), true);
+        let vtsls = &settings.lsp["vtsls"];
+        assert_eq!(vtsls.binary.as_ref().unwrap().path, "/opt/vtsls", "a project's file can't name a program");
+        assert_eq!(vtsls.settings, Some(serde_json::json!({ "typescript": { "a": 1, "b": 3 } })));
+        assert_eq!(settings.lsp["eslint"].enabled, Some(false));
+        assert!(!settings.auto_install_language_servers);
+        assert_eq!(settings.formatter, Formatter::Prettier);
+        let problems = unknown_keys(&jsonc::parse_value(project).unwrap(), true);
+        assert!(problems.iter().any(|p| p.contains("lsp.vtsls.binary")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("auto_install_language_servers")), "{problems:?}");
+        let typo = unknown_keys(&serde_json::json!({ "lsp": { "vtls": {}, "eslint": { "enable": true } } }), false);
+        assert_eq!(typo, ["unknown language server “lsp.vtls”", "unknown setting “lsp.eslint.enable”"]);
     }
 
     #[test]

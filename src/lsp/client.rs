@@ -42,6 +42,7 @@ impl LanguageServer {
         name: impl Into<String>,
         binary: &Path,
         args: &[String],
+        env: &[(String, String)],
         cwd: &Path,
         log_path: Option<PathBuf>,
         events: channel::Sender<ServerEvent>,
@@ -60,6 +61,7 @@ impl LanguageServer {
         };
         let mut child = smol::process::Command::new(binary)
             .args(args)
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -341,6 +343,8 @@ fn client_capabilities() -> Value {
             "workspaceEdit": { "documentChanges": true },
             "symbol": { "symbolKind": { "valueSet": (1..=26).collect::<Vec<_>>() } },
             "didChangeWatchedFiles": { "dynamicRegistration": true },
+            "didChangeConfiguration": { "dynamicRegistration": true },
+            "executeCommand": {},
             "inlayHint": { "refreshSupport": true },
             "semanticTokens": { "refreshSupport": true },
         },
@@ -353,8 +357,9 @@ fn client_capabilities() -> Value {
                     "labelDetailsSupport": true,
                     "documentationFormat": ["markdown", "plaintext"],
                     "insertReplaceSupport": true,
-                    "resolveSupport": { "properties": ["documentation", "detail"] },
+                    "resolveSupport": { "properties": ["documentation", "detail", "additionalTextEdits"] },
                 },
+                "completionItemKind": { "valueSet": (1..=25).collect::<Vec<_>>() },
             },
             "hover": { "contentFormat": ["markdown", "plaintext"] },
             "signatureHelp": {
@@ -386,8 +391,11 @@ fn client_capabilities() -> Value {
                     ] }
                 },
                 "resolveSupport": { "properties": ["edit"] },
+                "dataSupport": true,
             },
-            "publishDiagnostics": { "relatedInformation": true, "codeDescriptionSupport": true },
+            "publishDiagnostics": { "relatedInformation": true, "codeDescriptionSupport": true, "versionSupport": true },
+            "colorProvider": {},
+            "linkedEditingRange": {},
             "callHierarchy": {},
             "typeHierarchy": {},
             "inlayHint": {},
