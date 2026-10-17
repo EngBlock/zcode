@@ -83,6 +83,10 @@ impl Workspace {
                 item.view.update(cx, |view, cx| view.set_font_size(self.font_size, cx));
                 div().flex_1().min_h_0().child(item.view.clone()).into_any_element()
             }
+            Some(Item::Terminal(item)) => {
+                item.view.update(cx, |view, cx| view.set_font_size(self.font_size, cx));
+                div().flex_1().min_h_0().child(item.view.clone()).into_any_element()
+            }
             Some(Item::Editor(item)) => {
                 let body = match item.shown_plist() {
                     Some(plist) => div().flex_1().min_h_0().child(plist.clone()).into_any_element(),
@@ -154,6 +158,13 @@ impl Workspace {
                         dirty,
                     )
                 }
+                Item::Terminal(item) => (
+                    SharedString::from(format!("tab-terminal-{}", item.view.entity_id())),
+                    Icon::new(IconName::SquareTerminal).small().text_color(theme.muted_foreground),
+                    item.view.read(cx).title(),
+                    false,
+                    false,
+                ),
                 Item::ProjectSettings(_) => (
                     SharedString::from("tab-project-settings"),
                     Icon::new(IconName::FolderCode).small().text_color(theme.primary),

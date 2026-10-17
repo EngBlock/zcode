@@ -118,6 +118,13 @@ impl TerminalView {
         }
     }
 
+    /// Ends the process (its tab or window is closing).
+    pub fn stop(&mut self) {
+        if let Some(terminal) = self.terminal() {
+            terminal.stop();
+        }
+    }
+
     pub fn is_running(&self) -> bool {
         self.terminal().is_some_and(|t| t.is_running())
     }

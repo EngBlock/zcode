@@ -4,7 +4,7 @@
 //! definitions); a few Zed favorites are added where Xcode has none.
 
 use zcode_editor::{Redo, ShowCompletions, ToggleCodeActions, Undo};
-use gpui_kit::{Action, App, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType};
+use gpui_kit::{Action, App, KeyBinding, Menu, MenuItem, NoAction, OsAction, SystemMenuType};
 
 gpui_kit::actions!(
     zcode,
@@ -30,6 +30,8 @@ gpui_kit::actions!(
         CloseEditorPane,
         CloseOtherEditorPanes,
         RevealInFinder,
+        OpenTerminalAtLocation,
+        NewTerminalTab,
         ShowPerformance,
         ShowProjectSettings,
         // Edit
@@ -96,6 +98,8 @@ gpui_kit::actions!(
         ShowFileInspector,
         ToggleInspector,
         ActivateConsole,
+        ActivateTerminal,
+        NewTerminal,
         ShowDocumentItems,
         QuickActions,
         IncreaseFontSize,
@@ -198,9 +202,15 @@ const PLIST: &str = "PlistEditor";
 const PLIST_INPUT: &str = "PlistEditor > Input";
 /// A multibuffer's editor (Find results, issues, references, a rename).
 const MULTIBUFFER: &str = "Input && multibuffer";
+/// A terminal (`src/terminal/view.rs`).
+const TERMINAL: &str = "Terminal";
 
 pub fn bind_keys(cx: &mut App) {
-    cx.bind_keys([
+    cx.bind_keys(key_bindings());
+}
+
+fn key_bindings() -> Vec<KeyBinding> {
+    let mut bindings = vec![
         // App / File
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-o", OpenProject, None),
@@ -299,6 +309,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-y", ToggleDebugArea, None),
         KeyBinding::new("cmd-alt-1", ShowFileInspector, None),
         KeyBinding::new("cmd-shift-c", ActivateConsole, None),
+        // Zed's terminal key (⌃`) is Xcode's Move Focus to Next Editor
+        // Pane, so the terminal gets ⌃⌘`, which Xcode doesn't use.
+        KeyBinding::new("ctrl-cmd-`", ActivateTerminal, None),
         KeyBinding::new("ctrl-6", ShowDocumentItems, None),
         KeyBinding::new("cmd-shift-p", QuickActions, None),
         KeyBinding::new("cmd-shift-a", QuickActions, None),
@@ -399,11 +412,25 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", PickerSelectPrevious, Some(PLIST_INPUT)),
         KeyBinding::new("enter", PickerConfirm, Some(PLIST_INPUT)),
         KeyBinding::new("escape", PickerDismiss, Some(PLIST_INPUT)),
+        // In a terminal, ⌘C ⌘V ⌘A act on it; plain and ⌃ keys go to the
+        // shell, so zcode's ⌃ and function-key commands step aside there.
+        KeyBinding::new("cmd-c", CopyOrCopyLine, Some(TERMINAL)),
+        KeyBinding::new("cmd-v", PasteOrPasteLine, Some(TERMINAL)),
+        KeyBinding::new("cmd-a", zcode_editor::SelectAll, Some(TERMINAL)),
         // The LLDB console's history.
         KeyBinding::new("up", PickerSelectPrevious, Some("LldbConsole > Input")),
         KeyBinding::new("down", PickerSelectNext, Some("LldbConsole > Input")),
-    ]);
+    ];
+    bindings.extend(TERMINAL_KEYS.iter().map(|keys| KeyBinding::new(keys, NoAction, Some(TERMINAL))));
+    bindings
 }
+
+/// zcode's keys without ⌘ that work everywhere, which a terminal leaves to
+/// the shell: ⌃ with symbols and digits, and F keys.
+const TERMINAL_KEYS: &[&str] = &[
+    "ctrl-;", "ctrl-shift-;", "ctrl-:", "ctrl-alt-;", "ctrl-alt-shift-;", "ctrl-alt-:", "ctrl-`", "ctrl-shift-`", "ctrl-~",
+    "ctrl--", "ctrl-\\", "ctrl-shift-\\", "ctrl-|", "ctrl-6", "ctrl-0", "ctrl-shift-0", "f6", "f7", "f8", "f12",
+];
 
 /// A command shown in menus and in Quick Actions.
 pub struct Command {
@@ -431,6 +458,7 @@ pub fn commands() -> Vec<Command> {
         // Xcode's File ▸ New ▸ Editor Pane on Right / Below.
         cmd!("File ▸ New", "Editor Pane on Right", NewEditorPaneOnRight),
         cmd!("File ▸ New", "Editor Pane Below", NewEditorPaneBelow),
+        cmd!("File ▸ New", "Terminal Tab", NewTerminalTab),
         cmd!("File", "New File…", NewFile),
         cmd!("File", "Add Files…", AddFiles),
         cmd!("File", "Add Package Dependencies…", AddPackageDependencies),
@@ -444,6 +472,7 @@ pub fn commands() -> Vec<Command> {
         cmd!("File", "Close Project", CloseProject),
         cmd!("File", "-", Quit),
         cmd!("File", "Show in Finder", RevealInFinder),
+        cmd!("File", "Open Terminal at Location", OpenTerminalAtLocation),
         cmd!("File", "-", Quit),
         // Xcode's File ▸ Packages, in its order.
         cmd!("File ▸ Packages", "Reset Package Caches", ResetPackageCaches),
@@ -560,6 +589,8 @@ pub fn commands() -> Vec<Command> {
         cmd!("View", "Show/Hide Inspector", ToggleInspector),
         cmd!("View", "Show File Inspector", ShowFileInspector),
         cmd!("View", "Activate Console", ActivateConsole),
+        cmd!("View", "Activate Terminal", ActivateTerminal),
+        cmd!("View", "New Terminal", NewTerminal),
         cmd!("View", "-", Quit),
         cmd!("View", "Focus Editor Pane", FocusEditorPane),
         cmd!("View", "Document Items…", ShowDocumentItems),
@@ -682,4 +713,23 @@ pub fn set_menus(cx: &mut App) {
     }
     menus.push(Menu::new("Window").items([]));
     cx.set_menus(menus);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_terminal_gets_every_key_without_command() {
+        let bindings = key_bindings();
+        let left_to_the_shell: Vec<_> = TERMINAL_KEYS.iter().map(|keys| gpui_kit::Keystroke::parse(keys).unwrap()).collect();
+        for binding in bindings.iter().filter(|b| b.predicate().is_none()) {
+            let [keystroke] = binding.keystrokes() else { continue };
+            let keystroke = gpui_kit::Keystroke::parse(&keystroke.unparse()).unwrap();
+            if keystroke.modifiers.platform {
+                continue;
+            }
+            assert!(left_to_the_shell.contains(&keystroke), "{} works everywhere but isn't left to terminals", keystroke.unparse());
+        }
+    }
 }

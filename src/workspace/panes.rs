@@ -174,7 +174,7 @@ impl Workspace {
         let focus = p.items[ix].focus_handle(cx);
         let settings = match &p.items[ix] {
             Item::ProjectSettings(settings) => Some(settings.clone()),
-            Item::Editor(_) | Item::Diff(_) | Item::MultiBuffer(_) => None,
+            Item::Editor(_) | Item::Diff(_) | Item::MultiBuffer(_) | Item::Terminal(_) => None,
         };
         self.active_pane = pane;
         self.inspected = None;
@@ -348,6 +348,8 @@ impl Workspace {
                         self.view_closed(&path, view, cx);
                     }
                 }
+                // Closing a terminal's tab ends its processes.
+                Item::Terminal(item) => item.view.update(cx, |view, _| view.stop()),
                 Item::ProjectSettings(_) => {
                     self.project_settings = None;
                     self.project_settings_subscriptions.clear();
@@ -745,6 +747,7 @@ impl Workspace {
                     focused: *id == self.active_pane,
                     assistant_of: pane.and_then(|p| p.assistant).and_then(|a| order.iter().position(|p| *p == a.of)),
                     counterparts: pane.and_then(|p| p.assistant).is_some_and(|a| a.mode == AssistantMode::Counterparts),
+                    terminals: pane.map(|p| self.saved_terminals(&p.items, p.active, cx)).unwrap_or_default(),
                 })
             }
         }
@@ -763,7 +766,7 @@ impl Workspace {
         self.restore_panes(&layout, window, cx);
         if opened_file {
             self.open_file(opened_path, None, false, window, cx);
-        } else if !self.buffers.is_empty() {
+        } else if self.panes.iter().any(|p| !p.items.is_empty()) {
             self.focus_active(window, cx);
         }
     }
@@ -788,6 +791,7 @@ impl Workspace {
             if let Some(p) = self.pane_mut(id) {
                 p.active = active.unwrap_or(p.items.len().saturating_sub(1));
             }
+            self.restore_pane_terminals(id, &state.terminals, window, cx);
             if state.focused {
                 self.active_pane = id;
             }
@@ -845,8 +849,8 @@ impl Workspace {
                     })
                 });
                 serde_json::json!({
-                    "tabs": pane.items.iter().map(Item::title).collect::<Vec<_>>(),
-                    "active": pane.active_item().map(Item::title),
+                    "tabs": pane.items.iter().map(|item| item.title(cx)).collect::<Vec<_>>(),
+                    "active": pane.active_item().map(|item| item.title(cx)),
                     "focused": pane.id == self.active_pane,
                     "assistant": pane.assistant.map(|a| format!("{:?}", a.mode)),
                     "assists": pane.assistant.and_then(|a| order.iter().position(|p| *p == a.of)),

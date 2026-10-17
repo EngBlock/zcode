@@ -31,6 +31,8 @@ use crate::picker::Picker;
 pub enum DebugTab {
     Console,
     BuildLog,
+    /// The debug area's terminals (`terminals.rs`).
+    Terminal,
 }
 
 const LOG_LINE_HEIGHT: f32 = 18.;
@@ -410,6 +412,16 @@ impl Workspace {
                         cx.notify();
                     })),
             )
+            .child(
+                Button::new("tab-terminal")
+                    .label("Terminal")
+                    .xsmall()
+                    .ghost()
+                    .selected(tab == DebugTab::Terminal)
+                    .tooltip("Activate Terminal (⌃⌘`)")
+                    .on_click(cx.listener(|this, _, window, cx| this.activate_terminal(window, cx))),
+            )
+            .when(tab == DebugTab::Terminal, |el| el.child(div().w(px(1.)).h(px(14.)).bg(theme.border)).child(self.render_terminal_tabs(cx)))
             .child(div().flex_1())
             .when(tab == DebugTab::BuildLog, |el| {
                 el.child(
@@ -430,7 +442,14 @@ impl Workspace {
                     .xsmall()
                     .ghost()
                     .tooltip("Clear Console (⌘K)")
-                    .on_click(cx.listener(|this, _, _, cx| this.build.update(cx, |b, cx| b.clear_console(cx)))),
+                    .on_click(cx.listener(|this, _, _, cx| match this.debug_tab {
+                        DebugTab::Terminal => {
+                            if let Some(terminal) = this.terminals.panel.get(this.terminals.active) {
+                                terminal.view.update(cx, |view, cx| view.clear(cx));
+                            }
+                        }
+                        _ => this.build.update(cx, |b, cx| b.clear_console(cx)),
+                    })),
             )
             .child(
                 Button::new("hide-debug")
@@ -446,14 +465,16 @@ impl Workspace {
 
         let count = self.debug_line_count(cx);
         let prompt = self.render_console_prompt(cx);
-        let body = if count == 0 {
+        let body = if tab == DebugTab::Terminal {
+            self.render_terminal_panel(cx)
+        } else if count == 0 {
             div()
                 .p_3()
                 .text_sm()
                 .text_color(theme.muted_foreground)
                 .child(match tab {
                     DebugTab::Console => "Program output appears here when you run (⌘R).",
-                    DebugTab::BuildLog => "Build output appears here when you build (⌘B).",
+                    DebugTab::BuildLog | DebugTab::Terminal => "Build output appears here when you build (⌘B).",
                 })
                 .into_any_element()
         } else {
@@ -473,7 +494,7 @@ impl Workspace {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .when(debugging, |el| el.child(self.render_variables(cx)))
+                    .when(debugging && tab != DebugTab::Terminal, |el| el.child(self.render_variables(cx)))
                     .child(v_flex().flex_1().h_full().min_w_0().child(div().flex_1().min_h_0().child(body)).children(prompt)),
             )
     }
@@ -541,6 +562,7 @@ impl Workspace {
             DebugTab::Console => build.console.len(),
             DebugTab::BuildLog if self.raw_log => build.log.len(),
             DebugTab::BuildLog => build.log.iter().filter(|l| l.pretty.is_some()).count(),
+            DebugTab::Terminal => 0,
         }
     }
 
@@ -566,6 +588,7 @@ impl Workspace {
                 .iter()
                 .map(|l| line(l.clone(), theme.foreground, false))
                 .collect(),
+            DebugTab::Terminal => vec![],
             DebugTab::BuildLog => {
                 let lines: Vec<_> = if self.raw_log {
                     build.log.iter().skip(range.start).take(range.len()).collect()
@@ -846,6 +869,10 @@ impl Render for Workspace {
                 let pane = this.active_pane;
                 if this.modal.is_some() {
                     this.dismiss_modal(window, cx);
+                } else if let Some(ix) = this.focused_panel_terminal(window, cx) {
+                    // ⌘W in the debug area's terminal closes that terminal.
+                    let view = this.terminals.panel[ix].view.entity_id();
+                    this.close_terminal(view, window, cx);
                 } else if let Some(ix) = this.pane(pane).filter(|p| !p.items.is_empty()).map(|p| p.active) {
                     this.close_item(pane, ix, window, cx);
                 } else if this.panes.len() > 1 {
@@ -1017,6 +1044,16 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &ActivateConsole, window, cx| this.activate_console(window, cx)))
+            .on_action(cx.listener(|this, _: &ActivateTerminal, window, cx| this.activate_terminal(window, cx)))
+            .on_action(cx.listener(|this, _: &NewTerminal, window, cx| {
+                let dir = this.project.root.clone();
+                this.new_panel_terminal(crate::terminal::Spawn::shell(dir), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NewTerminalTab, window, cx| {
+                let dir = this.project.root.clone();
+                this.new_terminal_tab(crate::terminal::Spawn::shell(dir), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenTerminalAtLocation, window, cx| this.open_terminal_at(None, window, cx)))
             .on_action(cx.listener(|this, _: &IncreaseFontSize, _, cx| this.change_font_size(1., cx)))
             .on_action(cx.listener(|this, _: &DecreaseFontSize, _, cx| this.change_font_size(-1., cx)))
             .on_action(cx.listener(|this, _: &ResetFontSize, _, cx| this.change_font_size(0., cx)))

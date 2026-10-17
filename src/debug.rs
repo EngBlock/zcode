@@ -49,6 +49,10 @@
 //!   multibuffer <command>      multibuffers: find (the Find navigator's results in a tab), issues,
 //!                              replace <text> (Replace All), open (⌥↩), expand (⇧↩), all, save
 //!                              (see `Workspace::multibuffer_command`)
+//!   terminal <command>         terminals: panel / tab [<dir>] [-- <script>], at <path> (Open Terminal at
+//!                              Location), type / focus / close / select-all / copy / clear <n>, scroll <n>
+//!                              <lines>, link <n> <row> <column> (⌘-click), clipboard
+//!                              (see `Workspace::terminal_command`)
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -425,6 +429,12 @@ fn run_command(
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
         }
+        "terminal" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.terminal_command(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+        }
         "multibuffer" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window
@@ -549,7 +559,9 @@ fn run_command(
         }
         "dump" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
-            Ok(workspace.update(cx, |ws, cx| ws.debug_state(cx)).to_string())
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.debug_state(window, cx)).to_string())
+                .map_err(|e| e.to_string())
         }
         other => Err(format!("unknown command {other}")),
     }

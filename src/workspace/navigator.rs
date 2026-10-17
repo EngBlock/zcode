@@ -347,8 +347,8 @@ impl Workspace {
                                 path.parent().map(PathBuf::from).unwrap_or_else(|| path.clone())
                             };
                             let (ws1, ws2, ws3) = (workspace.clone(), workspace.clone(), workspace.clone());
-                            let (ws4, ws5) = (workspace.clone(), workspace.clone());
-                            let (p1, p2, p3, p4) = (path.clone(), path.clone(), path.clone(), path.clone());
+                            let (ws4, ws5, ws6) = (workspace.clone(), workspace.clone(), workspace.clone());
+                            let (p1, p2, p3, p4, p5) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
                             let add_to = folder.clone();
                             menu.item(PopupMenuItem::new("Show File Inspector").on_click(move |_, _, cx| {
                                 let path = p4.clone();
@@ -370,6 +370,10 @@ impl Workspace {
                             }))
                             .item(PopupMenuItem::new("Show in Finder").on_click(move |_, _, cx| {
                                 cx.reveal_path(&p2);
+                            }))
+                            .item(PopupMenuItem::new("Open Terminal at Location").on_click(move |_, window, cx| {
+                                let path = p5.clone();
+                                ws6.update(cx, |ws, cx| ws.open_terminal_at(Some(path), window, cx)).ok();
                             }))
                             .when(!entry.is_folder(), |menu| {
                                 let (ws, path) = (workspace.clone(), path.clone());

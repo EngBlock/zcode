@@ -36,6 +36,12 @@ pub struct ProjectSession {
     /// Bookmarks and bookmarked searches, in the navigator's order.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bookmarks: Vec<crate::bookmarks::Entry>,
+    /// The debug area's terminals, as the folder each was in, and whether
+    /// its Terminal tab was the one shown.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub terminals: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub terminal_tab: bool,
 }
 
 /// The editor area as saved: a pane, or panes side by side or stacked.
@@ -65,6 +71,19 @@ pub struct PaneState {
     pub assistant_of: Option<usize>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub counterparts: bool,
+    /// Terminal tabs among the files.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub terminals: Vec<SavedTerminal>,
+}
+
+/// A terminal tab: where it was among the pane's tabs and the folder its
+/// shell was in (a fresh shell starts there; processes aren't restored).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedTerminal {
+    pub position: usize,
+    pub dir: PathBuf,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub active: bool,
 }
 
 impl PaneLayout {
@@ -192,10 +211,31 @@ mod tests {
         let text = serde_json::to_string(&saved).unwrap();
         assert!(text.contains(r#""axis":"vertical""#) && !text.contains("counterparts"), "{text}");
         assert_eq!(text.matches("sizes").count(), 1, "{text}");
+        assert!(!text.contains("terminal"), "{text}");
         let reread: ProjectSession = serde_json::from_str(&text).unwrap();
         assert_eq!(reread.panes, Some(layout));
         let panes = reread.panes.as_ref().unwrap().panes();
         assert_eq!(panes.len(), 3);
         assert!(panes[1].focused && panes[2].files.is_empty());
+    }
+
+    #[test]
+    fn terminals_are_kept_as_their_folders() {
+        let pane = PaneState {
+            files: vec![PathBuf::from("/a.swift")],
+            terminals: vec![SavedTerminal { position: 1, dir: PathBuf::from("/project/Sources"), active: true }],
+            ..Default::default()
+        };
+        let saved = ProjectSession {
+            panes: Some(PaneLayout::Pane(pane.clone())),
+            terminals: vec![PathBuf::from("/project")],
+            terminal_tab: true,
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&saved).unwrap();
+        let reread: ProjectSession = serde_json::from_str(&text).unwrap();
+        assert_eq!(reread.panes, Some(PaneLayout::Pane(pane)));
+        assert_eq!(reread.terminals, vec![PathBuf::from("/project")]);
+        assert!(reread.terminal_tab);
     }
 }

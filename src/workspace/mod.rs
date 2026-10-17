@@ -41,6 +41,7 @@ mod project_settings;
 mod remote_sheet;
 mod semantic_tokens;
 mod source_control;
+mod terminals;
 mod test_gutter;
 mod testing;
 
@@ -67,7 +68,7 @@ pub use buffers::Buffer;
 pub use find::FindState;
 pub use navigator::NavigatorTab;
 pub use multibuffer::{MultiBufferKind, MultiBufferView};
-pub use pane::{AssistantMode, DiffItem, EditorItem, Item, MultiBufferItem, Pane, PaneId};
+pub use pane::{AssistantMode, DiffItem, EditorItem, Item, MultiBufferItem, Pane, PaneId, TerminalItem};
 pub use remote_sheet::RemoteAction;
 pub use pane_group::SplitAxis;
 pub use panels::DebugTab;
@@ -135,6 +136,8 @@ pub struct Workspace {
     pub bookmarks: crate::bookmarks::Bookmarks,
     bookmarks_ui: bookmarks::BookmarksUi,
     console: console::Console,
+    /// The debug area's terminals.
+    terminals: terminals::TerminalsState,
     pub show_inspector: bool,
     /// What the File inspector shows when it isn't the active file (a
     /// folder picked in the navigator).
@@ -265,13 +268,14 @@ impl Workspace {
             bookmarks: Default::default(),
             bookmarks_ui: Default::default(),
             console: Default::default(),
+            terminals: Default::default(),
             show_inspector: saved.show_inspector.unwrap_or(false),
             inspected: None,
             inspector_info: None,
             navigator: NavigatorTab::Project,
             show_navigator: saved.show_navigator.unwrap_or(true),
             show_debug_area: saved.show_debug_area.unwrap_or(false),
-            debug_tab: DebugTab::Console,
+            debug_tab: if saved.terminal_tab && !saved.terminals.is_empty() { DebugTab::Terminal } else { DebugTab::Console },
             raw_log: false,
             find: FindState {
                 input: find_input,
@@ -333,6 +337,7 @@ impl Workspace {
             d.breakpoints_active = saved.breakpoints_active.unwrap_or(true);
         });
         this.bookmarks.restore(saved.bookmarks.clone());
+        this.restore_panel_terminals(&saved.terminals, window, cx);
 
         mark("state");
         this.rescan(cx);
@@ -343,7 +348,7 @@ impl Workspace {
         mark("background tasks");
         this.restore_tabs(saved, opened_path, window, cx);
         mark("restore tabs");
-        if this.buffers.is_empty() {
+        if this.panes.iter().all(|p| p.items.is_empty()) {
             // Keep shortcuts working before any file is open.
             this.focus_handle.focus(window, cx);
         }
@@ -623,6 +628,8 @@ impl Workspace {
             breakpoints_v2: self.debugger.read(cx).breakpoints.clone(),
             breakpoints_active: Some(self.debugger.read(cx).breakpoints_active),
             bookmarks: self.bookmarks.entries.clone(),
+            terminals: self.panel_terminal_dirs(cx),
+            terminal_tab: self.debug_tab == DebugTab::Terminal,
         };
         self.session = Session::load();
         self.session.set_project(&self.project.root, state);
@@ -721,7 +728,7 @@ impl Workspace {
         editor.update(cx, |editor, cx| editor.command(command, window, cx))
     }
 
-    pub fn debug_state(&mut self, cx: &App) -> serde_json::Value {
+    pub fn debug_state(&mut self, window: &Window, cx: &App) -> serde_json::Value {
         let testing = self.tests_summary(cx);
         let build = self.build.read(cx);
         let active = self.active_item().zip(self.active_buffer()).map(|(item, b)| {
@@ -816,6 +823,7 @@ impl Workspace {
         state["panes"] = self.panes_summary(cx);
         state["git"] = self.git_summary(cx);
         state["multibuffer"] = self.multibuffer_summary(cx);
+        state["terminals"] = self.terminals_summary(window, cx);
         state["language_features"] = serde_json::json!({
             "server": self.lsp.read(cx).features().summary(),
             "inlay_hints": self.inlay_hints_summary(cx),

@@ -165,6 +165,7 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
                         if let Some(workspace) = weak.upgrade() {
                             workspace.update(cx, |ws, cx| {
                                 ws.save_session(cx);
+                                ws.stop_terminals(cx);
                                 ws.lsp.update(cx, |lsp, cx| lsp.shutdown(cx)).detach();
                             });
                         }
@@ -247,6 +248,7 @@ fn quit(cx: &mut App) {
     for workspace in workspaces {
         workspace.update(cx, |ws, cx| {
             ws.save_session(cx);
+            ws.stop_terminals(cx);
             shutdowns.push(ws.lsp.update(cx, |lsp, cx| lsp.shutdown(cx)));
         });
     }
