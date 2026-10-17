@@ -70,6 +70,7 @@ XCODE_SHORTCUTS = [
     ("cmd-alt-f", "zcode::FindAndReplaceInFile", "Find ▸ Find and Replace…"),
     ("cmd-alt-e", "zcode::SelectNextOccurrence", "Find ▸ Select Next Occurrence"),
     ("cmd-shift-f", "zcode::FindInWorkspace", "Find ▸ Find in Workspace…"),
+    ("alt-shift-cmd-f", "zcode::FindAndReplaceInWorkspace", "Find ▸ Find and Replace in Workspace…"),
     ("ctrl-shift-cmd-f", "zcode::FindSelectedSymbol", "Find ▸ Find Selected Symbol in Workspace"),
     ("ctrl-shift-cmd-h", "zcode::FindCallHierarchy", "Find ▸ Find Call Hierarchy"),
     ("ctrl-cmd-j", "zcode::JumpToDefinition", "Navigate ▸ Jump to Definition"),
@@ -2498,6 +2499,251 @@ def git_checks(samples):
         z.quit()
 
 
+def multibuffer_checks(samples):
+    """Multibuffers on a copy of ZKit made a git repository, with 400 text
+    files that match a query: Find results in a tab edited in place, Replace
+    All as one undo step across files, opening the files and showing more
+    lines, change bars and breakpoints on excerpt lines, the issues with
+    their messages, a rename's changes, and a search over many files that
+    opens a page at a time."""
+    project = os.path.realpath(os.path.join(WORK, "MultiKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    with open(os.path.join(project, ".gitignore"), "w") as f:
+        f.write(".build/\n.swiftpm/\n")
+    notes = os.path.join(project, "Notes")
+    os.makedirs(notes)
+    for i in range(400):
+        with open(os.path.join(notes, f"note{i:03}.txt"), "w") as f:
+            f.write(f"note {i}\nthe needle {i}\nend\n")
+    init_repo(project)
+    git(project, "add", "-A")
+    git(project, "commit", "-q", "-m", "Initial commit")
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    main_swift = os.path.join(project, "Sources", "zhello", "main.swift")
+    originals = {p: open(p).read() for p in (greeter, main_swift)}
+    greeting_line = line_of(greeter, "public func greeting")
+    z = Zcode(project)
+
+    def mb(s=None):
+        return (s or z.dump())["multibuffer"]["active"]
+
+    def back():
+        """Shows the multibuffer's tab again."""
+        tabs = z.dump()["panes"]["list"][0]["tabs"]
+        ix = next(i for i, t in enumerate(tabs) if t.startswith(("Find", "Issues", "Rename")))
+        z.run(f"pane tab 0 {ix}", "wait 300")
+
+    def row_of(m, file, line):
+        """The window point of a file's line in the multibuffer, in its text."""
+        n = next(n for n in m["numbers"] if n["file"] == file and n["line"] == line)
+        return n["x"] + 300, n["y"]
+
+    def find(query):
+        z.run("keys cmd-shift-f", "wait 200", f"type {query}", "keys enter")
+        assert not z.dump()["find_replacing"]
+        z.wait_for(lambda s: s["find_results"] > 0, timeout=20, interval=0.3)
+
+    def find_results():
+        find("greeting")
+        found = z.dump()["find_results"]
+        z.run("action zcode::ShowFindResultsInEditor", "wait 500")
+        s = z.dump()
+        m = mb(s)
+        assert s["panes"]["list"][0]["active"] == "Find “greeting”", s["panes"]["list"][0]
+        assert m["matches"] == found and m["pending_files"] == 0, (m["matches"], found)
+        assert {"Greeter.swift", "main.swift", "GreeterTests.swift"} <= set(m["files"]), m["files"]
+        headers = [h for h in m["headers"] if h["key"] == "multibuffer-headers"]
+        assert len(headers) == len(m["excerpts"]), (headers, m["excerpts"])
+        # The gutter numbers are each line's in its file.
+        assert any(n["file"] == "Greeter.swift" and n["line"] == greeting_line for n in m["numbers"]), m["numbers"]
+        assert m["text"].startswith(open(os.path.join(project, "Package.swift")).read().splitlines()[0]) or m["excerpts"][0]["file"] != "Package.swift"
+        z.run("screenshot " + os.path.join(WORK, "multibuffer-find.png"))
+
+    def edits_both_ways():
+        # Typing in Swift excerpts, against the file's own tab.
+        x, y = row_of(mb(), "Greeter.swift", greeting_line)
+        z.run(f"click {x} {y}", "keys cmd-right")
+        excerpt = json.loads(z.run("type-latency abcdefghijklmnopqrstuvwxyz")[-1])
+        z.run("keys cmd-z", "wait 300")
+        z.run(f"open {greeter}:{greeting_line}", "keys cmd-right")
+        tab = json.loads(z.run("type-latency abcdefghijklmnopqrstuvwxyz")[-1])
+        z.run("keys cmd-z", "wait 300")
+        print(f"      typing, median / p95: excerpts {excerpt['median_ms']:.1f} / {excerpt['p95_ms']:.1f} ms, the file's tab {tab['median_ms']:.1f} / {tab['p95_ms']:.1f} ms")
+        assert excerpt["median_ms"] < 16 and not z.dump()["active"]["dirty"], excerpt
+        back()
+        z.run(f"click {x} {y}", "keys cmd-right", "type  // here", "wait 300")
+        m = mb()
+        assert "Greeter.swift" in m["dirty"] and "// here" in m["text"], m["dirty"]
+        assert open(greeter).read() == originals[greeter], "nothing saved"
+        # The file's tab has the edit; typing there shows in the excerpt.
+        z.run(f"open {greeter}:{greeting_line}", "keys cmd-right", "type !", "wait 200")
+        assert "// here!" in z.dump()["active"]["text"]
+        back()
+        assert "// here!" in mb()["text"]
+        # The file's own ⌘Z undoes both, the multibuffer's edit included.
+        z.run(f"open {greeter}:{greeting_line}", "keys cmd-z", "keys cmd-z", "wait 300")
+        s = z.dump()
+        assert "// here" not in s["active"]["text"] and not s["active"]["dirty"], s["active"]["text"][:200]
+        back()
+        assert "// here" not in mb()["text"] and not mb()["dirty"]
+
+    def replace_all_one_step():
+        z.run("keys alt-shift-cmd-f", "wait 200", "type greeting", "keys enter")
+        z.wait_for(lambda s: s["find_results"] > 0 and s["find_replacing"], timeout=20, interval=0.3)
+        z.run("screenshot " + os.path.join(WORK, "multibuffer-replace-navigator.png"))
+        # The Replace field's Replace All.
+        z.run("multibuffer replace salute", "wait 500")
+        m = mb()
+        assert m["dirty"] and len(m["dirty"]) == len(m["files"]) >= 3, m["dirty"]
+        assert "salute" in m["text"] and "greeting(" not in m["text"] and m["undo"] == 1, m["undo"]
+        assert open(greeter).read() == originals[greeter], "Replace All leaves the files unsaved"
+        z.run("screenshot " + os.path.join(WORK, "multibuffer-replace.png"))
+        z.run("keys cmd-z", "wait 400")
+        m = mb()
+        assert not m["dirty"] and "salute" not in m["text"] and (m["undo"], m["redo"]) == (0, 1), (m["dirty"], m["undo"], m["redo"])
+        z.run("keys cmd-shift-z", "wait 400")
+        files = len(mb()["files"])
+        assert len(mb()["dirty"]) == files
+        # A file's own ⌘Z takes its part back; the multibuffer's ⌘Z the rest.
+        z.run(f"open {greeter}:{greeting_line}", "keys cmd-z", "wait 300")
+        assert "func greeting" in z.dump()["active"]["text"]
+        back()
+        assert "Greeter.swift" not in mb()["dirty"] and len(mb()["dirty"]) == files - 1
+        z.run("keys cmd-z", "wait 400")
+        assert not mb()["dirty"]
+        # Redone together, then saved from the tab.
+        z.run("keys cmd-shift-z", "wait 400")
+        assert len(mb()["dirty"]) == files, mb()["dirty"]
+        z.run("keys cmd-s", "wait 500")
+        assert not mb()["dirty"] and "func salute" in open(greeter).read() and "salute(" in open(main_swift).read()
+
+    def open_and_expand():
+        m = mb()
+        x, y = row_of(m, "main.swift", line_of(main_swift, "salute("))
+        z.run(f"click {x} {y}", "keys alt-enter", "wait 400")
+        s = z.dump()
+        assert s["active"]["path"] == main_swift and s["active"]["line"] == line_of(main_swift, "salute("), s["active"]["path"]
+        back()
+        header = next(h for h in mb()["headers"] if h["key"] == "multibuffer-headers" and h["row"] > 0)
+        first_rows = mb()["excerpts"]
+        z.run(f"click {header['x'] + 250} {header['y']}", "wait 400")
+        assert z.dump()["active"] is not None and z.dump()["panes"]["list"][0]["active"] != "Find “greeting”"
+        back()
+        n = mb()["numbers"][0]
+        z.run(f"click {n['x']} {n['y']}", "wait 400")
+        s = z.dump()
+        assert s["active"]["line"] == n["line"] and s["panes"]["list"][0]["active"] == n["file"], (s["active"]["line"], n)
+        back()
+        # ⇧↩ shows three more lines around the cursor's excerpt.
+        x, y = row_of(mb(), "main.swift", line_of(main_swift, "salute("))
+        before = next(e for e in mb()["excerpts"] if e["file"] == "main.swift")
+        z.run(f"click {x} {y}", "keys shift-enter", "wait 300")
+        after = next(e for e in mb()["excerpts"] if e["file"] == "main.swift")
+        assert after["lines"][0] <= max(1, before["lines"][0] - 3) and after["lines"][1] >= before["lines"][1] + 1, (before, after)
+        assert "\n\n" not in mb()["text"][:0]
+        # A header's ↕ does the same for its excerpt.
+        header = next(h for h in mb()["headers"] if h["key"] == "multibuffer-headers")
+        count = len(mb()["text"].splitlines())
+        z.run(f"click {header['x'] + 6} {header['y']}", "wait 300")
+        assert len(mb()["text"].splitlines()) > count, first_rows
+
+    def gutter_marks():
+        # The saved rename is a change against HEAD; its lines get bars.
+        z.wait_for(lambda s: any(lane == "multibuffer-changes" for lane, _ in mb(s)["painted_gutter"]), timeout=20, interval=0.5)
+        # A breakpoint set in the file's tab shows on its excerpt line, and
+        # toggles there.
+        line = line_of(greeter, "public func salute")
+        z.run(f"open {greeter}:{line}", "keys cmd-\\", "wait 200", "wait 200")
+        back()
+        m = mb()
+        marks = [row for lane, row in m["painted_gutter"] if lane == "multibuffer-breakpoints"]
+        assert marks, m["painted_gutter"]
+        n = next(n for n in m["numbers"] if n["row"] == marks[0])
+        assert (n["file"], n["line"]) == ("Greeter.swift", line), n
+        z.run(f"click {n['x']} {n['y']}", "wait 300")
+        bps = z.dump()["breakpoints"]["list"]
+        assert [b["enabled"] for b in bps if b["title"] == f"Greeter.swift:{line}"] == [False], bps
+        z.run("screenshot " + os.path.join(WORK, "multibuffer-gutter.png"))
+
+    def issues_in_editor():
+        line = line_of(greeter, "public let name")
+        before = open(greeter).read()
+        z.run(f"open {greeter}:{line}", "keys cmd-right", "type + oops", "keys cmd-s", "keys cmd-b")
+        s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=300)
+        assert "success: false" in s["phase"], s["phase"]
+        z.run("action zcode::ShowIssuesInEditor", "wait 500")
+        s = z.dump()
+        m = mb(s)
+        assert s["panes"]["list"][0]["active"] == "Issues", s["panes"]["list"][0]
+        assert any(e["file"] == "Greeter.swift" and e["lines"][0] <= line <= e["lines"][1] for e in m["excerpts"]), m["excerpts"]
+        assert any(row == line - m["excerpts"][0]["lines"][0] + 1 for row, _ in m["messages"]) and m["diagnostics"], m["messages"]
+        z.run("screenshot " + os.path.join(WORK, "multibuffer-issues.png"))
+        # Fixed in the tab itself.
+        x, y = row_of(m, "Greeter.swift", line)
+        z.run(f"click {x} {y}", "keys cmd-right", "keys backspace backspace backspace backspace backspace backspace", "keys cmd-s", "wait 300")
+        assert open(greeter).read() == before, ("fixed and saved from the issues tab", open(greeter).read(), mb()["text"])
+
+    def rename_preview():
+        line = greeting_line
+        z.run(f"open {greeter}:{line}")
+        z.wait_for(lambda s: s["lsp"] == "Ready" and not s["lsp_progress"] and not s["indexing"], timeout=400)
+        column = open(greeter).read().splitlines()[line - 1].index("greeting") + 2
+        for _ in range(5):
+            z.run(f"open {greeter}:{line}", keys_right(column), "keys f2", "wait 300", "keys cmd-a", "type greet", "wait 300", "keys enter")
+            try:
+                s = z.wait_for(lambda s: s["panes"]["list"][0]["active"].startswith("Rename"), timeout=20, interval=0.5)
+                # Until the index has every file, a rename finds only this one.
+                if len(mb(s)["files"]) >= 3:
+                    break
+                z.run("keys cmd-z", "keys cmd-w", "wait 300")
+            except TimeoutError:
+                pass
+            time.sleep(5)
+        m = mb(s)
+        assert m["title"] == "Rename “greeting” to “greet”" and m["undo"] == 1, m["title"]
+        assert len(m["files"]) >= 3 and set(m["dirty"]) == set(m["files"]) and m["matches"] >= 4, m
+        z.run("screenshot " + os.path.join(WORK, "multibuffer-rename.png"))
+        z.run("keys cmd-z", "wait 500")
+        m = mb()
+        assert not m["dirty"] and "greet(" not in m["text"], m["dirty"]
+        z.run("keys cmd-w", "wait 300")
+
+    def many_files_a_page_at_a_time():
+        find("needle")
+        assert z.dump()["find_results"] == 400
+        z.run("multibuffer find", "wait 300")
+        m = mb()
+        assert m["pending_files"] == 375 and len(m["files"]) == 25, (m["pending_files"], len(m["files"]))
+        assert m["last_page_ms"] < 500, m["last_page_ms"]
+        print(f"      first page of 25 files: {m['last_page_ms']:.1f} ms")
+        # Scrolling to the end adds the next pages.
+        z.run("keys cmd-down", "wait 400", "keys cmd-down", "wait 400")
+        assert len(mb()["files"]) > 25, len(mb()["files"])
+        z.run("multibuffer all", "wait 300")
+        m = mb()
+        assert m["pending_files"] == 0 and len(m["files"]) == 400 and m["matches"] == 400, (len(m["files"]), m["matches"])
+        # Typing in it stays fast.
+        x, y = row_of(mb(), m["numbers"][1]["file"], 2)
+        z.run(f"click {x} {y}", "keys cmd-right")
+        stats = json.loads(z.run("type-latency abcdefghijklmnopqrstuvwxyz")[-1])
+        print(f"      typing in 400 plain-text excerpts: median {stats['median_ms']:.1f} ms, p95 {stats['p95_ms']:.1f} ms")
+        assert stats["median_ms"] < 16 and mb()["dirty"], stats
+        z.run("keys cmd-z", "wait 300")
+        assert not mb()["dirty"]
+
+    try:
+        check("Multibuffer: Rename (sourcekit-lsp) shows the places it changed, unsaved; one ⌘Z undoes it", rename_preview)
+        check("Multibuffer: Find in Workspace's results in a tab, a header per file, each line's number in its file", find_results)
+        check("Multibuffer: typing in an excerpt edits the file (unsaved); the file's edits show there; the file's ⌘Z undoes both", edits_both_ways)
+        check("Multibuffer: Find and Replace in Workspace (⌥⇧⌘F) Replace All is one ⌘Z across files, each file's ⌘Z agrees; ⌘S saves", replace_all_one_step)
+        check("Multibuffer: ⌥↩, a header and a line number open the file there; ⇧↩ and a header's ↕ show more lines", open_and_expand)
+        check("Multibuffer: change bars and breakpoints on excerpt lines; a breakpoint toggles there", gutter_marks)
+        check("Multibuffer: Show Issues in Editor, each message under its line, fixed in place", issues_in_editor)
+        check("Multibuffer: a search over 400 files opens a page of 25 and adds more as it scrolls; typing stays fast", many_files_a_page_at_a_time)
+    finally:
+        z.quit()
+
+
 def tally_repo():
     """The Tally fixture package as a bare git repository with release tags."""
     out = subprocess.run(["sh", os.path.join(ROOT, "tests", "fixtures", "packages", "make_repo.sh"), os.path.join(WORK, "repos")],
@@ -2907,6 +3153,9 @@ def main():
 
     print("Source control (a copy of samples/ZKit in a new repository, with a local origin):")
     git_checks(samples)
+
+    print("Multibuffers (a copy of samples/ZKit in a new repository, with 400 notes):")
+    multibuffer_checks(samples)
 
     print("Package dependencies (offline, a local repository of the Tally fixture):")
     package_dependency_checks(samples)
