@@ -158,7 +158,13 @@ def normalize_keys(keys):
 
 class Zcode:
     def __init__(self, project, extra_env=None, keep_vim=False):
-        self.log_offset = 0
+        # The debug log is shared by every instance: read only this one's
+        # lines, so an earlier check's errors can't fail this launch.
+        try:
+            with open(os.path.join(DEBUG_DIR, "log")) as f:
+                self.log_offset = len(f.read().splitlines())
+        except FileNotFoundError:
+            self.log_offset = 0
         env = dict(os.environ, ZCODE_DEBUG_DIR=DEBUG_DIR, **(extra_env or {}))
         # zcode's own log, for a check that fails: $ZCODE_E2E_STDERR.
         stderr = open(os.environ["ZCODE_E2E_STDERR"], "a") if os.environ.get("ZCODE_E2E_STDERR") else subprocess.DEVNULL
