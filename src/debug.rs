@@ -65,6 +65,12 @@
 //!                              (see `Workspace::agent_command`); `dump` has `agent`
 //!   predict <command>          predictive code completion: status, request (⌃⌥Space), accept, dismiss,
 //!                              edits (see `Workspace::prediction_command`); `dump` has `predictions`
+//!   organizer <command>        Window ▸ Organizer: open, refresh, select <archive>, group <app>, distribute
+//!                              (the sheet), delete, finder (see `Workspace::organizer_command`); `dump` has
+//!                              `archives`
+//!   distribute <command>       the Distribute App sheet: method <id>, upload / symbols / versions / strip /
+//!                              notarize on|off, profile <name>, folder <path>, confirm, cancel
+//!                              (see `DistributeSheet::command`)
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -484,6 +490,17 @@ fn run_command(
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.terminal_command(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+        }
+        "organizer" | "distribute" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| {
+                    workspace.update(cx, |ws, cx| match cmd {
+                        "organizer" => ws.organizer_command(arg, window, cx),
+                        _ => ws.distribute_command(arg, window, cx),
+                    })
+                })
                 .map_err(|e| e.to_string())?
         }
         "predict" => {

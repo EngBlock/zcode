@@ -84,6 +84,12 @@ impl Workspace {
             }
             BuildEvent::TestsChanged => {}
             BuildEvent::TemplatesLoaded => self.show_template_chooser(window, cx),
+            BuildEvent::Archived(path) => {
+                // Opening a tab from inside the build's update: after it.
+                let path = path.clone();
+                cx.defer_in(window, move |this, window, cx| this.archived(path, window, cx));
+            }
+            BuildEvent::Distributed => self.distributed(cx),
             BuildEvent::StoredSchemeOptionsChanged => self.save_session(cx),
             BuildEvent::ConfigurationChanged => {
                 // A package's test targets arrive with its schemes.

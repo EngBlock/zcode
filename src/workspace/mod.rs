@@ -4,6 +4,7 @@
 mod add_files;
 mod add_package;
 mod agent;
+mod archive;
 mod blame;
 mod bookmark_dialog;
 mod bookmarks;
@@ -15,6 +16,7 @@ mod change_bars;
 mod commit_sheet;
 mod console;
 mod diff_view;
+mod distribute_sheet;
 mod edit_scheme;
 mod editing;
 mod inspector;
@@ -30,6 +32,7 @@ mod mcp;
 mod multibuffer;
 mod navigation;
 mod navigator;
+mod organizer;
 mod packages;
 mod pane;
 mod pane_group;
@@ -73,6 +76,7 @@ use crate::session::{ProjectSession, Session};
 pub use agent::McpPermission;
 pub use buffers::Buffer;
 pub use mcp::issue_json;
+pub use organizer::archive_json;
 pub use find::FindState;
 pub use navigator::NavigatorTab;
 pub use multibuffer::{MultiBufferKind, MultiBufferView};
@@ -130,6 +134,11 @@ pub struct Workspace {
     /// The project editor, in whichever pane has its tab.
     pub project_settings: Option<Entity<ProjectSettings>>,
     project_settings_subscriptions: Vec<Subscription>,
+    /// Window ▸ Organizer's tab, while open.
+    pub organizer: Option<Entity<organizer::Organizer>>,
+    organizer_subscriptions: Vec<Subscription>,
+    /// Distribute App's sheet, while open.
+    distribute_sheet: Option<WeakEntity<distribute_sheet::DistributeSheet>>,
     /// Where execution stopped, marked in every pane showing it.
     exec_location: Option<(PathBuf, u32)>,
     xcode_projects: Vec<PathBuf>,
@@ -283,6 +292,9 @@ impl Workspace {
             restored_split_sizes: Default::default(),
             project_settings: None,
             project_settings_subscriptions: vec![],
+            organizer: None,
+            organizer_subscriptions: vec![],
+            distribute_sheet: None,
             exec_location: None,
             xcode_projects: vec![],
             project_index: Default::default(),
@@ -860,6 +872,7 @@ impl Workspace {
         // this Mac, else what Run started (the app, simctl or devicectl).
         state["run_pid"] = self.debugger.read(cx).local_debuggee_pid().or(build.run_pid()).into();
         state["profile"] = self.profile_summary(cx);
+        state["archives"] = self.archives_summary(cx);
         state["breakpoints"] = self.breakpoints_summary(cx);
         state["bookmarks"] = self.bookmarks_summary(cx);
         state["packages"] = self.packages_summary(cx);
@@ -880,6 +893,12 @@ impl Workspace {
             "hierarchy": self.hierarchy_summary(),
         });
         state["last_log"] = serde_json::json!(build.reports.first().map(|r| r.log_path.clone()));
+        state["last_report"] = serde_json::json!(build.reports.first().map(|r| serde_json::json!({
+            "action": r.action.verb(),
+            "scheme": r.scheme,
+            "destination": r.destination,
+            "success": r.success,
+        })));
         state["scheme_options"] = serde_json::json!(build.scheme_options.as_ref().map(edit_scheme::options_summary));
         state["edit_scheme"] =
             serde_json::json!(self.edit_scheme_dialog.as_ref().and_then(|d| d.upgrade()).map(|d| d.read(cx).summary(cx)));

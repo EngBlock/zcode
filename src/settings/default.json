@@ -124,5 +124,12 @@
   "profiling": {
     // Stop recording after this many seconds; 0 records until Stop (⌘.).
     "time_limit": 0
+  },
+  // Product ▸ Archive's Distribute App. Only read from your own settings.
+  "distribution": {
+    // The keychain profile Developer ID apps are notarized with: stored once
+    // with `xcrun notarytool store-credentials <name>` in a terminal.
+    // Distribute App fills it in and remembers what you type there.
+    "notary_keychain_profile": ""
   }
 }

@@ -49,6 +49,28 @@ pub fn traces_dir() -> PathBuf {
     }
 }
 
+/// Where Product ▸ Archive puts archives and the Organizer lists them:
+/// Xcode's own folder, so each sees the other's. `ZCODE_ARCHIVES_DIR`
+/// names another; with `ZCODE_CONFIG_DIR` standing in, the run's own.
+pub fn archives_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("ZCODE_ARCHIVES_DIR").filter(|dir| !dir.is_empty()) {
+        return PathBuf::from(dir);
+    }
+    match config_override() {
+        Some(dir) => dir.join("archives"),
+        None => home().join("Library/Developer/Xcode/Archives"),
+    }
+}
+
+/// Where Distribute App suggests exporting to (Xcode suggests the
+/// Desktop), in the run's own folder when `ZCODE_CONFIG_DIR` stands in.
+pub fn exports_dir() -> PathBuf {
+    match config_override() {
+        Some(dir) => dir.join("exports"),
+        None => home().join("Desktop"),
+    }
+}
+
 /// Per-project cache directory (compilation database, build logs, ...).
 pub fn project_cache_dir(root: &Path) -> PathBuf {
     use std::hash::{Hash as _, Hasher as _};

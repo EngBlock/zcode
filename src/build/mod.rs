@@ -1,5 +1,6 @@
 //! Build, run, test and clean — the Product menu.
 
+pub mod archive;
 pub mod compiledb;
 pub mod devices;
 pub mod log;
@@ -40,6 +41,11 @@ pub enum BuildAction {
     /// Instruments (`profile`).
     Profile,
     Clean,
+    /// Build with the Archive action's configuration into an archive
+    /// (`archive`).
+    Archive,
+    /// Distribute App: export or upload an archive (`archive::distribute`).
+    Distribute,
 }
 
 impl BuildAction {
@@ -49,6 +55,8 @@ impl BuildAction {
             Self::Test => "Test",
             Self::Profile => "Profile",
             Self::Clean => "Clean",
+            Self::Archive => "Archive",
+            Self::Distribute => "Distribute",
         }
     }
 }
@@ -111,6 +119,10 @@ pub enum BuildEvent {
     StoredSchemeOptionsChanged,
     /// Instruments' templates are listed (or couldn't be).
     TemplatesLoaded,
+    /// Product ▸ Archive made this archive.
+    Archived(PathBuf),
+    /// Distribute App finished (`last_distribution`).
+    Distributed,
 }
 
 pub struct BuildController {
@@ -183,6 +195,11 @@ pub struct BuildController {
     /// The template last recorded with, first in the chooser.
     pub last_template: Option<String>,
     _templates_task: Option<Task<()>>,
+    /// How the last Product ▸ Archive ended.
+    pub last_archive: Option<archive::ArchiveOutcome>,
+    /// The distribution under way, and how the last one ended.
+    pub distributing: Option<archive::DistributeRequest>,
+    pub last_distribution: Option<archive::DistributionOutcome>,
     task: Option<Task<()>>,
     _load_task: Option<Task<()>>,
     _plans_task: Option<Task<()>>,
@@ -247,6 +264,9 @@ impl BuildController {
             templates: profile::Templates::default(),
             last_template: None,
             _templates_task: None,
+            last_archive: None,
+            distributing: None,
+            last_distribution: None,
             task: None,
             _load_task: None,
             _plans_task: None,
@@ -254,6 +274,11 @@ impl BuildController {
         this.reload(cx);
         this.poll_devices(cx);
         this
+    }
+
+    /// The project's cache folder (logs, the compilation database).
+    pub fn cache_dir(&self) -> &Path {
+        &self.cache_dir
     }
 
     pub fn can_build(&self) -> bool {
@@ -642,6 +667,7 @@ impl BuildController {
         if self.phase.is_busy() {
             self.task = None;
             self.end_recording();
+            self.distributing = None;
             self.phase = Phase::Stopped;
             cx.emit(BuildEvent::PhaseChanged);
             cx.notify();
@@ -845,6 +871,18 @@ impl BuildController {
             .destination
             .clone()
             .unwrap_or_else(Destination::my_mac);
+        if action == BuildAction::Archive && !self.project.kind.is_xcode() {
+            self.log.clear();
+            self.issues.clear();
+            self.last_archive = Some(archive::ArchiveOutcome { archive: None, error: Some(ARCHIVE_NEEDS_A_PROJECT.into()) });
+            self.fail(action, ARCHIVE_NEEDS_A_PROJECT.into(), Instant::now(), cx);
+            return;
+        }
+        // Archives are for devices: a generic one of the destination's platform.
+        let destination = match action {
+            BuildAction::Archive => archive::destination_for(&destination, &self.supported_platforms),
+            _ => destination,
+        };
         self.log.clear();
         self.issues.clear();
         if let Some(request) = &tests {
@@ -886,14 +924,22 @@ impl BuildController {
         let configuration = match action {
             BuildAction::Test => options.test.configuration.clone(),
             BuildAction::Profile => options.profile.configuration.clone(),
+            BuildAction::Archive => options.archive.configuration.clone(),
             _ => self.configuration.clone(),
         };
-        // Instruments takes no sanitizers.
+        // Instruments and archives take no sanitizers.
         let diagnostics = match action {
             BuildAction::Test => options.test.diagnostics.clone(),
-            BuildAction::Clean | BuildAction::Profile => scheme::Diagnostics { main_thread_checker: false, ..Default::default() },
+            BuildAction::Clean | BuildAction::Profile | BuildAction::Archive | BuildAction::Distribute => {
+                scheme::Diagnostics { main_thread_checker: false, ..Default::default() }
+            }
             _ => options.run.diagnostics.clone(),
         };
+        // Into Xcode's Archives folder, named as Xcode names archives.
+        let archive_path = (action == BuildAction::Archive).then(|| {
+            let name = Some(options.archive.name.trim()).filter(|n| !n.is_empty()).unwrap_or(&scheme);
+            archive::archives::new_archive_path(&crate::paths::archives_dir(), name, archive::archives::now_unix())
+        });
         // xcodebuild reads a scheme file's Test action itself; other runners
         // get the test arguments and environment from here.
         let test_launch = (tests.is_some() && !matches!(loaded.source, scheme::Source::File(_))).then(|| options.test_launch());
@@ -915,6 +961,7 @@ impl BuildController {
                 BuildAction::Run | BuildAction::Profile => BuildAction::Build,
                 action => action,
             };
+            let archiving = tool_action == BuildAction::Archive;
             let records = profile.as_ref().is_some_and(|p| p.template.is_some());
             let skip_build = profile.as_ref().is_some_and(|p| !p.build);
             // Unit tests on a simulator run in-process (see `sim_tests`):
@@ -934,6 +981,14 @@ impl BuildController {
             });
             if let Some(plan) = &test_plan {
                 cmd.args(["-testPlan", plan]);
+            }
+            if let Some(path) = &archive_path {
+                cmd.arg("-archivePath").arg(path);
+                // Signing for distribution, as Xcode's archive does (device
+                // builds already allow it).
+                if !destination.platform.is_device() {
+                    cmd.arg("-allowProvisioningUpdates");
+                }
             }
             if let (Some(launch), false) = (&test_launch, direct_tests) {
                 // `swift test` passes its environment on; `xcodebuild test`
@@ -1023,17 +1078,18 @@ impl BuildController {
                 success = ok;
                 raw_log.push_str(&output);
             }
+            if let Some(path) = &archive_path
+                && this.read_with(cx, |this, _| this.phase != Phase::Stopped).unwrap_or(false)
+            {
+                let (archived, line) = archive::finish(&this, cx, path, success).await;
+                success &= archived;
+                raw_log.push_str(&line);
+                raw_log.push('\n');
+            }
             let duration = started.elapsed();
 
             // Persist the log and extract compiler invocations for the LSP.
-            let log_path = cache_dir.join("logs").join(format!(
-                "{}-{}.log",
-                SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or_default(),
-                action.verb().to_lowercase()
-            ));
+            let log_path = log_file(&cache_dir, action);
             let is_xcode = project.kind.is_xcode();
             let db_path = compiledb::database_path(&cache_dir);
             let db_changed = if skip_build {
@@ -1048,7 +1104,8 @@ impl BuildController {
                                 std::fs::create_dir_all(dir).ok();
                             }
                             std::fs::write(&log_path, &raw_log).ok();
-                            if is_xcode && tool_action != BuildAction::Clean {
+                            // An archive's Release build isn't what the editor indexes.
+                            if is_xcode && tool_action != BuildAction::Clean && !archiving {
                                 let commands = compiledb::extract(&raw_log);
                                 let store = compiledb::index_store_path(&cache_dir);
                                 let commands = compiledb::with_index_store(compiledb::with_canonical_paths(commands), &store);
@@ -1500,6 +1557,14 @@ async fn stream_into(
     }
 }
 
+const ARCHIVE_NEEDS_A_PROJECT: &str = "Archive needs an Xcode project or workspace; Swift packages and folders can't be archived.";
+
+/// Where an action's log is written (the Reports navigator opens it).
+fn log_file(cache_dir: &Path, action: BuildAction) -> PathBuf {
+    let time = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default();
+    cache_dir.join("logs").join(format!("{time}-{}.log", action.verb().to_lowercase()))
+}
+
 pub fn display_command(cmd: &Command) -> String {
     std::iter::once(cmd.get_program().to_string_lossy().to_string())
         .chain(cmd.get_args().map(|a| {
@@ -1685,7 +1750,8 @@ pub fn build_command(
             let mut cmd = Command::new("/usr/bin/swift");
             cmd.current_dir(&project.root);
             match action {
-                BuildAction::Build | BuildAction::Run | BuildAction::Profile => {
+                // Packages aren't archived (`begin` refuses).
+                BuildAction::Build | BuildAction::Run | BuildAction::Profile | BuildAction::Archive | BuildAction::Distribute => {
                     cmd.args(["build", "-c", &configuration.to_lowercase()]);
                     if !scheme.is_empty() {
                         cmd.args(["--product", scheme]);
@@ -1709,9 +1775,10 @@ pub fn build_command(
             configuration,
             destination,
             match action {
-                BuildAction::Build | BuildAction::Run | BuildAction::Profile => "build",
+                BuildAction::Build | BuildAction::Run | BuildAction::Profile | BuildAction::Distribute => "build",
                 BuildAction::Test => "test",
                 BuildAction::Clean => "clean",
+                BuildAction::Archive => "archive",
             },
         ),
     }

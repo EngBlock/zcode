@@ -176,7 +176,7 @@ impl Workspace {
         let focus = p.items[ix].focus_handle(cx);
         let settings = match &p.items[ix] {
             Item::ProjectSettings(settings) => Some(settings.clone()),
-            Item::Editor(_) | Item::Diff(_) | Item::MultiBuffer(_) | Item::Terminal(_) => None,
+            Item::Editor(_) | Item::Diff(_) | Item::MultiBuffer(_) | Item::Terminal(_) | Item::Organizer(_) => None,
         };
         self.active_pane = pane;
         self.inspected = None;
@@ -355,6 +355,10 @@ impl Workspace {
                 Item::ProjectSettings(_) => {
                     self.project_settings = None;
                     self.project_settings_subscriptions.clear();
+                }
+                Item::Organizer(_) => {
+                    self.organizer = None;
+                    self.organizer_subscriptions.clear();
                 }
             }
         }

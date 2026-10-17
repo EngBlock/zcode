@@ -166,6 +166,12 @@ impl Destination {
         }
     }
 
+    /// Xcode's "Any Mac (Apple Silicon, Intel)": what Mac apps are archived
+    /// for, both architectures.
+    pub fn any_mac() -> Self {
+        Self { id: "generic:macOS".into(), name: "Any Mac (Apple Silicon, Intel)".into(), booted: false, ..Self::my_mac() }
+    }
+
     pub fn is_any_device(&self) -> bool {
         self.platform.is_device() && self.device.is_none()
     }
@@ -206,6 +212,7 @@ impl Destination {
     /// The `-destination` specifier for xcodebuild.
     pub fn xcodebuild_specifier(&self) -> String {
         match self.platform {
+            Platform::MacOS if self.id == "generic:macOS" => "generic/platform=macOS".into(),
             Platform::MacOS => "platform=macOS,arch=arm64".into(),
             _ if self.is_any_device() => format!("generic/platform={}", self.platform.os_name()),
             _ => format!("id={}", self.id),

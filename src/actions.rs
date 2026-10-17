@@ -174,6 +174,8 @@ gpui_kit::actions!(
         ProfileWithOptions,
         ProfileWithoutBuilding,
         BuildForProfiling,
+        Archive,
+        ShowOrganizer,
         ChooseDestination,
         RefreshDestinations,
         // Debug
@@ -392,6 +394,7 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-alt-i", ProfileWithOptions, None),
         KeyBinding::new("ctrl-cmd-i", ProfileWithoutBuilding, None),
         KeyBinding::new("cmd-shift-i", BuildForProfiling, None),
+        KeyBinding::new("cmd-alt-shift-o", ShowOrganizer, None),
         KeyBinding::new("ctrl-shift-0", ChooseDestination, None),
         // Debug
         KeyBinding::new("cmd-k", ClearConsole, None),
@@ -659,6 +662,7 @@ pub fn commands() -> Vec<Command> {
         cmd!("Product", "Profile", Profile),
         // Xcode's opens the scheme's Profile action; zcode's asks for a template.
         cmd!("Product", "Profile…", ProfileWithOptions),
+        cmd!("Product", "Archive", Archive),
         cmd!("Product", "Stop", Stop),
         cmd!("Product", "-", Quit),
         // Xcode's Product ▸ Perform Action.
@@ -707,6 +711,7 @@ pub fn commands() -> Vec<Command> {
         cmd!("Integrate", "-", Quit),
         cmd!("Integrate", "Switch Branch…", SwitchBranch),
         cmd!("Integrate", "New Branch…", NewBranch),
+        cmd!("Window", "Organizer", ShowOrganizer),
     ]
 }
 
@@ -788,7 +793,7 @@ pub fn set_menus(cx: &mut App) {
         MenuItem::action("Quit zcode", Quit),
     ]);
     let mut menus = vec![Menu::new("zcode").items(app_menu)];
-    for menu_name in ["File", "Edit", "Find", "Navigate", "Editor", "View", "Product", "Debug", "Integrate"] {
+    for menu_name in ["File", "Edit", "Find", "Navigate", "Editor", "View", "Product", "Debug", "Integrate", "Window"] {
         let mut items: Vec<MenuItem> = Vec::new();
         if menu_name == "Edit" {
             // Native items keep the system text services (cut/copy/paste in
@@ -819,7 +824,6 @@ pub fn set_menus(cx: &mut App) {
         }
         menus.push(Menu::new(menu_name).items(items));
     }
-    menus.push(Menu::new("Window").items([]));
     cx.set_menus(menus);
     cx.default_global::<MenuSettings>().1 = Some(checked);
 }

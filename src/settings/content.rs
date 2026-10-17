@@ -47,6 +47,9 @@ pub struct Settings {
     /// Product ▸ Profile stops recording after this many seconds (`None`:
     /// at Stop).
     pub profiling_time_limit: Option<u32>,
+    /// Distribute App notarizes Developer ID apps with this keychain
+    /// profile (`xcrun notarytool store-credentials <name>`).
+    pub notary_keychain_profile: String,
 }
 
 /// Predictive code completion (`crate::predictions`).
@@ -162,6 +165,7 @@ impl Default for Settings {
             zcode_mcp_server: true,
             edit_predictions: EditPredictionSettings::default(),
             profiling_time_limit: None,
+            notary_keychain_profile: String::new(),
         }
     }
 }
@@ -249,6 +253,13 @@ pub struct SettingsContent {
     pub agent: Option<AgentContent>,
     pub edit_predictions: Option<EditPredictionsContent>,
     pub profiling: Option<ProfilingContent>,
+    pub distribution: Option<DistributionContent>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct DistributionContent {
+    pub notary_keychain_profile: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -337,14 +348,16 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("agent", &["default_agent", "always_allow_tool_actions", "zcode_mcp_server"]),
     ("edit_predictions", &["provider", "automatic", "debounce_ms", "disabled_globs", "claude"]),
     ("profiling", &["time_limit"]),
+    ("distribution", &["notary_keychain_profile"]),
 ];
 
 /// Settings a project's file can't change: they're the app's, not a window's.
 /// A project's file can't name programs to run or skip the permission
 /// prompts either: a cloned repository could carry it. Nor can it choose
 /// where code is sent for predictions (or with whose key); it can only turn
-/// them off (`"edit_predictions": { "provider": "none" }`).
-pub const USER_ONLY_KEYS: &[&str] = &["theme", "buffer_font_family", "vim_mode", "agent_servers", "agent"];
+/// them off (`"edit_predictions": { "provider": "none" }`), or name the
+/// keychain credentials apps are notarized with.
+pub const USER_ONLY_KEYS: &[&str] = &["theme", "buffer_font_family", "vim_mode", "agent_servers", "agent", "distribution"];
 
 /// What to say about the keys of a settings file zcode doesn't know
 /// (`git.inline_blam`), and those a project's file sets that only the
@@ -405,6 +418,9 @@ impl Settings {
             }
             if let Some(predictions) = &content.edit_predictions {
                 self.edit_predictions.merge(predictions);
+            }
+            if let Some(profile) = content.distribution.as_ref().and_then(|d| d.notary_keychain_profile.clone()) {
+                self.notary_keychain_profile = profile.trim().to_string();
             }
         } else if content.edit_predictions.as_ref().and_then(|p| p.provider) == Some(PredictionProvider::None) {
             self.edit_predictions.provider = PredictionProvider::None;

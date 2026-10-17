@@ -229,10 +229,14 @@ impl Workspace {
                     match action {
                         BuildAction::Test => "Testing",
                         BuildAction::Clean => "Cleaning",
+                        BuildAction::Archive => "Archiving",
+                        BuildAction::Distribute if build.distributing.as_ref().is_some_and(|d| d.choices.upload) => "Uploading",
+                        BuildAction::Distribute => "Exporting",
                         _ => "Building",
                     },
                     match action {
                         BuildAction::Test => build.last_test.as_ref().and_then(|r| r.label()).unwrap_or(scheme),
+                        BuildAction::Distribute => build.distributing.as_ref().map(|d| d.archive.name.clone()).unwrap_or(scheme),
                         _ => scheme,
                     },
                     started.elapsed().as_secs_f32()
@@ -274,6 +278,9 @@ impl Workspace {
                         BuildAction::Test => "Test",
                         BuildAction::Clean => "Clean",
                         BuildAction::Build => "Build",
+                        BuildAction::Archive => "Archive",
+                        BuildAction::Distribute if build.last_distribution.as_ref().is_some_and(|d| d.uploaded) => "Upload",
+                        BuildAction::Distribute => "Export",
                     },
                     match (action, success) {
                         (BuildAction::Run, _) => String::new(),
@@ -1029,6 +1036,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::profile_with_options))
             .on_action(cx.listener(Self::profile_without_building))
             .on_action(cx.listener(Self::build_for_profiling))
+            .on_action(cx.listener(Self::archive))
+            .on_action(cx.listener(Self::show_organizer))
             .on_action(cx.listener(Self::choose_destination))
             .on_action(cx.listener(Self::show_performance))
             .on_action(cx.listener(Self::cut_or_cut_line))
