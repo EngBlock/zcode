@@ -120,6 +120,14 @@ impl BuildController {
         }));
     }
 
+    /// Forgets the recording (not saved), ending what it launched on the
+    /// Mac.
+    pub(super) fn end_recording(&mut self) {
+        if let Some(recording) = self.recording.take() {
+            recording.end_app();
+        }
+    }
+
     /// Profiling couldn't start (no templates, no xctrace).
     pub fn profile_failed(&mut self, message: String, cx: &mut Context<Self>) {
         self.last_profile = Some(Outcome { error: Some(message.clone()), ..Outcome::default() });
@@ -132,7 +140,7 @@ impl BuildController {
     pub(super) fn stop_recording(&mut self, cx: &mut Context<Self>) -> bool {
         let Some(recording) = self.recording.as_mut() else { return false };
         if recording.stopping || !self.process.is_running() {
-            self.recording = None;
+            self.end_recording();
             return false;
         }
         recording.stopping = true;

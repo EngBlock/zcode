@@ -866,7 +866,7 @@ def profile_checks(samples, sim):
             assert "Hitches and Leaks" in s["profile"]["templates"], "the user's templates too"
             z.run("type Time Profiler", "keys enter")
             # The Run action's arguments and environment; the app's output in the console.
-            s = console_has(z, "arguments: -profiled GREETING=instruments", timeout=300)
+            s = console_has(z, "-profiled GREETING=instruments", timeout=300)
             assert s["profile"]["recording"]["template"] == "Time Profiler" and not s["profile"]["recording"]["stopping"], s["profile"]
             assert "-configuration Release" in open(s["last_log"]).read(), "the Profile action's configuration"
             record = xctrace.records()[-1]

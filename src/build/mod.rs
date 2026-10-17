@@ -641,7 +641,7 @@ impl BuildController {
         }
         if self.phase.is_busy() {
             self.task = None;
-            self.recording = None;
+            self.end_recording();
             self.phase = Phase::Stopped;
             cx.emit(BuildEvent::PhaseChanged);
             cx.notify();
@@ -653,9 +653,7 @@ impl BuildController {
     /// waited a moment).
     pub fn end_processes(&mut self) {
         self.process.terminate();
-        if let Some(recording) = self.recording.take() {
-            recording.end_app();
-        }
+        self.end_recording();
         self.index_process.terminate();
         if let Some(RunTarget::Simulator { udid, bundle_id }) = self.run_target.take() {
             // simctl keeps going after zcode has quit.
@@ -828,7 +826,7 @@ impl BuildController {
         }
         if self.phase.is_busy() {
             // A recording ends without saving when something replaces it.
-            self.recording = None;
+            self.end_recording();
             self.stop(cx);
         }
         let Some(scheme) = self.scheme.clone() else {
@@ -1001,35 +999,20 @@ impl BuildController {
                 }
             }
 
-            if skip_build {
-                // Profile Without Building: what was built last.
-                if let Some(request) = profile {
-                    this.update(cx, |this, cx| {
-                        this.phase = Phase::Launching;
-                        cx.emit(BuildEvent::PhaseChanged);
-                        cx.notify();
-                    })
-                    .ok();
-                    let template = request.template.unwrap_or_default();
-                    let job = profile::Job {
-                        project, scheme, configuration, destination, options, settings: settings_task, template,
-                        time_limit: request.time_limit, handle, started,
-                    };
-                    profile::record(&this, cx, job).await;
-                }
-                return;
-            }
-
-            this.update(cx, |this, cx| {
-                this.phase = Phase::Building { action, started };
-                this.track_suites = track_suites;
-                this.push_log_line(format!("$ {}", display_command(&cmd)));
-                cx.emit(BuildEvent::PhaseChanged);
-                cx.notify();
-            })
-            .ok();
-
-            let (code, mut raw_log) = stream_into(&this, cx, cmd, handle.clone(), Sink::Log).await;
+            // Profile Without Building records what was built last.
+            let (code, mut raw_log) = if skip_build {
+                (Some(0), String::new())
+            } else {
+                this.update(cx, |this, cx| {
+                    this.phase = Phase::Building { action, started };
+                    this.track_suites = track_suites;
+                    this.push_log_line(format!("$ {}", display_command(&cmd)));
+                    cx.emit(BuildEvent::PhaseChanged);
+                    cx.notify();
+                })
+                .ok();
+                stream_into(&this, cx, cmd, handle.clone(), Sink::Log).await
+            };
             let mut success = code == Some(0);
             if direct_tests && success && this.read_with(cx, |this, _| this.phase != Phase::Stopped).unwrap_or(false) {
                 let request = tests.clone().unwrap_or_default();
@@ -1053,26 +1036,30 @@ impl BuildController {
             ));
             let is_xcode = project.kind.is_xcode();
             let db_path = compiledb::database_path(&cache_dir);
-            let db_changed = cx
-                .background_spawn({
-                    let log_path = log_path.clone();
-                    let db_path = db_path.clone();
-                    async move {
-                        if let Some(dir) = log_path.parent() {
-                            std::fs::create_dir_all(dir).ok();
+            let db_changed = if skip_build {
+                false
+            } else {
+                cx
+                    .background_spawn({
+                        let log_path = log_path.clone();
+                        let db_path = db_path.clone();
+                        async move {
+                            if let Some(dir) = log_path.parent() {
+                                std::fs::create_dir_all(dir).ok();
+                            }
+                            std::fs::write(&log_path, &raw_log).ok();
+                            if is_xcode && tool_action != BuildAction::Clean {
+                                let commands = compiledb::extract(&raw_log);
+                                let store = compiledb::index_store_path(&cache_dir);
+                                let commands = compiledb::with_index_store(compiledb::with_canonical_paths(commands), &store);
+                                compiledb::merge_into(&db_path, commands).unwrap_or(false)
+                            } else {
+                                false
+                            }
                         }
-                        std::fs::write(&log_path, &raw_log).ok();
-                        if is_xcode && tool_action != BuildAction::Clean {
-                            let commands = compiledb::extract(&raw_log);
-                            let store = compiledb::index_store_path(&cache_dir);
-                            let commands = compiledb::with_index_store(compiledb::with_canonical_paths(commands), &store);
-                            compiledb::merge_into(&db_path, commands).unwrap_or(false)
-                        } else {
-                            false
-                        }
-                    }
-                })
-                .await;
+                    })
+                    .await
+            };
 
             let continue_to_run = this
                 .update(cx, |this, cx| {
@@ -1080,20 +1067,22 @@ impl BuildController {
                         cx.emit(BuildEvent::CompileDatabaseUpdated(db_path.clone()));
                     }
                     let stopped = this.phase == Phase::Stopped;
-                    this.reports.insert(
-                        0,
-                        Report {
-                            action,
-                            scheme: scheme.clone(),
-                            destination: destination.name.clone(),
-                            finished_at: SystemTime::now(),
-                            duration,
-                            success,
-                            errors: this.error_count(),
-                            warnings: this.warning_count(),
-                            log_path: log_path.clone(),
-                        },
-                    );
+                    if !skip_build {
+                        this.reports.insert(
+                            0,
+                            Report {
+                                action,
+                                scheme: scheme.clone(),
+                                destination: destination.name.clone(),
+                                finished_at: SystemTime::now(),
+                                duration,
+                                success,
+                                errors: this.error_count(),
+                                warnings: this.warning_count(),
+                                log_path: log_path.clone(),
+                            },
+                        );
+                    }
                     if stopped {
                         return false;
                     }
