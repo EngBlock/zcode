@@ -43,3 +43,18 @@ impl Settings {
         session.vim_mode = Some(self.vim_mode);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vim_mode_is_off_in_older_sessions_and_round_trips() {
+        let old: Session = serde_json::from_str(r#"{ "recent": [], "inlay_hints": true }"#).unwrap();
+        assert_eq!(old.vim_mode, None);
+        let mut session = old;
+        Settings { vim_mode: true }.write(&mut session);
+        let reread: Session = serde_json::from_str(&serde_json::to_string(&session).unwrap()).unwrap();
+        assert_eq!(reread.vim_mode, Some(true));
+    }
+}
