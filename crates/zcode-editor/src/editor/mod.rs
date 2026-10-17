@@ -67,16 +67,16 @@ impl InputModeKind for EditorMode {
         state.extras.lsp.update(&text, window, cx);
     }
 
-    fn accept_inline_completion(
+    fn accept_edit_prediction(
         state: &mut InputBaseState<Self>,
         window: &mut Window,
         cx: &mut gpui::Context<InputBaseState<Self>>,
     ) -> bool {
-        state.accept_inline_completion(window, cx)
+        state.accept_edit_prediction(window, cx)
     }
 
-    fn has_inline_completion(state: &InputBaseState<Self>) -> bool {
-        state.has_inline_completion()
+    fn has_edit_prediction(state: &InputBaseState<Self>) -> bool {
+        state.has_edit_prediction()
     }
 
     fn on_click(
@@ -107,11 +107,11 @@ impl InputModeKind for EditorMode {
         state.handle_signature_help_trigger(text, cx);
     }
 
-    fn clear_inline_completion(
+    fn dismiss_edit_prediction(
         state: &mut InputBaseState<Self>,
         cx: &mut gpui::Context<InputBaseState<Self>>,
     ) {
-        state.clear_inline_completion(cx);
+        state.dismiss_edit_prediction(cx);
     }
 
     fn hide_context_menu(
@@ -248,10 +248,6 @@ impl crate::InputExtras for super::EditorExtras {
         self.hover_popover
             .as_ref()
             .map(|session| session.symbol_range.clone())
-    }
-
-    fn inline_completion_item(&self) -> Option<&lsp_types::InlineCompletionItem> {
-        self.inline_completion.item.as_ref()
     }
 
     fn context_menu_capabilities(&self) -> (bool, bool) {

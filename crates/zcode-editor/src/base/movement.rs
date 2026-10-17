@@ -91,7 +91,6 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.pause_blink_cursor(cx);
         self.update_preferred_column();
         M::hide_context_menu(self, cx);
-        M::clear_inline_completion(self, cx);
         cx.notify()
     }
 
@@ -232,7 +231,6 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.scroll_to(self.cursor(), direction, cx);
         self.pause_blink_cursor(cx);
         M::hide_context_menu(self, cx);
-        M::clear_inline_completion(self, cx);
         cx.notify();
     }
 

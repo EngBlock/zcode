@@ -1011,7 +1011,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.disabled = disabled;
         if disabled {
             M::hide_context_menu(self, cx);
-            M::clear_inline_completion(self, cx);
+            M::dismiss_edit_prediction(self, cx);
         }
         cx.notify();
     }
@@ -1037,7 +1037,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.readonly = readonly;
         if readonly {
             M::hide_context_menu(self, cx);
-            M::clear_inline_completion(self, cx);
+            M::dismiss_edit_prediction(self, cx);
             self.search_session.replace_mode = false;
         }
         cx.notify();
@@ -1871,11 +1871,6 @@ impl<M: InputModeKind> InputBaseState<M> {
             return;
         }
 
-        // Clear inline completion on enter (user chose not to accept it)
-        if M::has_inline_completion(self) {
-            M::clear_inline_completion(self, cx);
-        }
-
         // In multi-line mode with `submit_on_enter` enabled, a plain `Enter`
         // (without Shift) is treated as submit: propagate the action and emit
         // PressEnter without inserting a newline. `Shift+Enter` still inserts
@@ -2005,12 +2000,11 @@ impl<M: InputModeKind> InputBaseState<M> {
             return;
         }
 
-        // Clear inline completion on escape
-        if M::has_inline_completion(self) {
-            M::clear_inline_completion(self, cx);
-            return; // Consume the escape, don't propagate
+        // Escape dismisses an edit prediction before anything else.
+        if M::has_edit_prediction(self) {
+            M::dismiss_edit_prediction(self, cx);
+            return;
         }
-        M::clear_inline_completion(self, cx);
 
         // The handles and the edit menu are the topmost surface to dismiss.
         if self.touch_selection().is_some() {
@@ -2255,8 +2249,8 @@ impl<M: InputModeKind> InputBaseState<M> {
         // selection (Root) so it does not start a drag from here.
         gpui_base::GlobalState::suppress_text_selection(cx);
 
-        // Clear inline completion on any mouse interaction
-        M::clear_inline_completion(self, cx);
+        // A click drops the edit prediction, wherever it lands.
+        M::dismiss_edit_prediction(self, cx);
         // A tap on the touch selection asks for its menu back. Any other press
         // places the caret or starts a new drag, and the handles and the menu
         // no longer belong to what is selected.
@@ -3040,7 +3034,6 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.selected_word_range = None;
         self.pause_blink_cursor(cx);
         M::hide_context_menu(self, cx);
-        M::clear_inline_completion(self, cx);
         let id = self.selections.generate_id();
         let mut selection = CursorSelection::new(id, start, end);
         selection.column_anchor = self.preferred_column_for(end);
@@ -3224,8 +3217,6 @@ impl<M: InputModeKind> InputBaseState<M> {
         line_end_affinity: bool,
         cx: &mut Context<Self>,
     ) {
-        M::clear_inline_completion(self, cx);
-
         self.cursor_line_end_affinity = line_end_affinity;
         let offset = self.cursor_boundary(offset, Bias::Left);
         let word_range = self.selected_word_range;
@@ -3259,7 +3250,6 @@ impl<M: InputModeKind> InputBaseState<M> {
     ) {
         self.pause_blink_cursor(cx);
         self.undo_manager.break_transaction_coalescing();
-        M::clear_inline_completion(self, cx);
 
         let mut active_affinity = false;
         let new_selections: Vec<CursorSelection> = self
@@ -3409,7 +3399,7 @@ impl<M: InputModeKind> InputBaseState<M> {
 
         M::clear_hover_state(self, cx);
         self.diagnostic_popover = None;
-        M::clear_inline_completion(self, cx);
+        M::dismiss_edit_prediction(self, cx);
         self.dismiss_touch_selection(cx);
         self.blink_cursor.update(cx, |cursor, cx| {
             cursor.stop(cx);
@@ -3694,7 +3684,6 @@ impl<M: InputModeKind> InputBaseState<M> {
         // Every edit invalidates provider responses for the previous document,
         // including deletion and indentation which do not trigger completion.
         M::hide_context_menu(self, cx);
-        M::clear_inline_completion(self, cx);
 
         // Sort descending by start so applying front-of-vec first edits the
         // highest offsets first, leaving lower offsets unchanged.
@@ -4637,9 +4626,22 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
         // Actions only one mode handles are registered by that mode, where
         // `Self` is concrete enough to name its own entity type.
         let element = M::register_actions(element, &entity, window);
-        match (&self.extra_key_context, M::CODE_EDITOR) {
-            (Some(extra), true) => element.key_context(format!("Input Editor mode=editor {extra}").as_str()),
-            _ => element,
+        // A layer's context (`vim_mode=normal`), and `edit_prediction`
+        // while one is on screen, for the bindings that accept it.
+        let prediction = M::CODE_EDITOR && M::has_edit_prediction(self);
+        match (&self.extra_key_context, prediction, M::CODE_EDITOR) {
+            (_, _, false) | (None, false, _) => element,
+            (extra, prediction, true) => {
+                let mut context = String::from("Input Editor mode=editor");
+                if let Some(extra) = extra {
+                    context.push(' ');
+                    context.push_str(extra);
+                }
+                if prediction {
+                    context.push_str(" edit_prediction");
+                }
+                element.key_context(context.as_str())
+            }
         }
     }
 }
@@ -8805,87 +8807,28 @@ mod tests {
     }
 
     #[gpui::test]
-    fn test_add_selection_clears_inline_completion(cx: &mut TestAppContext) {
-        use crate::CompletionProvider;
-        use gpui::Task;
-        use lsp_types::{
-            CompletionContext, CompletionResponse, InlineCompletionContext, InlineCompletionItem,
-            InlineCompletionResponse,
-        };
-        use std::time::Duration;
-
-        struct Provider(Rc<Cell<usize>>);
-
-        impl CompletionProvider for Provider {
-            fn is_completion_trigger(&self, _: usize, _: &str, _: &mut App) -> bool {
-                false
-            }
-
-            fn completions(
-                &self,
-                _: &Rope,
-                _: usize,
-                _: CompletionContext,
-                _: &mut Window,
-                _: &mut App,
-            ) -> Task<anyhow::Result<CompletionResponse>> {
-                Task::ready(Ok(CompletionResponse::Array(vec![])))
-            }
-
-            fn inline_completion(
-                &self,
-                _: &Rope,
-                _: usize,
-                _: InlineCompletionContext,
-                _: &mut Window,
-                _: &mut App,
-            ) -> Task<anyhow::Result<InlineCompletionResponse>> {
-                self.0.set(self.0.get() + 1);
-                Task::ready(Ok(InlineCompletionResponse::Array(vec![])))
-            }
-        }
-
+    fn test_add_selection_drops_edit_prediction(cx: &mut TestAppContext) {
         let view = InputView::<EditorMode>::new(cx);
         let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
-        let calls = Rc::new(Cell::new(0));
         cx.update(|window, cx| {
             view.input.update(cx, |state, cx| {
                 state.focus(window, cx);
                 state.set_value("aa\naa", window, cx);
                 state.set_selected_range(2..2, cx);
-                state.extras.inline_completion.item = Some(InlineCompletionItem {
-                    insert_text: "suggestion".into(),
-                    filter_text: None,
-                    range: None,
-                    command: None,
-                    insert_text_format: None,
-                });
+                state.set_edit_prediction(crate::EditPrediction::insertion(2, "suggestion"), cx);
+                assert!(state.has_edit_prediction());
                 state.add_selection(5..5, cx);
-                assert!(!state.has_inline_completion());
-                state.indent_inline(&IndentInline, window, cx);
-                assert_eq!(state.value(), "aa  \naa  ");
-                assert_eq!(state.selections.len(), 2);
-
-                // The active cursor stays put, so only canceling the task
-                // prevents this pending request from fetching a suggestion.
-                state.set_value("aa\naa", window, cx);
-                state.set_selected_range(2..2, cx);
-                state.extras.lsp.completion_provider = Some(Rc::new(Provider(calls.clone())));
-                state.schedule_inline_completion(window, cx);
             });
         });
         cx.run_until_parked();
-        cx.update(|_, cx| {
-            view.input
-                .update(cx, |state, cx| state.add_selection(5..5, cx));
-        });
-        cx.executor().advance_clock(Duration::from_secs(1));
-        cx.run_until_parked();
-        assert_eq!(calls.get(), 0);
-        view.input.read_with(&cx, |state, _| {
-            assert!(!state.has_inline_completion());
-            assert_eq!(state.selections.len(), 2);
-            assert_eq!(state.value(), "aa\naa");
+        cx.update(|window, cx| {
+            view.input.update(cx, |state, cx| {
+                assert!(!state.has_edit_prediction());
+                // Tab indents at both cursors instead of accepting.
+                state.indent_inline(&IndentInline, window, cx);
+                assert_eq!(state.value(), "aa  \naa  ");
+                assert_eq!(state.selections.len(), 2);
+            });
         });
     }
 

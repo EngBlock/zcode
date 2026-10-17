@@ -269,6 +269,10 @@ impl Vim {
         }
     }
 
+    pub(crate) fn mode(&self) -> VimMode {
+        self.mode
+    }
+
     fn status(&self) -> VimStatus {
         VimStatus {
             mode: self.mode,
@@ -543,7 +547,7 @@ impl Vim {
 
     /// Whether Escape has something to close before it leaves insert mode.
     fn escape_closes_something(state: &EditorState, cx: &mut Context<EditorState>) -> bool {
-        state.is_context_menu_open(cx) || state.signature_help().is_some() || state.has_inline_completion()
+        state.is_context_menu_open(cx) || state.signature_help().is_some() || state.has_edit_prediction()
     }
 
     fn insert_key(
@@ -1278,7 +1282,6 @@ impl EditorState {
         self.update_preferred_column();
         self.hide_context_menu(cx);
         self.retrigger_signature_help(cx);
-        self.clear_inline_completion(cx);
         cx.notify();
     }
 

@@ -178,7 +178,7 @@ impl<M: InputModeKind> InputBaseState<M> {
                 // from starting a drag under it.
                 gpui_base::GlobalState::suppress_text_selection(cx);
                 self.undo_manager.break_transaction_coalescing();
-                M::clear_inline_completion(self, cx);
+                M::dismiss_edit_prediction(self, cx);
                 self.touch_selection = TouchSelection::default();
 
                 let (offset, line_end_affinity, _) =

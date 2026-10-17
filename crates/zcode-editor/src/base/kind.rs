@@ -27,7 +27,7 @@ use gpui::{Div, Entity, Stateful, Window};
 use ropey::Rope;
 
 use super::decorations::DecorationCollections;
-use super::lsp::{ContextMenuContent, HoverDefinition, InlineCompletion};
+use super::lsp::{ContextMenuContent, HoverDefinition};
 use crate::{InputEdit, InputHighlighter, RangeDecoration, SyntaxContext, TextDecoration};
 use crate::{HoverPopoverState, Lsp};
 use gpui::Task;
@@ -96,11 +96,6 @@ pub trait InputExtras: Default + 'static {
 
     /// The symbol range the hover popover is anchored to.
     fn hover_symbol_range(&self) -> Option<std::ops::Range<usize>> {
-        None
-    }
-
-    /// The inline completion to paint as ghost text.
-    fn inline_completion_item(&self) -> Option<&lsp_types::InlineCompletionItem> {
         None
     }
 
@@ -215,8 +210,8 @@ pub trait InputModeKind: sealed::Sealed + Sized + 'static {
     ) {
     }
 
-    /// Takes the pending inline completion, when Tab should accept it.
-    fn accept_inline_completion(
+    /// Types the edit prediction on screen, when Tab should accept it.
+    fn accept_edit_prediction(
         _state: &mut InputBaseState<Self>,
         _window: &mut Window,
         _cx: &mut gpui::Context<InputBaseState<Self>>,
@@ -224,8 +219,8 @@ pub trait InputModeKind: sealed::Sealed + Sized + 'static {
         false
     }
 
-    /// Whether an inline completion is waiting to be accepted.
-    fn has_inline_completion(_state: &InputBaseState<Self>) -> bool {
+    /// Whether an edit prediction is on screen.
+    fn has_edit_prediction(_state: &InputBaseState<Self>) -> bool {
         false
     }
 
@@ -257,8 +252,8 @@ pub trait InputModeKind: sealed::Sealed + Sized + 'static {
     ) {
     }
 
-    /// Drops any inline completion after the text or cursor moved.
-    fn clear_inline_completion(
+    /// Drops the edit prediction (Escape, blur, a click, read-only).
+    fn dismiss_edit_prediction(
         _state: &mut InputBaseState<Self>,
         _cx: &mut gpui::Context<InputBaseState<Self>>,
     ) {
@@ -349,7 +344,8 @@ pub struct EditorExtras {
     pub(crate) lsp: Lsp,
     pub(crate) decorations: DecorationCollections,
     pub(crate) range_decorations: DecorationCollections<RangeDecoration>,
-    pub(crate) inline_completion: InlineCompletion,
+    /// The edit prediction shown or waiting (`prediction.rs`).
+    pub(crate) prediction: Option<crate::prediction::PredictionState>,
     pub(crate) context_menu_content: ContextMenuContent,
     pub(crate) hover_popover: Option<HoverPopoverState>,
     pub(crate) signature_help: Option<crate::SignatureHelpState>,
@@ -365,7 +361,7 @@ impl Default for EditorExtras {
             lsp: Lsp::default(),
             decorations: DecorationCollections::default(),
             range_decorations: DecorationCollections::default(),
-            inline_completion: InlineCompletion::default(),
+            prediction: None,
             context_menu_content: ContextMenuContent::default(),
             hover_popover: None,
             signature_help: None,
