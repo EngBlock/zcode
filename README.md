@@ -29,9 +29,10 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | **Editor panes** | File ▸ New ▸ Editor Pane on Right / Below splits the focused pane, showing its file at the same place; panes split further side by side or stacked and are resized by dragging. Each pane has its own tabs, jump bar and Go Back / Go Forward history. A file shown in several panes is one document: an edit, undo or redo in one pane shows in the others at once, each pane keeps its own cursor and scroll position, and breakpoints, bookmarks, test diamonds, issues, the execution mark and the property list outline appear in every pane. Close Editor Pane, Close Other Editor Panes, Close Other Tabs; closing a pane's last tab closes the pane. Move Focus to Next / Previous Editor Pane, or click; Focus Editor Pane shows the focused pane alone. The layout, tabs, sizes and focus are restored with the session. | ⌃⌘T ⌃⌥⌘T, ⌃⇧⌘W ⌃⌥⇧⌘W ⌥⌘W, ⌃\` ⌃⇧\`, ⌃⇧⌘↩ |
 | | The assistant (Editor ▸ Assistant) opens beside the focused editor in Counterparts mode, following it with the `.h` / `.m` (`.c`, `.cpp`, `.mm`) counterpart of its file, or in Manual mode with what was opened in it. ⌥-click in the project navigator, ⌥-Return (or ⌥-click) in Open Quickly, Jump to Definition and Jump to Next Counterpart with ⌥ open in the assistant (or the next pane, or a new assistant). Show Editor Only closes it. | ⌃⌥⌘↩, ⌘↩, ⌃⌥⌘J, ⌃⌥⌘↑ |
 | **Editing** | Rope-based editor with tree-sitter highlighting (Swift, C/ObjC, C++, JSON, YAML, Markdown…), multiple cursors, folding, indent guides and find/replace. | ⌘F, ⌥⌘F |
+| **Multibuffers** (from Zed) | One editor showing excerpts of many files, edited in place: Find ▸ Show Find Results in Editor (or the Find navigator's button) for Find in Workspace's results or Find Selected Symbol's references, Navigate ▸ Show Issues in Editor (or the Issue navigator's button) for every issue with its lines around it and its message under it, and a rename's changes. Each file has a header with its name and folder; the gutter shows each line's number in its file, its change bars and breakpoints (click one to toggle it), and the excerpts show the file's diagnostics. Typing in an excerpt edits the file itself (unsaved, as in its tab, which shows the change at once, and the other way around); ⌘S saves the files the tab changed, and one ⌘Z undoes one edit across every file it touched, in step with each file's own undo. Click a header or a line number, or ⌥↩, to open the file there; ⇧↩ or a header's ↕ shows three more lines around an excerpt. Find ▸ Find and Replace in Workspace adds a Replace field whose Replace All edits the results this way. A search over thousands of files opens a page of files at a time as the tab scrolls. | ⌥⇧⌘F, ⌥↩, ⇧↩ |
 | | Comment selection, duplicate, move line, select next occurrence, soft wrap and font size. | ⌘/, ⌘D, ⌥⌘[ ⌥⌘], ⌥⌘E, ⌃⇧⌘L, ⌘+ ⌘- ⌃⌘0 |
 | | Xcode-style `<#placeholder#>` snippets from completions, with Tab or ⌃/ jumping to the next placeholder. | Tab, ⌃/, ⌃⇧/ |
-| **Language intelligence** (sourcekit-lsp) | Completion, live diagnostics, Quick Help on hover, Jump to Definition (also ⌘-click), Find References and Rename across files. | ⌃Space, ⌃⌘J, ⌃⇧⌘F, F2 |
+| **Language intelligence** (sourcekit-lsp) | Completion, live diagnostics, Quick Help on hover, Jump to Definition (also ⌘-click), Find References and Rename across files. A rename opens a tab of the places it changed (a multibuffer, below), left unsaved: ⌘S saves every file, one ⌘Z undoes it everywhere. | ⌃Space, ⌃⌘J, ⌃⇧⌘F, F2 |
 | | Edit All in Scope, Format File / Re-Indent, code actions and fix-its, Document Items outline, and workspace symbols in Open Quickly. | ⌃⌘E, ⌃⇧I / ⌃I, ⌃⌥⌘F, ⌃6 |
 | | Semantic highlighting over tree-sitter's: what the compiler says each name is, so a type reads as a type at a call (`Square(side: 2)`), and properties, parameters and enum cases get their colors. Signature help while typing arguments: the call's signature above the cursor with the current argument in bold, from `(` until the call is closed (or Escape). Editor ▸ Inlay Hints (off by default, as in Zed): the type inferred for each binding without one (`let areas: [Double]`), and in C and Objective-C the parameter names before arguments (`add(left: 1, right: 2)`), drawn in the text without being part of it. | — |
 | | Find ▸ Find Call Hierarchy: the function at the cursor (in whichever pane is focused) as a tree in the Find navigator, with its callers (as in Xcode) or the calls it makes, each level expanded on demand; a caller opens at its call, the rest at their declarations, and a row's menu starts a new hierarchy from it. Find Ancestor Types, Find Descendent Types and Find Conforming Types show a type's supertypes or subtypes the same way. Editor ▸ Show Callers… lists the callers in a menu at the cursor. Features the language server doesn't offer are left out, and their commands say so. | ⌃⇧⌘H |
@@ -166,7 +167,8 @@ src/
                     a split tree with the assistant, navigators, inspector, debug area, pickers, commands;
                     source control (change bars, blame, Code Review, the commit and push/pull sheets);
                     language features (inlay hints per view, semantic tokens per file, the hierarchies
-                    in the Find navigator)
+                    in the Find navigator); multibuffers (find results, issues, references, renames
+                    as tabs of excerpts, with headless buffers for the files no pane shows)
   lsp/              JSON-RPC client, document sync store, editor provider adapters, what the server offers;
                     inlay hints, semantic tokens and call/type hierarchies converted for the editor
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner, log/issue/test
@@ -191,7 +193,8 @@ src/
   debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR)
 crates/
   zcode-editor/     the code editor: rope buffer, display map (soft wrap, folding), highlighting,
-                    undo, multiple cursors, linked views of one buffer, LSP popovers, find panel
+                    undo, multiple cursors, linked views of one buffer, multibuffers (excerpts of many
+                    buffers, one undo step across them), LSP popovers, find panel
                     (docs/editor-engine.md)
 vendor/
   gpui-component/   gpui-component 0.7.3 plus small patches (ZCODE-PATCH.md)
@@ -203,8 +206,10 @@ scripts/
 The code editor is zcode's own crate, `crates/zcode-editor`. It started as
 the text engine of `gpui-base` and the editor UI of `gpui-component` (both
 Apache-2.0, from GPUI Kit 0.7.3; see its `NOTICE`), and zcode now evolves it
-(`docs/editor-engine.md`), most recently with linked views, which let two
-panes show one buffer. The workspace's panes, items and split tree follow
+(`docs/editor-engine.md`): linked views, which let two panes show one
+buffer, and multibuffers, whose excerpt model, headers above rows and undo
+across files were written from the public description of Zed's (Zed's
+editor is GPL; none of its code was read). The workspace's panes, items and split tree follow
 the model Zed describes publicly (a pane of items, a tree of splits), written
 from scratch. The rest of `gpui-component` (widgets, theme,
 tree-sitter highlighter) is vendored with a startup patch and a visibility
@@ -215,7 +220,10 @@ Source control runs the `git` command line; line diffs come from the
 follow Zed's public behavior, implemented from scratch, as do inlay
 hints (off by default, refreshed for what's on screen), signature help and
 the call hierarchy's outgoing calls; the hierarchies' place in the Find
-navigator and their command names are Xcode's.
+navigator and their command names are Xcode's. Multibuffers follow Zed's
+public behavior too (excerpt headers, ⌥↩ to open an excerpt's file, ⇧↩ to
+expand it, editing search results to replace), next to Xcode's Find
+navigator and its Find and Replace in Workspace command.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -296,6 +304,18 @@ saved breakpoints can't leak in. It covers:
   with one hunk staged and then Amend, New Branch, Push… to a new remote
   branch, Switch Branch, Fetch Changes and Pull… from another clone's
   push, a commit made in a terminal, and Discard Changes
+* multibuffers on a copy of ZKit made a repository, with 400 text files:
+  a rename through sourcekit-lsp shown in a tab and undone with one ⌘Z;
+  Find results in a tab (headers, each line's number in its file, match
+  highlights); typing in an excerpt reaching the file and back, undone from
+  the file's tab; Find and Replace in Workspace's Replace All across four
+  files, undone and redone in one step, one file's part undone from its own
+  tab, saved with ⌘S; ⌥↩, a header and a line number opening the file;
+  ⇧↩ and a header's ↕; change bars and a breakpoint toggled on excerpt
+  lines; Show Issues in Editor after a failed build, fixed in place; a
+  search over 400 files opening a page of 25 and adding more as it scrolls,
+  typing latency there and on Swift excerpts, and the files let go when the
+  tab closes
 * bookmarks on a copy of ZKit: Bookmark Line and File, ribbons, edits and
   undo (a deleted line's bookmark back with ⌘Z), next and previous in the file and the workspace, descriptions
   edited in place, completion, the filter, drag and drop (real mouse
@@ -406,6 +426,16 @@ The control channel also takes window screenshots
   not Xcode's project-versus-system distinction). Documents are still sent
   whole on each change (no incremental sync), which completion's requests
   do on every keystroke.
+* Multibuffers: excerpts are highlighted in the language most of their
+  files are in, and have no completion, Quick Help, Jump to Definition or
+  inlay hints (⌥↩ opens the file, where they work); bookmarks, test
+  diamonds and blame aren't shown on excerpt lines. ⌘Z skips the part of a
+  step in a file edited since from elsewhere (that file keeps it). Issue
+  and find tabs show what they were opened with: Refresh (issues) or
+  opening the results again (find) shows the current ones, and the issues
+  tab says when they changed. The tabs aren't restored with the session.
+  Find and Replace in Workspace replaces all results at once (no Replace
+  for one result, no preserved case); review and undo it in the tab.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas or Instruments.
 * Devices: there's no Devices and Simulators window (⇧⌘2), so pairing a new
   device, turning on Developer Mode and copying a device's system symbols

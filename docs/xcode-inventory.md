@@ -92,6 +92,12 @@ navigator (`IDEFindNavigatorCommands`); the source editor also has Editor ▸
 Show Callers… (a menu of callers, `jumpToCallers:`). Xcode has no inlay hints
 or signature help popover.
 
+Find and Replace in Workspace… shows the Find navigator with a Replace field
+and Replace / Replace All buttons. Xcode has no multibuffer: zcode's Replace
+All edits the results in one (Phase 2.5), and Show Find Results in Editor,
+Show Issues in Editor, Open Excerpts (⌥↩) and Expand Excerpts (⇧↩, both in a
+multibuffer only) are zcode's, after Zed's.
+
 ### Navigate (global menu plus the source editor's additions)
 | Command | Key |
 |---|---|

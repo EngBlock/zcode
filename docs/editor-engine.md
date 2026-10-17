@@ -140,7 +140,21 @@ editor.set_read_only(true, cx);     // typing, paste, undo, transact refused
 ```
 
 `edit` applies several ranges as one change; `set_value` and `edit` stay
-available in a read-only editor, so a file can be reloaded. Ported: the
+available in a read-only editor, so a file can be reloaded.
+
+Transactions have ids (2.5), the same through undo and redo, so an editor
+can add to one it made earlier and undo exactly that one; and an editor can
+hand ⌘Z and ⇧⌘Z to whoever keeps its history:
+
+```rust
+let t = editor.edit_joining(None, [(range, "text")], window, cx);  // Option<TransactionId>
+editor.edit_joining(t, [(other, "more")], window, cx);   // joins t while it's still the last
+editor.last_transaction(); editor.next_redo_transaction();
+editor.undo_transaction(t, window, cx) -> bool;   // only if t is the last one
+editor.redo_transaction(t, window, cx) -> bool;
+editor.set_external_history(true);   // ⌘Z / ⇧⌘Z emit HistoryRequest::Undo / Redo instead;
+                                     // edits are still recorded, so last_transaction tells them apart
+``` Ported: the
 property list editor's ⌘Z/⇧⌘Z call `undo`/`redo` on its text (the hidden
 zero-size editor is gone), and zcode's line commands (comment, duplicate,
 move line) run through `transact`, so a read-only package source refuses
@@ -206,7 +220,10 @@ the topmost item under the pointer whose handler takes it, then to the
 topmost lane with a handler for rows without an item; the editor tracks the
 hovered item, repaints it with `hovered` set and sets its cursor.
 `GutterPaint::paint_line_number` repaints the number in another color (white
-on a breakpoint).
+on a breakpoint). `set_line_number_labels(Some(Rc::new(|row, text, cx| ..)))`
+shows other numbers than the rows' own, asked for the visible rows only (a
+multibuffer shows each excerpt line's number in its file, and the number
+column keeps room for five digits); `GutterPaint::number` is the row's.
 
 Ported: breakpoint markers (order 0, over the numbers, reaching into the
 fold column; click, double-click, right-click, click on an empty row adds
@@ -261,6 +278,9 @@ editor.set_inlays("inlay-hints", vec![
     Inlay::new(line_end, "  Jane, 2 days ago").color(muted),   // inline blame
 ], cx);
 editor.set_blocks("edit-prediction", vec![Block::new(row, ["line 2", "line 3"])], cx);
+editor.set_blocks("headers", vec![Block::new(row, ["a.swift"]).above().clickable().font_weight(FontWeight::SEMIBOLD)], cx);
+cx.subscribe(&editor, |_, click: &BlockClicked, _| { /* click.key, .row, .line, .column */ });
+editor.painted_blocks();   // group, row, line and bounds as painted last frame
 editor.clear_inlays(key, cx); editor.clear_blocks(key, cx);
 editor.inlays(key); editor.blocks(key);   // where they are after edits
 ```
@@ -284,7 +304,19 @@ matches, decorations, line numbers, gutter lanes, fold chevrons, mouse
 hit-testing) moves the rows below it down, and the few places that compute
 a row's position from the display map (carets, the visible range, scroll
 height, reveal) add the block rows above it. The caret moves past a block
-in one step. The engine's LSP inline-completion ghost text predates this
+in one step.
+
+A block `above` its row (2.5) is laid out as a block below the row before
+it, after that row's own blocks, so nothing that stacks rows changed; only
+blocks above the first row have a place of their own: their rows count
+before every row (`block_rows_before`), the visual rows they take map to
+row 0, and the element paints them above the first line when it's on
+screen. A clickable block's lines report a press as `BlockClicked` (with
+the byte under the pointer, from the shaped line) instead of placing the
+caret, and take the pointing hand. A multibuffer's excerpt headers are
+both; Code Review puts lines deleted at a file's top above its first line.
+
+The engine's LSP inline-completion ghost text predates this
 and still paints over the text after the caret; edit predictions (3.3)
 should use an inlay for the first line and a block for the rest instead.
 
@@ -386,47 +418,73 @@ every pane come from the one set of anchors. Typing in a 6,000-line Swift
 file shown in two panes takes as long as in one (keystroke to frame, median
 3.9–4.6 ms on this branch with two panes, 3.9–5.3 ms on `master` with one).
 
-### Multibuffers: the excerpt model (`multibuffer.rs`, stub for 2.5)
+### Multibuffers (`multibuffer.rs`, `multibuffer_editor.rs`)
 
-A multibuffer is one editor showing editable excerpts of many files. The
-model is implemented and tested; the view isn't built yet.
+A multibuffer is one editor showing editable excerpts of many files (2.5).
+`multibuffer.rs` is the model: which ranges of which sources are shown,
+the composed text (each excerpt's text, separated by a newline), and
+positions and edits translated both ways; `MultiBufferEditor` hosts it in
+an editor.
 
 ```rust
-let mut mb = MultiBuffer::new();
-let id = mb.push_excerpt(SourceId(file_editor.entity_id().as_u64()), range, "Sources/App.swift");
-let text = mb.compose(|source, range| /* that source's text in range */);
-mb.composed_ranges();  mb.separators();            // excerpts and the newlines between them
-mb.to_source(offset);  mb.to_composed(source, offset);
-mb.edit_composed(&ComposedEdit { .. })  -> Result<SourceEdit, EditError>   // typed in the multibuffer
-mb.edit_source(&SourceEdit { .. })      -> Vec<ComposedEdit>               // changed in the file
+let mb = cx.new(|cx| MultiBufferEditor::new(host.clone(), HeaderStyle { color, background }, window, cx));
+mb.update(cx, |mb, cx| {
+    let source = mb.add_source(view_of_the_file, "Greeter.swift", "Sources/ZKit", window, cx);
+    mb.push_excerpts(source, vec![4..7, 12..14], window, cx);   // rows; touching ones merge
+    mb.expand(excerpt, 3, 3, window, cx);   // more lines; merges with the file's neighbor
+    mb.expand_at_cursors(EXPAND_LINES, window, cx);   // ⇧↩
+    mb.open_at_cursor(cx);                            // ⌥↩: emits Open { source, offset }
+});
+mb.read(cx).source_position(offset); mb.read(cx).host_position(source, offset);
+mb.read(cx).source_row(row, cx);    // the file and row of a host row
+cx.subscribe(&mb, |_, event: &MultiBufferEvent, _| { /* Open, ExcerptsChanged, Edited */ });
 ```
 
-How 2.5 hosts it, with what exists now (the end-to-end test
-`an_editor_hosts_excerpts_and_edits_reach_the_source` does the first three):
+How it works:
 
-1. An `EditorState` whose text is `mb.compose(..)`, with the separators as
-   read-only ranges, so no edit spans two excerpts.
-2. Its `BufferEdit`s go through `edit_composed` to the file's own editor
-   (`edit`, so they join that file's undo history and dirty state); the
-   file editors' `BufferEdit`s go through `edit_source` back into the
-   multibuffer (`edit`, which read-only ranges don't limit). Events arrive
-   after the edit that caused them, so each side keeps the edits it
-   forwarded and drops them when they echo back.
-3. Excerpt ranges follow edits on both sides (the model updates them), and
-   anchors in the multibuffer follow its own edits as in any editor.
-4. Headers: blocks (`set_blocks`) under the last row of the previous
-   excerpt; the first excerpt's header needs a block *above* row 0, a small
-   addition to `Block` (an `above` flag laid out before the line).
-5. Line numbers: the engine's numbers count the multibuffer's rows; a
-   gutter lane over the numbers paints each row's source line number
-   (`to_source`), with the engine's numbers turned off.
-6. Diagnostics, search results and references map in with `to_composed`;
-   go-to-definition and other LSP requests map out with `to_source` and go
-   to the file's language server document.
+1. Each source is an editor showing the file, a view linked to its buffer
+   (`EditorState::link`), so it shares the file's text, history and
+   anchors. Typing in the host is a `BufferEdit`; the model turns it into
+   the file's edit (`edit_composed`, which also moves the file's later
+   excerpts) and the source applies it with `edit_joining`, so it joins
+   the file's history, quietly (a crate-internal flag keeps the source
+   from reporting its own edit back). An edit of the file from anywhere
+   else comes back through the source's `BufferEdit`s into the excerpts
+   that show it (`edit_source`; text inserted at an excerpt's edge joins
+   it), applied quietly to the host keeping its cursors. The multibuffer
+   follows each file a change at a time, since events arrive after the
+   update that made them (an undo of several joined edits is several
+   events). A file replaced whole (a reload) keeps its excerpts' rows.
+2. The separators are read-only ranges, and so are the excerpts of
+   read-only files; an edit the files can't take (across a separator,
+   inserted at a read-only excerpt's edge) is put back.
+3. Undo: the host's history is external. A step is what the host records
+   as one transaction (a typed word, a multi-cursor edit, Replace All) and
+   holds the transactions it added to each file. ⌘Z undoes exactly those
+   with `undo_transaction`, in each file, so each file's own history
+   agrees (⌘Z in the file's tab undoes its part, and the multibuffer then
+   keeps it as undone); the files' changes come back into the excerpts
+   like any other, and the cursor goes to the first. A file edited since
+   keeps its part; a step none of whose parts can be undone is dropped.
+4. Headers: a clickable block above each excerpt's first row (the file's
+   name and folder, `⋯` for the same file's next excerpt), rebuilt when
+   excerpts change or an edit adds or removes a line; a click opens the
+   file at the excerpt, a click on its `↕` expands the excerpt.
+5. Line numbers: `set_line_number_labels` maps each host row to its
+   file's row through the model; a click on a number opens the file there.
+6. An empty host takes its first text whole, so the highlighter parses it
+   from scratch (incremental edits from nothing never parse).
 
-What it doesn't cover yet: one undo step spanning several files (each file
-undoes on its own), and excerpts that grow when context is expanded
-(remove and re-add the excerpt).
+zcode's side (`src/workspace/multibuffer.rs`): the tab, find results,
+references, issues and renames as excerpts, a page of files at a time as
+the tab scrolls (`ViewportChanged`), match highlights as a highlight layer
+per page, each file's diagnostics mapped into the host, issue messages as
+blocks under their lines, and change bars and breakpoints as gutter lanes
+that map rows to files. Files no pane had open get headless buffers (no
+highlighting or language server document until they're edited or shown).
+Typing in Swift excerpts measured 3.8–3.9 ms keystroke to frame (median),
+against 5.1–5.2 ms in the same file's own tab; the first page of a
+400-file search took 13–27 ms.
 
 ## How the upcoming features hook in
 
@@ -434,12 +492,12 @@ undoes on its own), and excerpts that grow when context is expanded
 |---|---|
 | Git change bars (2.3, done) | a gutter lane `AfterNumbers(px(6.))` whose items come from hunks diffed again 30 ms after each edit, in the background (re-diffing turned out simpler than keeping hunks on anchors, and fast enough) |
 | Inline blame (2.3, done) | an inlay group at the end of the cursor's line, replaced when the cursor moves, cleared while typing |
-| Diff view (2.3, done) | side by side: two editors, blank blocks padding the shorter side of each change, fill decorations on changed lines, scroll offsets synced; inline: blocks for deleted lines under the row before them. A block above row 0 would place deletions at a file's top exactly |
+| Diff view (2.3, done) | side by side: two editors, blank blocks padding the shorter side of each change, fill decorations on changed lines, scroll offsets synced; inline: blocks for deleted lines under the row before them, above the first row for deletions at a file's top (2.5) |
 | Inlay hints (2.4, done) | an inlay group per view and response (`before_text` for parameter names), on anchors so they survive typing until the next response; asked for the rows `visible_rows()` reports, again on `ViewportChanged` |
 | Semantic tokens (2.4, done) | a highlight layer at `HighlightPriority::SEMANTIC_TOKENS` in every view of the file |
 | Signature help (2.4, done) | `SignatureHelpProvider` next to hover and completion, and a popover above the caret (the hover popover's element, `sticky`) |
 | Call/type hierarchy (2.4, done) | nothing in the engine: a tree in zcode's Find navigator |
-| Multibuffers (2.5) | the excerpt model, `BufferEdit` events, read-only ranges, blocks for headers, a gutter lane for source line numbers (see above) |
+| Multibuffers (2.5, done) | the excerpt model, `BufferEdit` events, read-only ranges, clickable blocks above rows for headers, other line numbers, transaction ids and an external history for one undo step across files (see above) |
 | Vim mode (2.7) | the keystroke interceptor, cursor shapes, an extra key context, transactions for one-step undo of a command |
 | Edit predictions (3.3) | an inlay at the cursor for the first line and a block for the rest; Tab accepts through `edit` in a `transact` |
 | Minimap (later) | an element beside the editor reading the rope and the highlight styles; the display map already gives row ↔ offset |
@@ -475,9 +533,13 @@ the next frame).
   paints over the text after the caret; 3.3 should replace it.
 * Inlays aren't counted in the scroll width when soft wrap is off, and an
   editor using inline tokens (zcode's doesn't) doesn't wrap around inlays.
-* Blocks sit below a row; a header above the first excerpt (2.5) needs an
-  `above` flag. Clicking a block puts the caret at the start of the next
-  line.
+* Clicking a block that isn't clickable puts the caret at the start of the
+  next line. A block above a row whose previous row is folded away hides
+  with it.
+* A multibuffer's host is highlighted in one language (zcode picks most
+  files'), and has no language features of its own; an undo step skips a
+  file edited since. Excerpts of one file are merged only with their
+  neighbors in the list.
 * Anchors come back exactly when undo replays the history entry that moved
   them; `set_value` (a reload) clears the history and keeps line anchors on
   their rows instead, so a line deleted before a reload stays deleted.

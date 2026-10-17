@@ -17,9 +17,9 @@ which was extracted from Xcode 27's own command definitions.
 | Open Quickly (⇧⌘O), Quick Actions (⇧⌘A) | ✅ | Files and workspace symbols, `file:line` |
 | Scheme and destination pickers | ✅ | `xcodebuild -list`, `simctl list`, `devicectl list devices` (polled while the window is active), Any iOS Device; grouped as in Xcode and filtered by `SUPPORTED_PLATFORMS`; Debug/Release |
 | Build, Run, Stop, Clean (⌘B ⌘R ⌘. ⇧⌘K) | ✅ | Simulator boot, install and launch; Mac executables; Swift packages |
-| Issue navigator, ⌘' / ⌘" | ✅ | Live and build issues, de-duplicated, shown inline |
+| Issue navigator, ⌘' / ⌘" | ✅ | Live and build issues, de-duplicated, shown inline; Show Issues in Editor puts them all, with their lines and messages, in a multibuffer |
 | Console / debug area (⇧⌘Y, ⌘K) | ✅ | App stdout/stderr via `simctl launch --console-pty` |
-| Find in Workspace (⇧⌘F) | ✅ | Parallel and gitignore-aware; case, whole word and regex options |
+| Find in Workspace (⇧⌘F), Find and Replace in Workspace (⌥⇧⌘F) | ✅ | Parallel and gitignore-aware; case, whole word and regex options. Results (and Find Selected Symbol's references) open as a multibuffer to edit in place; Replace All edits them there, one ⌘Z undoes it across files. No Replace for one result |
 
 ## P1: things people use every day
 
@@ -34,7 +34,7 @@ which was extracted from Xcode 27's own command definitions.
 | Test plans | 🟡 | Choose a scheme's plan (Product ▸ Choose Test Plan…, Test navigator); runs honor it with every runner. No test plan editor (⌘>) |
 | Navigation history ⌃⌘← ⌃⌘→, counterpart ⌃⌘↑, reveal ⇧⌘J | ✅ | History is per pane, as in Xcode |
 | Bookmarks navigator (⌘3), Bookmark Line ⌃⌘' / Bookmark File ⌃⇧⌘' (and With Dialog), Jump to Next / Previous Bookmark ⌃; ⌃: (In Workspace ⌃⌥; ⌃⌥:) | ✅ | Gutter ribbons that follow edits; grouped by file with in-place descriptions, Mark as Complete, drag to reorder, Sort By, Delete All Completed Items, filter; Find navigator results and whole queries (Find Again). No free-form groups or cut/copy/paste of bookmarks. ⌘1…⌘9 follow Xcode 27 (no Symbol navigator: Document Items ⌃6) |
-| Rename, Edit All in Scope (⌃⌘E), fix-its (⌃⌥⌘F) | ✅ | Rename opens affected files as unsaved tabs for review; the index refreshes in the background after save |
+| Rename, Edit All in Scope (⌃⌘E), fix-its (⌃⌥⌘F) | ✅ | Rename shows the places it changed in a multibuffer, unsaved, undone in one ⌘Z; the index refreshes in the background after save |
 | Re-indent (⌃I), Format File (⌃⇧I) | ✅ | Via sourcekit-lsp (swift-format) |
 | Split panes / assistant | ✅ | Editor Pane on Right / Below (⌃⌘T ⌃⌥⌘T), Close Editor Pane (⌃⇧⌘W), Close Other Editor Panes, Close Other Tabs, Move Focus to Next / Previous Editor Pane (⌃\` ⌃⇧\`), Focus Editor Pane (⌃⇧⌘↩); one buffer in several panes (shared edits, undo and anchors, a cursor each); the assistant (⌃⌥⌘↩, ⌘↩) in Counterparts (.h/.m) or Manual, ⌥-click / ⌥-Return / ⌃⌥⌘J / ⌃⌥⌘↑ open in it; layout and sizes restored. No other assistant modes, no ⌘J pane chooser, no dragging tabs between panes |
 | Git: change gutter, blame, commit | ✅ | Change bars against `HEAD` as you type (staged ones hollow) with a popover: Discard Change, Stage / Unstage Change; Next / Previous Change (⌃\\ ⌃⇧\\); inline blame and Editor ▸ Authors (⌃⇧⌘A); Code Review as a tab, side by side or inline (⌥⇧⌘↩: not in Xcode 27's inventory); Integrate ▸ Commit… (⌥⌘C) with per-file and per-hunk staging and Amend, Push…, Pull… (⌥⌘X), Fetch Changes, Stage / Unstage / Discard All, Switch Branch… / New Branch…; Source Control navigator with staged and unstaged changes and branches. No stash, cherry-pick, tags, history or conflict editor |
@@ -63,6 +63,10 @@ which was extracted from Xcode 27's own command definitions.
 ## Beyond Xcode (from Zed)
 
 * A fuzzy command palette with every command and its shortcut (⇧⌘A / ⇧⌘P).
+* Multibuffers: excerpts of many files in one editor tab, edited in place
+  (find results, references, issues, renames), with file headers, each
+  line's number in its file, change bars, breakpoints and diagnostics, ⌥↩ to
+  open the file, ⇧↩ to show more lines, and one undo step across files.
 * Live memory monitoring for both the editor and the language server, a
   startup benchmark mode, and an idle-baseline memory view.
 * A scriptable UI control channel (`ZCODE_DEBUG_DIR`) for automated UI tests.

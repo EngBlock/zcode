@@ -41,7 +41,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 3. Git: gutter hunks, inline blame, diff view, stage/commit/branch. ✅
 4. sourcekit-lsp depth: inlay hints, semantic tokens, signature help, call
    hierarchy (⌃⇧⌘H), type hierarchy. ✅
-5. Multibuffers for project search and diagnostics.
+5. Multibuffers for project search and diagnostics. ✅
 6. Integrated terminal.
 7. Vim mode.
 8. File-based settings, keymap and themes; import Xcode `.xccolortheme` and
