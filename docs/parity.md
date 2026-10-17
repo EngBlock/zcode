@@ -13,7 +13,7 @@ which was extracted from Xcode 27's own command definitions.
 | Project navigator edits keep `project.pbxproj` consistent (file references, groups, build phases) | ✅ | Group-based projects; synchronized folders need no edits. Add Files… (⌥⌘A) with copy, groups or folder references, and targets. Moves are renames to a path (no drag and drop) |
 | File inspector (⌥⌘1) with Target Membership | ✅ | Identity and Type plus Target Membership; read-only in synchronized folders. No Localization, On Demand Resource Tags or Text Settings sections |
 | Source editor with tabs, highlighting, Save/Save All, undo, find/replace, ⌘/, ⌘[ ⌘], ⌥⌘[ ⌥⌘], ⌘L | ✅ | |
-| sourcekit-lsp: completion, diagnostics, hover, ⌃⌘J, references, ⌃6 | ✅ | `.xcodeproj` indexing through a compilation database pulled from `xcodebuild` output (no xcode-build-server needed) |
+| sourcekit-lsp: completion, diagnostics, hover, ⌃⌘J, references, ⌃6 | ✅ | `.xcodeproj` indexing through a compilation database pulled from `xcodebuild` output (no xcode-build-server needed). Also semantic highlighting, signature help and inlay hints (Editor ▸ Inlay Hints), which Xcode doesn't have |
 | Open Quickly (⇧⌘O), Quick Actions (⇧⌘A) | ✅ | Files and workspace symbols, `file:line` |
 | Scheme and destination pickers | ✅ | `xcodebuild -list`, `simctl list`, `devicectl list devices` (polled while the window is active), Any iOS Device; grouped as in Xcode and filtered by `SUPPORTED_PLATFORMS`; Debug/Release |
 | Build, Run, Stop, Clean (⌘B ⌘R ⌘. ⇧⌘K) | ✅ | Simulator boot, install and launch; Mac executables; Swift packages |
@@ -52,7 +52,7 @@ which was extracted from Xcode 27's own command definitions.
 
 | Item | Status |
 |---|---|
-| Call/type hierarchy | ⬜ |
+| Call/type hierarchy | ✅ Find Call Hierarchy (⌃⇧⌘H) with callers or callees, Find Ancestor / Descendent / Conforming Types, in the Find navigator; Editor ▸ Show Callers… |
 | Folding, multi-cursor | ✅ (from the editor engine) |
 | Minimap, Vim mode | ⬜ (the editor's hooks for both exist: `docs/editor-engine.md`) |
 | Reports navigator (log history) | ✅ |

@@ -87,6 +87,11 @@ Source: `/Users/nathan/Downloads/Xcode-beta.app` (Xcode 27.0, build 27A5228h). `
 | Find Call Hierarchy | ⌃⇧⌘H |
 | Find Ancestor / Descendent / Conforming Types | — |
 
+Xcode shows Find Call Hierarchy and the type commands as trees in the Find
+navigator (`IDEFindNavigatorCommands`); the source editor also has Editor ▸
+Show Callers… (a menu of callers, `jumpToCallers:`). Xcode has no inlay hints
+or signature help popover.
+
 ### Navigate (global menu plus the source editor's additions)
 | Command | Key |
 |---|---|
@@ -240,7 +245,7 @@ Source: `/Users/nathan/Downloads/Xcode-beta.app` (Xcode 27.0, build 27A5228h). `
 10. **Real-device run:** `xcrun devicectl device install app` then `process launch`. Signing is handled by the existing project settings with `-allowProvisioningUpdates`.
 
 ### P2: later, or not at all
-- Call hierarchy (⌃⇧⌘H) and type hierarchy (LSP supports both).
+- Call hierarchy (⌃⇧⌘H) and type hierarchy (LSP supports both). Done in zcode (Phase 2.4).
 - Code folding, minimap, Vim mode, multi-cursor extras.
 - Quick Help / documentation viewer, plus a DocC build (⌃⇧⌘D).
 - Reports navigator (build log history), timing summary.

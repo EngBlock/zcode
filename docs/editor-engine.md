@@ -39,7 +39,8 @@ How that engine is built:
   in gpui-component implements, with incremental reparsing and a background
   parse for large files. Per frame the element composes, lowest first:
   tree-sitter styles, LSP semantic tokens, text decorations (collections in
-  creation order, first wins), diagnostics.
+  creation order, first wins), diagnostics. (2.4 replaced the engine's
+  semantic-token provider with a highlight layer; see below.)
 * **Decorations.** `TextDecorationCollection` (styles over ranges) and
   `RangeDecorationCollection` (fills and frames), indexed by an interval
   tree, adjusted on every edit; a range that becomes empty is dropped.
@@ -228,17 +229,28 @@ editor.set_highlight_layer("semantic-tokens", HighlightPriority::SEMANTIC_TOKENS
 editor.clear_highlight_layer("semantic-tokens", cx);
 ```
 
-Per frame, over the visible bytes: tree-sitter styles, the engine's own
-LSP semantic tokens (`DocumentRangeSemanticTokensProvider`), then the
-layers from the lowest priority to the highest, then text decorations,
-then diagnostics. Where layers overlap, a higher layer's set fields win
+Per frame, over the visible bytes: tree-sitter styles, then the layers
+from the lowest priority to the highest, then text decorations, then
+diagnostics. Where layers overlap, a higher layer's set fields win
 and its unset fields let the lower ones show (a references background over
 a semantic color). Each layer is sorted by start with a running maximum of
 ends, so finding the visible ranges is a binary search even with overlaps;
-ranges follow edits like decorations. The composition is deterministic
+ranges follow edits like decorations. An edit maps offsets in order, so a
+layer stays sorted through it: moving the ranges skips those that end
+before the edit and only recomputes the running maximum from there, which
+matters for semantic tokens (a range per identifier, moved on every
+keystroke). The composition is deterministic
 (`compose_in_order`): GPUI's `combine_highlights` folds overlapping styles
 in hash-set order, which can't express a priority, so decorations use the
 new composition too.
+
+Semantic tokens (2.4) are such a layer: zcode decodes sourcekit-lsp's
+tokens into byte ranges and theme names off the main thread
+(`src/lsp/semantic_tokens.rs`) and sets the layer in every view of the
+file. The engine's own provider (`DocumentRangeSemanticTokensProvider`,
+from gpui-base) was removed: nothing installed it, it fetched the whole
+document 100 ms after every change, and its cache of LSP positions didn't
+follow edits, so colors slid off their names until the next response.
 
 ### Inlays and blocks (`annotations.rs`)
 
@@ -275,6 +287,36 @@ height, reveal) add the block rows above it. The caret moves past a block
 in one step. The engine's LSP inline-completion ghost text predates this
 and still paints over the text after the caret; edit predictions (3.3)
 should use an inlay for the first line and a block for the rest instead.
+
+### Signature help (`editor/lsp/signature_help.rs`)
+
+```rust
+editor.lsp_mut().signature_help_provider = Some(Rc::new(provider));  // trigger_characters(), signature_help()
+editor.signature_help();          // Option<&SignatureHelpState>: the help shown
+editor.show_signature_help(cx);   // ask at the caret, as `(` does
+editor.dismiss_signature_help(cx);
+split_signature_label(&signature, active_parameter);  // before, the argument, after
+```
+
+Typing a trigger character opens it; while it's open, every edit and caret
+move asks again (the engine's `hide_context_menu` hook runs on both), a
+retrigger character at once and anything else 120 ms later, each request
+replacing the last; it closes when the provider has nothing for the caret
+(past the call), on Escape (when no menu takes it) and on blur (a new
+`on_blur` mode hook). The popover is the hover popover's element above the
+caret, `sticky` so the mouse doesn't close it.
+
+### The rows on screen (`viewport.rs`)
+
+```rust
+editor.visible_rows();   // Option<Range<u32>>: buffer rows shown last frame
+cx.subscribe(&editor, |_, editor, event: &ViewportChanged, cx| { /* event.rows */ });
+```
+
+The element emits `ViewportChanged` after a frame that shows different
+rows than the one before (a scroll, a resize, a fold, lines inserted
+above), never for a frame showing the same rows, so typing on screen
+doesn't. Inlay hints use it to ask for what's on screen.
 
 ### Keystroke interception, cursor shape, key context (`modal.rs`)
 
@@ -393,9 +435,10 @@ undoes on its own), and excerpts that grow when context is expanded
 | Git change bars (2.3, done) | a gutter lane `AfterNumbers(px(6.))` whose items come from hunks diffed again 30 ms after each edit, in the background (re-diffing turned out simpler than keeping hunks on anchors, and fast enough) |
 | Inline blame (2.3, done) | an inlay group at the end of the cursor's line, replaced when the cursor moves, cleared while typing |
 | Diff view (2.3, done) | side by side: two editors, blank blocks padding the shorter side of each change, fill decorations on changed lines, scroll offsets synced; inline: blocks for deleted lines under the row before them. A block above row 0 would place deletions at a file's top exactly |
-| Inlay hints (2.4) | an inlay group per response (`before_text` for parameter names), on anchors so they survive typing until the next response |
-| Semantic tokens (2.4) | a highlight layer at `HighlightPriority::SEMANTIC_TOKENS`, or the engine's `DocumentRangeSemanticTokensProvider` |
-| Signature help, call/type hierarchy (2.4) | the existing popovers and pickers; nothing new in the engine |
+| Inlay hints (2.4, done) | an inlay group per view and response (`before_text` for parameter names), on anchors so they survive typing until the next response; asked for the rows `visible_rows()` reports, again on `ViewportChanged` |
+| Semantic tokens (2.4, done) | a highlight layer at `HighlightPriority::SEMANTIC_TOKENS` in every view of the file |
+| Signature help (2.4, done) | `SignatureHelpProvider` next to hover and completion, and a popover above the caret (the hover popover's element, `sticky`) |
+| Call/type hierarchy (2.4, done) | nothing in the engine: a tree in zcode's Find navigator |
 | Multibuffers (2.5) | the excerpt model, `BufferEdit` events, read-only ranges, blocks for headers, a gutter lane for source line numbers (see above) |
 | Vim mode (2.7) | the keystroke interceptor, cursor shapes, an extra key context, transactions for one-step undo of a command |
 | Edit predictions (3.3) | an inlay at the cursor for the first line and a block for the rest; Tab accepts through `edit` in a `transact` |

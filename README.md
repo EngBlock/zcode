@@ -33,6 +33,8 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | Xcode-style `<#placeholder#>` snippets from completions, with Tab or ⌃/ jumping to the next placeholder. | Tab, ⌃/, ⌃⇧/ |
 | **Language intelligence** (sourcekit-lsp) | Completion, live diagnostics, Quick Help on hover, Jump to Definition (also ⌘-click), Find References and Rename across files. | ⌃Space, ⌃⌘J, ⌃⇧⌘F, F2 |
 | | Edit All in Scope, Format File / Re-Indent, code actions and fix-its, Document Items outline, and workspace symbols in Open Quickly. | ⌃⌘E, ⌃⇧I / ⌃I, ⌃⌥⌘F, ⌃6 |
+| | Semantic highlighting over tree-sitter's: what the compiler says each name is, so a type reads as a type at a call (`Square(side: 2)`), and properties, parameters and enum cases get their colors. Signature help while typing arguments: the call's signature above the cursor with the current argument in bold, from `(` until the call is closed (or Escape). Editor ▸ Inlay Hints (off by default, as in Zed): the type inferred for each binding without one (`let areas: [Double]`), and in C and Objective-C the parameter names before arguments (`add(left: 1, right: 2)`), drawn in the text without being part of it. | — |
+| | Find ▸ Find Call Hierarchy: the function at the cursor (in whichever pane is focused) as a tree in the Find navigator, with its callers (as in Xcode) or the calls it makes, each level expanded on demand; a caller opens at its call, the rest at their declarations, and a row's menu starts a new hierarchy from it. Find Ancestor Types, Find Descendent Types and Find Conforming Types show a type's supertypes or subtypes the same way. Editor ▸ Show Callers… lists the callers in a menu at the cursor. Features the language server doesn't offer are left out, and their commands say so. | ⌃⇧⌘H |
 | **Xcode project indexing** | zcode pulls a compilation database out of `xcodebuild` output, the job xcode-build-server does, so cross-file features work for `.xcodeproj` targets. When a project has never been built, a low-priority background "index build" produces it. Saving source files refreshes the index, so rename and references stay current. | — |
 | **Navigation** | Open Quickly (fuzzy file and symbol search, `file:line`), Quick Actions command palette, back/forward history, jump to line, counterpart (.h ↔ .m), reveal in navigator and tab switching. | ⇧⌘O, ⇧⌘A, ⌃⌘← ⌃⌘→, ⌘L, ⌃⌘↑, ⇧⌘J, ⇧⌘[ ⇧⌘] |
 | | Group-based projects (no file-system-synchronized folders) stay consistent as Xcode keeps them: New File, Rename (a name with `/` moves the item), Move to Trash and Add Files… add, update and remove file references, groups and build files in `project.pbxproj` (Sources for code, Resources for resources), with Xcode-style IDs and the rest of the file left byte for byte. New files join the targets that build their neighbors. | ⌥⌘A |
@@ -133,6 +135,14 @@ if zcode is not faster.
   latency doesn't change (median keystroke to frame in a 6,000-line file:
   5.3 ms on this branch, 5.4 ms on `master`). Devices are listed again every 5 s, only while the project's
   window is active and its scheme builds for a device platform.
+* Semantic tokens and inlay hints are asked for after typing pauses (300
+  and 400 ms), a file's tokens whole and each pane's hints for its visible
+  rows and a screen either side; a newer request cancels the one before and
+  answers for text that has changed are dropped, so 30 keystrokes cost one
+  semantic token request and a few hint requests. Typing in the middle of a
+  6,000-line Swift file with both on: median keystroke to frame 5.0–5.1 ms,
+  against 5.2–5.3 ms on `master` (alternating runs, load average 4–8). A
+  highlight layer follows an edit without sorting its ranges again.
 * Swift highlighting uses a compact tree-sitter query
   (`src/languages/swift-highlights.scm`) that compiles in ~11 ms. The upstream
   query takes ~185 ms, and the editor pays that cost for every Swift file it
@@ -154,8 +164,11 @@ src/
   actions.rs        commands, Xcode key bindings, menu bar
   workspace/        project window: buffers (one per open file, a linked editor per pane), panes of tabs in
                     a split tree with the assistant, navigators, inspector, debug area, pickers, commands;
-                    source control (change bars, blame, Code Review, the commit and push/pull sheets)
-  lsp/              JSON-RPC client, document sync store, editor provider adapters
+                    source control (change bars, blame, Code Review, the commit and push/pull sheets);
+                    language features (inlay hints per view, semantic tokens per file, the hierarchies
+                    in the Find navigator)
+  lsp/              JSON-RPC client, document sync store, editor provider adapters, what the server offers;
+                    inlay hints, semantic tokens and call/type hierarchies converted for the editor
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner, log/issue/test
                     parsing, compilation-database extraction
   packages/         Swift package dependencies: rules and versions, Package.resolved, checkouts,
@@ -199,7 +212,10 @@ patch for the highlighter, both described in
 `vendor/gpui-component/ZCODE-PATCH.md`.
 Source control runs the `git` command line; line diffs come from the
 `similar` crate (Apache-2.0). Inline blame and hollow staged change bars
-follow Zed's public behavior, implemented from scratch.
+follow Zed's public behavior, implemented from scratch, as do inlay
+hints (off by default, refreshed for what's on screen), signature help and
+the call hierarchy's outgoing calls; the hierarchies' place in the Find
+navigator and their command names are Xcode's.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -251,6 +267,18 @@ saved breakpoints can't leak in. It covers:
   move the rows below them, a highlight layer following edits, and a
   keystroke interceptor with a block caret; package sources refusing the
   editing commands and undo
+* language features on a copy of ZKit with a class hierarchy, a loose C
+  file and a 6,000-line Swift file, against the real sourcekit-lsp: inlay
+  hints after bindings and clangd's parameter names before C arguments,
+  refreshed after typing and gone when turned off; types at calls from
+  semantic tokens, operators left to tree-sitter; signature help from `(`
+  until the call closes or Escape; Find Call Hierarchy from the second of
+  two panes (callers, callees, opening calls and declarations) and
+  ancestor, descendent and conforming types; typing latency with both on.
+  Then through `scripts/lsp_proxy.py` (the real server behind
+  `ZCODE_SOURCEKIT_LSP`, logging what zcode asks): the requests typing and
+  scrolling cost, and a server with these capabilities hidden (nothing
+  asked for, ⌃⇧⌘H says so, completion still works)
 * package dependencies, offline against a local repository of the Tally
   fixture (`tests/fixtures/packages`): Add Package Dependencies with its
   tags, rule and products, Add Local…, a build against both packages,
@@ -367,6 +395,17 @@ The control channel also takes window screenshots
   the assistant or the next pane. Panes aren't dragged between windows, and
   tabs can't be dragged between panes. Project Settings is one tab, in one
   pane at a time, and isn't restored with the session.
+* Language features come from sourcekit-lsp: the hierarchies come from
+  its index, so they're empty until a new project's background index is
+  built (the Find navigator says so) and cover what the index has seen;
+  SDK symbols open at the top of their `.swiftinterface` (read-only).
+  sourcekit-lsp gives Swift no parameter-name hints (Swift writes argument
+  labels already). Signature help shows the active signature (no switching
+  between overloads), and semantic token colors follow the theme's names
+  (the default themes color types, functions, properties and constants,
+  not Xcode's project-versus-system distinction). Documents are still sent
+  whole on each change (no incremental sync), which completion's requests
+  do on every keystroke.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas or Instruments.
 * Devices: there's no Devices and Simulators window (⇧⌘2), so pairing a new
   device, turning on Developer Mode and copying a device's system symbols

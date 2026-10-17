@@ -40,7 +40,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
    assistant/counterpart pane (⌃⌘T, ⌃⌥⌘J). ✅
 3. Git: gutter hunks, inline blame, diff view, stage/commit/branch. ✅
 4. sourcekit-lsp depth: inlay hints, semantic tokens, signature help, call
-   hierarchy (⌃⇧⌘H), type hierarchy.
+   hierarchy (⌃⇧⌘H), type hierarchy. ✅
 5. Multibuffers for project search and diagnostics.
 6. Integrated terminal.
 7. Vim mode.
