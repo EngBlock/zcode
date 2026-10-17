@@ -42,6 +42,7 @@ mod remote_sheet;
 mod semantic_tokens;
 mod source_control;
 mod terminals;
+mod vim;
 mod test_gutter;
 mod testing;
 
@@ -203,6 +204,7 @@ impl Workspace {
         session.note_recent(&opened_path);
         let saved = session.project(&project.root);
         session.save();
+        crate::settings::Settings::init(&session, cx);
 
         let mut subscriptions = vec![
             cx.subscribe_in(&lsp, window, Self::on_lsp_event),
@@ -224,6 +226,8 @@ impl Workspace {
                 this.refresh_scm(cx);
             }
         }));
+        // Editor ▸ Vim Mode, toggled in any window.
+        subscriptions.push(cx.observe_global::<crate::settings::Settings>(|this, cx| this.apply_vim_mode(cx)));
         // Semantic token colors come from the theme, which follows the appearance.
         subscriptions.push(cx.observe_window_appearance(window, |this, _, cx| this.refresh_semantic_tokens(cx)));
         // Only redraw when the displayed memory figure changes.
@@ -638,6 +642,7 @@ impl Workspace {
         self.session.show_authors = Some(self.git.show_authors);
         self.session.side_by_side_comparison = Some(self.git.side_by_side);
         self.session.inlay_hints = Some(self.inlay_hints.enabled);
+        crate::settings::Settings::get(cx).write(&mut self.session);
         self.session.save();
     }
 
@@ -824,6 +829,7 @@ impl Workspace {
         state["git"] = self.git_summary(cx);
         state["multibuffer"] = self.multibuffer_summary(cx);
         state["terminals"] = self.terminals_summary(window, cx);
+        state["vim"] = self.vim_summary(window, cx);
         state["language_features"] = serde_json::json!({
             "server": self.lsp.read(cx).features().summary(),
             "inlay_hints": self.inlay_hints_summary(cx),

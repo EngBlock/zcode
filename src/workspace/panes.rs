@@ -843,6 +843,7 @@ impl Workspace {
                         "can_undo": state.can_undo(),
                         "plist": item.shown_plist().is_some(),
                         "linked_views": state.linked_views().len(),
+                        "vim": state.vim_status().map(|s| s.mode.label()),
                         "click": first_row.map(|y| [f32::from(geometry.numbers.right()) + 60., y]),
                         // The editor's left edge, just right of the pane's divider.
                         "left": f32::from(geometry.numbers.left()),

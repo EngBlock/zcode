@@ -121,6 +121,7 @@ gpui_kit::actions!(
         ShowAuthors,
         ToggleInlineBlame,
         ToggleInlayHints,
+        ToggleVimMode,
         ShowCallers,
         // Editor (property lists)
         AddPlistItem,
@@ -539,6 +540,7 @@ pub fn commands() -> Vec<Command> {
         cmd!("Editor", "Authors", ShowAuthors),
         cmd!("Editor", "Inline Blame", ToggleInlineBlame),
         cmd!("Editor", "Inlay Hints", ToggleInlayHints),
+        cmd!("Editor", "Vim Mode", ToggleVimMode),
         cmd!("Editor", "Side by Side Comparison", SideBySideComparison),
         cmd!("Editor", "Inline Comparison", InlineComparison),
         cmd!("Editor", "-", Quit),

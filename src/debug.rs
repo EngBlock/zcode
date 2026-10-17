@@ -45,6 +45,7 @@
 //!                              (see `Workspace::hierarchy_command`)
 //!   signature-help             ask for signature help at the active editor's cursor
 //!   inlay-hints on|off         Editor ▸ Inlay Hints (a setting kept in the session)
+//!   vim on|off                 Editor ▸ Vim Mode (a setting for every window); `dump` has `vim`
 //!   git <command>              source control: hunks, the hunk popover, the commit, Push… and Pull…
 //!                              sheets, branches, comparisons (see `Workspace::git_command`)
 //!   multibuffer <command>      multibuffers: find (the Find navigator's results in a tab), issues,
@@ -441,6 +442,16 @@ fn run_command(
                     ws.toggle_inlay_hints(cx);
                 }
             });
+            Ok(String::new())
+        }
+        // Editor ▸ Vim Mode, set rather than toggled (e2e runs share the session).
+        "vim" => {
+            let on = match arg {
+                "on" => true,
+                "off" => false,
+                _ => return Err("usage: vim on|off".into()),
+            };
+            crate::settings::Settings::update(cx, |settings| settings.vim_mode = on);
             Ok(String::new())
         }
         "signature-help" => {

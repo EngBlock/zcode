@@ -30,7 +30,7 @@ pub struct DiffView {
     /// The file as it is: a view of its buffer.
     pub current: Entity<EditorState>,
     /// `HEAD`'s version, read-only.
-    base: Entity<EditorState>,
+    pub base: Entity<EditorState>,
     base_text: String,
     pub side_by_side: bool,
     pub hunks: Vec<Hunk>,
@@ -387,10 +387,13 @@ impl super::Workspace {
         let view = cx.new(|cx| DiffView::new(path.clone(), current.clone(), base, base_text, side_by_side, font_size, cx));
         let view_id = view.entity_id();
         let focus = current.read(cx).focus_handle(cx);
-        let subscriptions = vec![
+        let base = view.read(cx).base.clone();
+        let mut subscriptions = vec![
             cx.observe(&view, |_, _, cx| cx.notify()),
             cx.on_focus_in(&focus, window, move |this, window, cx| this.view_focused(view_id, window, cx)),
         ];
+        subscriptions.extend(self.install_vim(&current, window, cx));
+        subscriptions.extend(self.install_vim(&base, window, cx));
         let Some(p) = self.pane_mut(pane) else { return };
         let ix = (p.active + 1).min(p.items.len());
         p.items.insert(ix, super::Item::Diff(super::pane::DiffItem { path, view, _subscriptions: subscriptions }));

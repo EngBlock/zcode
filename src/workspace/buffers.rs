@@ -362,6 +362,7 @@ impl Workspace {
             // Clicking into a pane, or tabbing into it, focuses the pane.
             cx.on_focus_in(&focus, window, move |this, window, cx| this.view_focused(view, window, cx)),
         ];
+        subscriptions.extend(self.install_vim(&editor, window, cx));
         let plist = plist_format.map(|_| {
             let schema = crate::plist::schema::Schema::for_file_name(&super::pane::file_title(path));
             let plist_editor = cx.new(|cx| PlistEditor::new(editor.clone(), schema, cx));

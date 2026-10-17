@@ -126,6 +126,8 @@ pub struct Session {
     pub side_by_side_comparison: Option<bool>,
     /// Editor ▸ Inlay Hints.
     pub inlay_hints: Option<bool>,
+    /// Editor ▸ Vim Mode (`settings.rs`).
+    pub vim_mode: Option<bool>,
 }
 
 fn session_path() -> PathBuf {

@@ -437,6 +437,8 @@ impl Workspace {
                 }
             }),
         ];
+        let mut subscriptions = subscriptions;
+        subscriptions.extend(self.install_vim(&host, window, cx));
         let title = view.read(cx).kind.title();
         let p = self.pane_mut(pane)?;
         let ix = (p.active + 1).min(p.items.len());

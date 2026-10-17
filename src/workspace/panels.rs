@@ -627,7 +627,7 @@ impl Workspace {
     // ------------------------------------------------------------------
     // Status bar
 
-    fn render_status_bar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_status_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let lsp = self.lsp.read(cx);
         let (lsp_icon, lsp_color, lsp_text) = match lsp.status() {
@@ -651,6 +651,7 @@ impl Workspace {
             let selected = state.selected_range().len();
             (pos.line + 1, pos.character + 1, selected, language)
         });
+        let vim = self.vim_status(window, cx);
         let perf = Perf::global(cx);
         h_flex()
             .h(px(24.))
@@ -682,6 +683,23 @@ impl Workspace {
             })
             .when_some(self.git.busy.clone(), |el, busy| el.child(format!("{busy}…")))
             .child(div().flex_1())
+            // Vim mode: the command line being typed, else the last
+            // message, else the mode (`-- INSERT --`); then pending keys.
+            .when_some(vim, |el, vim| {
+                let (text, color) = match (&vim.command_line, &vim.message) {
+                    (Some(line), _) => (line.to_string(), theme.foreground),
+                    (None, Some(message)) => (message.to_string(), if vim.error { theme.danger } else { theme.foreground }),
+                    (None, None) => (format!("-- {} --", vim.mode.label()), theme.foreground),
+                };
+                el.child(
+                    h_flex()
+                        .id("vim-status")
+                        .gap_2()
+                        .font_family(theme.mono_font_family.clone())
+                        .child(div().truncate().max_w(px(480.)).text_color(color).child(text))
+                        .when(!vim.pending.is_empty(), |el| el.child(vim.pending.to_string())),
+                )
+            })
             .when_some(cursor, |el, (line, col, selected, language)| {
                 el.child(if selected > 0 {
                     format!("Ln {line}, Col {col} ({selected} selected)")
@@ -1101,6 +1119,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowAuthors, _, cx| this.toggle_authors(cx)))
             .on_action(cx.listener(|this, _: &ToggleInlineBlame, _, cx| this.toggle_inline_blame(cx)))
             .on_action(cx.listener(|this, _: &ToggleInlayHints, _, cx| this.toggle_inlay_hints(cx)))
+            .on_action(cx.listener(|this, _: &ToggleVimMode, _, cx| this.toggle_vim_mode(cx)))
             .on_action(cx.listener(|this, _: &ShowCallers, window, cx| this.show_callers(window, cx)))
             .on_action(cx.listener(|this, _: &FindCallHierarchy, window, cx| this.find_hierarchy(HierarchyKind::Callers, window, cx)))
             .on_action(cx.listener(|this, _: &FindAncestorTypes, window, cx| this.find_hierarchy(HierarchyKind::Supertypes, window, cx)))
@@ -1119,7 +1138,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ClearConsole, _, cx| this.build.update(cx, |b, cx| b.clear_console(cx))))
             .child(self.render_toolbar(cx))
             .child(div().flex_1().min_h_0().child(main))
-            .child(self.render_status_bar(cx))
+            .child(self.render_status_bar(window, cx))
             .when_some(self.modal.as_ref().map(|m| (m.view.clone(), m.position)), |el, (view, position)| {
                 let content = div().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()).child(view);
                 el.child(
