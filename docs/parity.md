@@ -16,7 +16,7 @@ which was extracted from Xcode 27's own command definitions.
 | sourcekit-lsp: completion, diagnostics, hover, ⌃⌘J, references, ⌃6 | ✅ | `.xcodeproj` indexing through a compilation database pulled from `xcodebuild` output (no xcode-build-server needed). Also semantic highlighting, signature help and inlay hints (Editor ▸ Inlay Hints), which Xcode doesn't have |
 | Open Quickly (⇧⌘O), Quick Actions (⇧⌘A) | ✅ | Files and workspace symbols, `file:line` |
 | Scheme and destination pickers | ✅ | `xcodebuild -list`, `simctl list`, `devicectl list devices` (polled while the window is active), Any iOS Device; grouped as in Xcode and filtered by `SUPPORTED_PLATFORMS`; Debug/Release |
-| Build, Run, Stop, Clean (⌘B ⌘R ⌘. ⇧⌘K) | ✅ | Simulator boot, install and launch; Mac executables; Swift packages |
+| Build, Run, Stop, Clean (⌘B ⌘R ⌘. ⇧⌘K) | ✅ | Simulator boot, install and launch; Mac executables; Swift packages. Stop ends the app however it was started (under lldb-dap too), as do quitting and closing the window |
 | Issue navigator, ⌘' / ⌘" | ✅ | Live and build issues, de-duplicated, shown inline; Show Issues in Editor puts them all, with their lines and messages, in a multibuffer |
 | Console / debug area (⇧⌘Y, ⌘K) | ✅ | App stdout/stderr via `simctl launch --console-pty` |
 | Find in Workspace (⇧⌘F), Find and Replace in Workspace (⌥⇧⌘F) | ✅ | Parallel and gitignore-aware; case, whole word and regex options. Results (and Find Selected Symbol's references) open as a multibuffer to edit in place; Replace All edits them there, one ⌘Z undoes it across files. No Replace for one result |
@@ -62,7 +62,7 @@ which was extracted from Xcode 27's own command definitions.
 | Predictive code completion (Editor ▸ Show Predictive Completion, ⌃⌥Space; Xcode 27 runs its own model on the Mac) | ✅ Off until `edit_predictions.provider` is set in `settings.json`: the Claude API (`claude`, a model and key from the settings or `ANTHROPIC_API_KEY`), streamed, with the code around the cursor and the latest edits, or a language server's `textDocument/inlineCompletion` (`lsp`, for servers that offer it; sourcekit-lsp doesn't). Gray text at the cursor, the lines after it below; Tab accepts as one ⌘Z, Escape or ⌥] dismisses, typing what's predicted keeps it; asked when typing pauses (or only on ⌃⌥Space), stale requests cancelled; the status bar says what it's doing. Not in Vim's normal mode, read-only files, multibuffers or files in `disabled_globs`. No on-device model, no accepting a word at a time, no several predictions to cycle through |
 | Minimap | ⬜ (the editor's hooks exist: `docs/editor-engine.md`) |
 | Reports navigator (log history) | ✅ |
-| Profile (⌘I) with xctrace | ⬜ |
+| Profile (⌘I), Profile… (⌥⌘I), Profile Without Building (⌃⌘I), Build For ▸ Profiling (⇧⌘I) | 🟡 The Profile action's configuration (Release), `xctrace record --launch` on the Mac, a simulator or a device with a template chooser (`xctrace list templates`) or the scheme's instrument; Stop or `profiling.time_limit` ends it, the trace opens in Instruments, a Time Profiler trace's heaviest functions in the console; `ProfileProject` over MCP. Tested against a fake `xctrace` (recording needs Developer Tools access on the test machine) and a fake device. No recording options, attaching, Profile Test or editing the Profile action |
 | Archive/export | ⬜ |
 | SwiftUI Previews | ⬜ (needs private preview infrastructure) |
 

@@ -57,7 +57,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 
 ## Phase 4: Xcode-only surfaces, pragmatically
 
-1. Profile (⌘I) via `xctrace` → Instruments.
+1. Profile (⌘I) via `xctrace` → Instruments. ✅
 2. Archive / export (`xcodebuild archive`, `-exportArchive`).
 3. Asset catalog viewer (read-only first).
 4. SwiftUI Previews: "open this preview in Xcode" bridge first.
