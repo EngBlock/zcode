@@ -146,6 +146,9 @@ pub struct BuildController {
     suite_stack: Vec<String>,
     track_suites: bool,
     pub phase: Phase,
+    /// Bumped by every build, run, test or clean started, so whoever waits
+    /// for one can tell it from the next.
+    pub generation: u64,
     pub reports: Vec<Report>,
     process: ProcessHandle,
     /// Background "index build" that produces the compilation database for
@@ -202,6 +205,7 @@ impl BuildController {
             suite_stack: vec![],
             track_suites: false,
             phase: Phase::Idle,
+            generation: 0,
             reports: vec![],
             process: ProcessHandle::default(),
             indexing: false,
@@ -279,7 +283,7 @@ impl BuildController {
                 this.load_scheme(cx);
                 if let Some((action, debug, tests)) = this.queued.take() {
                     this.debug_run = debug;
-                    this.start_with(action, tests, cx);
+                    this.begin(action, tests, cx);
                 }
             })
             .ok();
@@ -739,6 +743,13 @@ impl BuildController {
 
     /// Starts `action`; a test run runs `tests` (everything when `None`).
     fn start_with(&mut self, action: BuildAction, tests: Option<TestRequest>, cx: &mut Context<Self>) {
+        self.generation += 1;
+        self.begin(action, tests, cx);
+    }
+
+    /// `start_with` without counting a new one: also what an action queued
+    /// until the schemes were known runs as.
+    fn begin(&mut self, action: BuildAction, tests: Option<TestRequest>, cx: &mut Context<Self>) {
         if !self.can_build() {
             return;
         }
@@ -1339,6 +1350,13 @@ async fn stream_into(
             .await;
         while let Ok(line) = rx.try_recv() {
             batch.push(line);
+        }
+        if sink == Sink::Log {
+            for line in &mut batch {
+                if let std::borrow::Cow::Owned(plain) = log::strip_ansi(line) {
+                    *line = plain;
+                }
+            }
         }
         if sink == Sink::Log {
             for line in &batch {

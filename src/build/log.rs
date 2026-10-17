@@ -342,6 +342,43 @@ pub fn parse_suite_event(line: &str) -> Option<SuiteEvent> {
     })
 }
 
+/// `line` without terminal escape sequences: newer `swift build`s color
+/// their diagnostics even into a pipe, which would hide them from the
+/// parsers below.
+pub fn strip_ansi(line: &str) -> std::borrow::Cow<'_, str> {
+    if !line.contains('\u{1b}') {
+        return line.into();
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameters, then a final byte in @..~.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: up to BEL or ESC \.
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out.into()
+}
+
 pub fn parse_line(line: &str) -> Parsed {
     Parsed {
         issue: parse_issue(line),
@@ -488,6 +525,17 @@ pub fn prettify(raw: &str) -> LogLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn colored_diagnostics_are_read() {
+        let colored = "/p/Sources/ZKit/Broken.swift:1:19: \u{1b}[1;31merror: \u{1b}[1;39mcannot convert value\u{1b}[0;0m";
+        let line = strip_ansi(colored);
+        assert_eq!(line, "/p/Sources/ZKit/Broken.swift:1:19: error: cannot convert value");
+        let issue = parse_line(&line).issue.unwrap();
+        assert_eq!((issue.severity, issue.line, issue.column), (Severity::Error, Some(1), Some(19)));
+        assert_eq!(strip_ansi("\u{1b}]8;;file:///a\u{7}link\u{1b}]8;;\u{1b}\\ plain"), "link plain");
+        assert!(matches!(strip_ansi("plain"), std::borrow::Cow::Borrowed("plain")));
+    }
 
     #[test]
     fn parses_located_errors() {
