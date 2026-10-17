@@ -5,7 +5,7 @@
 //!
 //! Which window: the agent panel's own, for its agent; else the one named
 //! by `project`, the one containing the folder `zcode mcp` was started in,
-//! or the frontmost. Tools that change things (`changes`) ask in the agent
+//! or the frontmost. Tools that start, stop or evaluate things (`asks`) ask in the agent
 //! panel first when its agent calls them.
 
 use std::rc::Rc;
@@ -41,9 +41,11 @@ pub struct Tool {
     pub name: &'static str,
     pub title: &'static str,
     pub description: &'static str,
+    /// Only reads: the hint clients show.
+    pub read_only: bool,
     /// Starts, stops or evaluates something: asked about when the agent
     /// panel's agent calls it.
-    pub changes: bool,
+    pub asks: bool,
     schema: fn() -> Value,
 }
 
@@ -60,38 +62,70 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 
 fn selection_properties() -> Value {
     json!({
-        "scheme": { "type": "string", "description": "A scheme from list_schemes; chosen in zcode's toolbar as if picked there. Defaults to the current one." },
-        "destination": { "type": "string", "description": "A run destination's id or name from list_destinations. Defaults to the current one." },
+        "scheme": { "type": "string", "description": "A scheme from XcodeListSchemes, chosen first (as XcodeSwitchScheme does). Defaults to the current one." },
+        "destination": { "type": "string", "description": "A run destination's id or name from XcodeListRunDestinations, chosen first. Defaults to the current one." },
     })
 }
 
+fn tests_property() -> Value {
+    json!({
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 1,
+        "description": "Tests as GetTestList names them: Target/Class/testMethod, Class/testMethod, Suite/test(), a class, a suite or a whole test target.",
+    })
+}
+
+/// The tools, in `tools/list`'s order. Where Xcode 27's own MCP server
+/// (`xcrun mcpbridge`) has the tool, it has Xcode's name, so prompts
+/// written for Xcode's tools find zcode's; the arguments are zcode's.
 pub const TOOLS: &[Tool] = &[
     Tool {
-        name: "list_schemes",
+        name: "XcodeListSchemes",
         title: "List Schemes",
         description: "The project's schemes, build configurations and test plans, and which are chosen.",
-        changes: false,
+        read_only: true,
+        asks: false,
         schema: || schema(json!({}), &[]),
     },
     Tool {
-        name: "list_destinations",
+        name: "XcodeSwitchScheme",
+        title: "Switch Scheme",
+        description: "Chooses the scheme in zcode's toolbar (Product ▸ Scheme).",
+        read_only: false,
+        asks: false,
+        schema: || schema(json!({ "scheme": { "type": "string" } }), &["scheme"]),
+    },
+    Tool {
+        name: "XcodeListRunDestinations",
         title: "List Run Destinations",
         description: "Where the current scheme can run: My Mac, simulators (with whether they're booted) and connected devices, and which is chosen.",
-        changes: false,
+        read_only: true,
+        asks: false,
         schema: || schema(json!({}), &[]),
     },
     Tool {
-        name: "build",
+        name: "XcodeSwitchRunDestination",
+        title: "Switch Run Destination",
+        description: "Chooses the run destination in zcode's toolbar (Product ▸ Destination), by id or name.",
+        read_only: false,
+        asks: false,
+        schema: || schema(json!({ "destination": { "type": "string" } }), &["destination"]),
+    },
+    Tool {
+        name: "BuildProject",
         title: "Build",
         description: "Product ▸ Build (⌘B): saves edited files and builds the scheme for the run destination. Waits for the build (it can take minutes; progress is reported) and returns whether it succeeded, with its errors and warnings and where the full log is.",
-        changes: true,
+        read_only: false,
+        asks: true,
         schema: || schema(selection_properties(), &[]),
     },
     Tool {
-        name: "run",
+        name: "RunProject",
         title: "Run",
-        description: "Product ▸ Run (⌘R): builds, then launches the app (on a simulator, booting it, or on the Mac), under the debugger when breakpoints are set. Returns once it's running (plus wait_seconds of its console output) or the build or launch failed. The app keeps running: call stop to end it.",
-        changes: true,
+        description: "Product ▸ Run (⌘R): builds, then launches the app (on a simulator, booting it, or on the Mac), under the debugger when breakpoints are set. Returns once it's running (plus wait_seconds of its console output) or the build or launch failed. The app keeps running: StopProject ends it.",
+        read_only: false,
+        asks: true,
         schema: || {
             let mut properties = selection_properties();
             properties["wait_seconds"] = json!({ "type": "number", "minimum": 0, "maximum": 120, "description": "How long to collect console output after launch (default 3)." });
@@ -99,39 +133,47 @@ pub const TOOLS: &[Tool] = &[
         },
     },
     Tool {
-        name: "stop",
+        name: "StopProject",
         title: "Stop",
         description: "Product ▸ Stop (⌘.): stops the build, the running app and the debugger.",
-        changes: true,
+        read_only: false,
+        asks: true,
         schema: || schema(json!({}), &[]),
     },
     Tool {
-        name: "test",
+        name: "RunAllTests",
         title: "Test",
-        description: "Product ▸ Test (⌘U), or only some tests: builds and runs them and returns each test's result (passed, failed, skipped, duration) and the failures with their file and line. Waits for the run; progress is reported.",
-        changes: true,
+        description: "Product ▸ Test (⌘U): builds and runs every test the scheme and test plan include, and returns each test's result (passed, failed, skipped, duration) and the failures with their file and line. Waits for the run; progress is reported.",
+        read_only: false,
+        asks: true,
+        schema: || schema(selection_properties(), &[]),
+    },
+    Tool {
+        name: "RunSomeTests",
+        title: "Test Selected Items",
+        description: "Builds and runs some tests (as the Test navigator's play buttons do) and returns each one's result and the failures with their file and line.",
+        read_only: false,
+        asks: true,
         schema: || {
             let mut properties = selection_properties();
-            properties["tests"] = json!({
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "Tests to run, as the Test navigator names them: Target/Class/testMethod, Class/testMethod, Suite/test(), a class, a suite or a whole test target. Omit to run everything the scheme and test plan include.",
-            });
-            schema(properties, &[])
+            properties["tests"] = tests_property();
+            schema(properties, &["tests"])
         },
     },
     Tool {
-        name: "get_test_results",
-        title: "Get Test Results",
-        description: "The latest result of every test that has run (as the Test navigator shows them), without running anything.",
-        changes: false,
+        name: "GetTestList",
+        title: "Get Test List",
+        description: "The tests found in the project's source, as the Test navigator lists them (the names RunSomeTests takes), with where they are and their latest results.",
+        read_only: true,
+        asks: false,
         schema: || schema(json!({}), &[]),
     },
     Tool {
-        name: "get_issues",
-        title: "Get Issues",
+        name: "XcodeListNavigatorIssues",
+        title: "List Issues",
         description: "The Issue navigator: live diagnostics from sourcekit-lsp for open files and the last build's errors and warnings, with file, line and column.",
-        changes: false,
+        read_only: true,
+        asks: false,
         schema: || {
             schema(
                 json!({
@@ -143,10 +185,11 @@ pub const TOOLS: &[Tool] = &[
         },
     },
     Tool {
-        name: "get_build_log",
+        name: "GetBuildLog",
         title: "Get Build Log",
         description: "The current or last build's log: condensed as the debug area shows it, or raw xcodebuild / swift output; the last builds' reports with their full log files.",
-        changes: false,
+        read_only: true,
+        asks: false,
         schema: || {
             schema(
                 json!({
@@ -159,17 +202,27 @@ pub const TOOLS: &[Tool] = &[
         },
     },
     Tool {
-        name: "get_console",
+        name: "GetConsoleOutput",
         title: "Get Console Output",
         description: "The running (or last run) app's console output and the debugger's.",
-        changes: false,
+        read_only: true,
+        asks: false,
         schema: || schema(json!({ "max_lines": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "The last this many lines (default 200)." } }), &[]),
     },
     Tool {
-        name: "open_file",
+        name: "XcodeGetCurrentFile",
+        title: "Get Current File",
+        description: "The file in zcode's focused editor pane: its path, the cursor, the selection (1-based lines and columns) and the selected text, whether it has unsaved changes, and its text if asked (unsaved edits included).",
+        read_only: true,
+        asks: false,
+        schema: || schema(json!({ "include_text": { "type": "boolean", "description": "Also return the editor's whole text." } }), &[]),
+    },
+    Tool {
+        name: "OpenFile",
         title: "Open File",
         description: "Opens a file in zcode's focused editor pane, at a line and column if given, so the user sees it.",
-        changes: false,
+        read_only: false,
+        asks: false,
         schema: || {
             schema(
                 json!({
@@ -182,29 +235,24 @@ pub const TOOLS: &[Tool] = &[
         },
     },
     Tool {
-        name: "get_active_editor",
-        title: "Get Active Editor",
-        description: "The file in zcode's focused editor pane: its path, the cursor, the selection (1-based lines and columns) and the selected text, whether it has unsaved changes, and its text if asked (unsaved edits included).",
-        changes: false,
-        schema: || schema(json!({ "include_text": { "type": "boolean", "description": "Also return the editor's whole text." } }), &[]),
-    },
-    Tool {
-        name: "debugger_evaluate",
+        name: "EvaluateInDebugger",
         title: "Evaluate in Debugger",
         description: "Runs an LLDB command in the paused program's selected frame, as typed at the console's (lldb) prompt: po value, p value, v, bt, expr …. Only while the debugger is paused (at a breakpoint).",
-        changes: true,
+        read_only: false,
+        asks: true,
         schema: || schema(json!({ "command": { "type": "string", "description": "e.g. po items.count, v, bt" } }), &["command"]),
     },
     Tool {
-        name: "screenshot",
-        title: "Screenshot",
+        name: "TakeScreenshot",
+        title: "Take Screenshot",
         description: "A PNG of zcode's project window, or of a simulator's screen (simctl io screenshot): the run destination when it's a simulator, else a booted one, or the udid given. Never a physical device.",
-        changes: false,
+        read_only: true,
+        asks: false,
         schema: || {
             schema(
                 json!({
                     "target": { "type": "string", "enum": ["window", "simulator"], "description": "Default window." },
-                    "udid": { "type": "string", "description": "The simulator (id or name from list_destinations)." },
+                    "udid": { "type": "string", "description": "The simulator (id or name from XcodeListRunDestinations)." },
                 }),
                 &[],
             )
@@ -228,9 +276,9 @@ pub fn definitions() -> Vec<Value> {
                 "inputSchema": (tool.schema)(),
                 "annotations": {
                     "title": tool.title,
-                    "readOnlyHint": !tool.changes,
+                    "readOnlyHint": tool.read_only,
                     "destructiveHint": false,
-                    "idempotentHint": !tool.changes,
+                    "idempotentHint": !tool.asks,
                     "openWorldHint": false,
                 },
             })
@@ -242,31 +290,35 @@ pub async fn call(name: &str, args: &Value, call: &Rc<Call>, cx: &mut AsyncApp) 
     let workspace = resolve(args, call, cx)?;
     let json = |value: Value| Ok(ToolOutput::json(value));
     match name {
-        "list_schemes" => {
+        "XcodeListSchemes" => {
             wait_for_schemes(&workspace, call, cx).await?;
             json(cx.update(|cx| schemes(&workspace, cx)))
         }
-        "list_destinations" => {
+        "XcodeListRunDestinations" => {
             wait_for_schemes(&workspace, call, cx).await?;
             json(cx.update(|cx| destinations(&workspace, cx)))
         }
-        "build" => product(BuildAction::Build, args, &workspace, call, cx).await,
-        "run" => product(BuildAction::Run, args, &workspace, call, cx).await,
-        "test" => product(BuildAction::Test, args, &workspace, call, cx).await,
-        "stop" => {
-            let permission = permit(call, &workspace, "stop", "Stop".into(), args, cx).await?;
+        "XcodeSwitchScheme" | "XcodeSwitchRunDestination" => {
+            let scheme = string(args, "scheme")?;
+            let destination = string(args, "destination")?;
+            if scheme.is_none() && destination.is_none() {
+                return Err(ToolError::InvalidParams(format!("{name} needs {}", if name == "XcodeSwitchScheme" { "scheme" } else { "destination" })));
+            }
+            wait_for_schemes(&workspace, call, cx).await?;
+            cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_select(scheme.as_deref(), destination.as_deref(), cx)))?;
+            json(cx.update(|cx| if scheme.is_some() { schemes(&workspace, cx) } else { destinations(&workspace, cx) }))
+        }
+        "BuildProject" => product(BuildAction::Build, name, args, &workspace, call, cx).await,
+        "RunProject" => product(BuildAction::Run, name, args, &workspace, call, cx).await,
+        "RunAllTests" | "RunSomeTests" => product(BuildAction::Test, name, args, &workspace, call, cx).await,
+        "StopProject" => {
+            let permission = permit(call, &workspace, name, "Stop".into(), args, cx).await?;
             let stopped = cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(cx)));
             finish(&permission, true, cx);
             json(json!({ "stopped": stopped }))
         }
-        "get_test_results" => json(cx.update(|cx| {
-            let ws = workspace.read(cx);
-            let build = ws.build.read(cx);
-            let mut value = test_summary(build.tests.iter());
-            value["last_run"] = build.last_test.as_ref().map(|r| r.label().unwrap_or_else(|| "All tests".into())).into();
-            value
-        })),
-        "get_issues" => {
+        "GetTestList" => json(cx.update(|cx| workspace.read(cx).mcp_test_list(cx))),
+        "XcodeListNavigatorIssues" => {
             let path = string(args, "path")?;
             let severity = string(args, "severity")?.unwrap_or_else(|| "all".into());
             if !["error", "warning", "all"].contains(&severity.as_str()) {
@@ -295,7 +347,7 @@ pub async fn call(name: &str, args: &Value, call: &Rc<Call>, cx: &mut AsyncApp) 
                 })
             }))
         }
-        "get_build_log" => {
+        "GetBuildLog" => {
             let max = integer(args, "max_lines")?.unwrap_or(200).clamp(1, 5000) as usize;
             let raw = boolean(args, "raw")?.unwrap_or(false);
             let filter = string(args, "filter")?;
@@ -326,7 +378,7 @@ pub async fn call(name: &str, args: &Value, call: &Rc<Call>, cx: &mut AsyncApp) 
                 })
             }))
         }
-        "get_console" => {
+        "GetConsoleOutput" => {
             let max = integer(args, "max_lines")?.unwrap_or(200).clamp(1, 5000) as usize;
             json(cx.update(|cx| {
                 let ws = workspace.read(cx);
@@ -339,7 +391,7 @@ pub async fn call(name: &str, args: &Value, call: &Rc<Call>, cx: &mut AsyncApp) 
                 })
             }))
         }
-        "open_file" => {
+        "OpenFile" => {
             let path = string(args, "path")?.ok_or_else(|| ToolError::InvalidParams("path is required".into()))?;
             let (line, column) = (integer(args, "line")?, integer(args, "column")?);
             let window = cx.update(|cx| workspace.read(cx).window);
@@ -348,12 +400,12 @@ pub async fn call(name: &str, args: &Value, call: &Rc<Call>, cx: &mut AsyncApp) 
                 .map_err(|e| e.to_string())??;
             json(json!({ "path": opened, "line": line }))
         }
-        "get_active_editor" => {
+        "XcodeGetCurrentFile" => {
             let include_text = boolean(args, "include_text")?.unwrap_or(false);
             json(cx.update(|cx| workspace.read(cx).mcp_active_editor(include_text, cx)))
         }
-        "debugger_evaluate" => evaluate(args, &workspace, call, cx).await,
-        "screenshot" => screenshot(args, &workspace, cx).await,
+        "EvaluateInDebugger" => evaluate(args, &workspace, call, cx).await,
+        "TakeScreenshot" => screenshot(args, &workspace, cx).await,
         _ => Err(ToolError::InvalidParams(format!("Unknown tool: {name}"))),
     }
 }
@@ -503,15 +555,16 @@ fn destinations(workspace: &Entity<Workspace>, cx: &gpui_kit::App) -> Value {
 // -------------------------------------------------------------------------
 // Build, run, test
 
-async fn product(action: BuildAction, args: &Value, workspace: &Entity<Workspace>, call: &Call, cx: &mut AsyncApp) -> Result<ToolOutput> {
+async fn product(action: BuildAction, tool: &str, args: &Value, workspace: &Entity<Workspace>, call: &Call, cx: &mut AsyncApp) -> Result<ToolOutput> {
     let scheme = string(args, "scheme")?;
     let destination = string(args, "destination")?;
     let tests = match args.get("tests") {
-        None | Some(Value::Null) => vec![],
-        Some(Value::Array(items)) if action == BuildAction::Test => {
+        Some(Value::Array(items)) if tool == "RunSomeTests" && !items.is_empty() => {
             items.iter().map(|t| t.as_str().map(str::to_string)).collect::<Option<Vec<_>>>().ok_or_else(|| ToolError::InvalidParams("tests are strings".into()))?
         }
-        Some(_) => return Err(ToolError::InvalidParams("tests is an array of test names".into())),
+        _ if tool == "RunSomeTests" => return Err(ToolError::InvalidParams("tests is a list of test names (GetTestList lists them)".into())),
+        None | Some(Value::Null) => vec![],
+        Some(_) => return Err(ToolError::InvalidParams(format!("{tool} takes no tests (RunSomeTests does)"))),
     };
     let wait = match args.get("wait_seconds") {
         None | Some(Value::Null) => 3.,
@@ -526,11 +579,6 @@ async fn product(action: BuildAction, args: &Value, workspace: &Entity<Workspace
         (BuildAction::Test, n) => format!("Test {n} tests"),
         (BuildAction::Run, _) => format!("Run “{scheme_name}”"),
         _ => format!("Build “{scheme_name}”"),
-    };
-    let tool = match action {
-        BuildAction::Test => "test",
-        BuildAction::Run => "run",
-        _ => "build",
     };
     let permission = permit(call, workspace, tool, title, args, cx).await?;
     let result = run_product(action, &tests, wait, workspace, call, cx).await;
@@ -640,7 +688,7 @@ fn product_result(action: BuildAction, reports_before: usize, started: Instant, 
             let console = &build.console;
             value["console"] = console[console.len().saturating_sub(200)..].into();
             if status == "running" {
-                value["note"] = "The app keeps running: get_console reads its output, stop ends it.".into();
+                value["note"] = "The app keeps running: GetConsoleOutput reads its output, StopProject ends it.".into();
             }
         }
         BuildAction::Test => {
@@ -703,7 +751,7 @@ async fn evaluate(args: &Value, workspace: &Entity<Workspace>, call: &Call, cx: 
     if let Some(reason) = cx.update(|cx| workspace.read(cx).mcp_not_paused(cx)) {
         return Err(reason.into());
     }
-    let permission = permit(call, workspace, "debugger_evaluate", format!("Evaluate `{command}`"), args, cx).await?;
+    let permission = permit(call, workspace, "EvaluateInDebugger", format!("Evaluate `{command}`"), args, cx).await?;
     let task = cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_evaluate(&command, cx)));
     let task = match task {
         Ok(task) => task,
@@ -804,8 +852,9 @@ mod tests {
         assert_eq!(
             names,
             [
-                "list_schemes", "list_destinations", "build", "run", "stop", "test", "get_test_results", "get_issues", "get_build_log", "get_console",
-                "open_file", "get_active_editor", "debugger_evaluate", "screenshot",
+                "XcodeListSchemes", "XcodeSwitchScheme", "XcodeListRunDestinations", "XcodeSwitchRunDestination", "BuildProject", "RunProject",
+                "StopProject", "RunAllTests", "RunSomeTests", "GetTestList", "XcodeListNavigatorIssues", "GetBuildLog", "GetConsoleOutput",
+                "XcodeGetCurrentFile", "OpenFile", "EvaluateInDebugger", "TakeScreenshot",
             ]
         );
         for definition in &definitions {
@@ -813,11 +862,13 @@ mod tests {
             assert_eq!(schema["type"], "object", "{definition}");
             assert!(schema["properties"]["project"].is_object(), "{definition}");
             let name = definition["name"].as_str().unwrap();
-            assert_eq!(definition["annotations"]["readOnlyHint"], !tool(name).unwrap().changes);
+            assert_eq!(definition["annotations"]["readOnlyHint"], tool(name).unwrap().read_only);
         }
-        let changing: Vec<&str> = TOOLS.iter().filter(|t| t.changes).map(|t| t.name).collect();
-        assert_eq!(changing, ["build", "run", "stop", "test", "debugger_evaluate"]);
-        assert_eq!(definitions[10]["inputSchema"]["required"], json!(["path"]));
+        let asking: Vec<&str> = TOOLS.iter().filter(|t| t.asks).map(|t| t.name).collect();
+        assert_eq!(asking, ["BuildProject", "RunProject", "StopProject", "RunAllTests", "RunSomeTests", "EvaluateInDebugger"]);
+        assert!(TOOLS.iter().all(|t| !t.asks || !t.read_only));
+        assert_eq!((tool("OpenFile").unwrap().schema)()["required"], json!(["path"]));
+        assert_eq!((tool("RunSomeTests").unwrap().schema)()["required"], json!(["tests"]));
     }
 
     #[test]

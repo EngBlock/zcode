@@ -23,7 +23,7 @@ impl Workspace {
         if let Some(scheme) = scheme {
             let known = build.read(cx).schemes.schemes.iter().any(|s| s == scheme);
             if !known {
-                return Err(format!("No scheme named “{scheme}”. list_schemes lists them."));
+                return Err(format!("No scheme named “{scheme}”. XcodeListSchemes lists them."));
             }
             if build.read(cx).scheme.as_deref() != Some(scheme) {
                 build.update(cx, |build, cx| build.set_scheme(scheme.to_string(), cx));
@@ -31,7 +31,7 @@ impl Workspace {
         }
         if let Some(wanted) = destination {
             let found = build.read(cx).destinations.iter().find(|d| d.id == wanted || d.name == wanted).cloned();
-            let destination = found.ok_or_else(|| format!("No run destination “{wanted}” for this scheme. list_destinations lists them."))?;
+            let destination = found.ok_or_else(|| format!("No run destination “{wanted}” for this scheme. XcodeListRunDestinations lists them."))?;
             build.update(cx, |build, cx| build.set_destination(destination, cx));
         }
         Ok(())
@@ -134,6 +134,41 @@ impl Workspace {
             (false, true) => Some("The debugger isn’t paused. Stop at a breakpoint first (or pause), then evaluate.".into()),
             (false, false) => Some("Nothing is being debugged. Run with a breakpoint set to stop in the debugger.".into()),
         }
+    }
+
+    /// The tests found in the project's source (as the Test navigator
+    /// lists them, by the names RunSomeTests takes) with their latest
+    /// results.
+    pub fn mcp_test_list(&self, cx: &App) -> Value {
+        let statuses = self.current_test_statuses(cx);
+        let index = &self.tests.index;
+        let tests: Vec<Value> = (0..index.items.len())
+            .map(|ix| {
+                let item = &index.items[ix];
+                let target = index.targets[ix].as_ref().map(|t| t.name.clone());
+                let components = item.components().join("/");
+                json!({
+                    "name": match &target {
+                        Some(target) => format!("{target}/{components}"),
+                        None => components,
+                    },
+                    "target": target,
+                    "kind": if item.name.is_some() { "test" } else { "suite" },
+                    "framework": format!("{:?}", item.framework),
+                    "display_name": item.display_name,
+                    "path": item.file,
+                    "line": item.line + 1,
+                    "status": statuses.get(ix).copied().flatten().map(|s| format!("{s:?}").to_lowercase()).unwrap_or_else(|| "not_run".into()),
+                })
+            })
+            .collect();
+        let build = self.build.read(cx);
+        json!({
+            "loaded": index.loaded,
+            "tests": tests,
+            "test_plan": build.active_test_plan().map(|p| p.name.clone()),
+            "last_run": build.last_test.as_ref().map(|r| r.label().unwrap_or_else(|| "All tests".into())),
+        })
     }
 
     /// The last build's errors and warnings, their paths in the project.

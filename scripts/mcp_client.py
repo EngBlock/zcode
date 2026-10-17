@@ -6,7 +6,7 @@ and a command line tool:
 
     python3 scripts/mcp_client.py [--server <command…> --] tools
     python3 scripts/mcp_client.py call <tool> ['<json arguments>']
-    python3 scripts/mcp_client.py --modern call build '{}'
+    python3 scripts/mcp_client.py --modern call BuildProject '{}'
 
 The handshake revision (2025-11-25, `initialize`) is the default;
 `--modern` speaks 2026-07-28 (the revision in every request's `_meta`,

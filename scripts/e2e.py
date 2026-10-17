@@ -536,10 +536,10 @@ def xcode_project_checks(z, samples, sim):
         client = McpClient([BINARY, "mcp"], env=dict(os.environ, ZCODE_CONFIG_DIR=CONFIG_DIR), cwd=samples)
         try:
             client.initialize()
-            destinations = client.call("list_destinations")["structuredContent"]
+            destinations = client.call("XcodeListRunDestinations")["structuredContent"]
             chosen = next(d for d in destinations["destinations"] if d["id"] == destinations["destination"])
             assert chosen["kind"] == "simulator" and chosen["booted"], chosen
-            result = client.call("screenshot", {"target": "simulator"}, timeout=120)
+            result = client.call("TakeScreenshot", {"target": "simulator"}, timeout=120)
             assert not result.get("isError"), result
             shot = result["structuredContent"]
             assert shot["simulator"]["udid"] == chosen["id"] and shot["height"] > shot["width"] > 300, shot
@@ -3649,9 +3649,11 @@ def agent_checks(samples):
         shutil.rmtree(config, ignore_errors=True)
 
 
-MCP_TOOLS = ["list_schemes", "list_destinations", "build", "run", "stop", "test", "get_test_results", "get_issues",
-             "get_build_log", "get_console", "open_file", "get_active_editor", "debugger_evaluate", "screenshot"]
-MCP_CHANGING = {"build", "run", "stop", "test", "debugger_evaluate"}
+MCP_TOOLS = ["XcodeListSchemes", "XcodeSwitchScheme", "XcodeListRunDestinations", "XcodeSwitchRunDestination", "BuildProject",
+             "RunProject", "StopProject", "RunAllTests", "RunSomeTests", "GetTestList", "XcodeListNavigatorIssues", "GetBuildLog",
+             "GetConsoleOutput", "XcodeGetCurrentFile", "OpenFile", "EvaluateInDebugger", "TakeScreenshot"]
+MCP_READ_ONLY = {"XcodeListSchemes", "XcodeListRunDestinations", "GetTestList", "XcodeListNavigatorIssues", "GetBuildLog",
+                 "GetConsoleOutput", "XcodeGetCurrentFile", "TakeScreenshot"}
 
 
 def mcp_checks(samples):
@@ -3724,10 +3726,11 @@ def mcp_checks(samples):
         assert client(initialize=False).initialize("2099-01-01")["protocolVersion"] == "2025-11-25"
         tools = h.tools()
         assert [t["name"] for t in tools] == MCP_TOOLS, [t["name"] for t in tools]
-        assert {t["name"] for t in tools if not t["annotations"]["readOnlyHint"]} == MCP_CHANGING
+        assert {t["name"] for t in tools if t["annotations"]["readOnlyHint"]} == MCP_READ_ONLY
         assert all(t["inputSchema"]["type"] == "object" for t in tools)
         for method, params, code in [("no/such/method", {}, -32601), ("tools/call", {"name": "no_such_tool"}, -32602),
-                                     ("tools/call", {"name": "get_issues", "arguments": {"severity": "fatal"}}, -32602)]:
+                                     ("tools/call", {"name": "XcodeListNavigatorIssues", "arguments": {"severity": "fatal"}}, -32602),
+                                     ("tools/call", {"name": "RunSomeTests", "arguments": {}}, -32602)]:
             try:
                 h.request(method, params)
                 raise AssertionError(f"{method} should fail")
@@ -3741,7 +3744,7 @@ def mcp_checks(samples):
         assert d["resultType"] == "complete" and d["_meta"]["io.modelcontextprotocol/serverInfo"]["name"] == "zcode", d
         listed = m.request("tools/list")
         assert listed["resultType"] == "complete" and listed["ttlMs"] > 0 and len(listed["tools"]) == len(MCP_TOOLS), listed.keys()
-        r = m.call("list_schemes")
+        r = m.call("XcodeListSchemes")
         assert r["resultType"] == "complete" and r["structuredContent"]["scheme"] == "zhello", r
         try:
             c.request("tools/list", {"_meta": {"io.modelcontextprotocol/protocolVersion": "1900-01-01"}})
@@ -3750,19 +3753,26 @@ def mcp_checks(samples):
             assert e.code == -32022 and e.data["requested"] == "1900-01-01" and MODERN in e.data["supported"], e.data
 
     def schemes_and_destinations():
-        s = c.call("list_schemes")["structuredContent"]
+        s = c.call("XcodeListSchemes")["structuredContent"]
         assert s["project"] == {"root": project, "name": "McpKit", "kind": "swift_package"}, s["project"]
         assert "zhello" in s["schemes"] and s["scheme"] == "zhello" and s["configuration"] == "Debug", s
-        d = c.call("list_destinations")["structuredContent"]
+        d = c.call("XcodeListRunDestinations")["structuredContent"]
         assert d["destination"] == "mac" and [x["id"] for x in d["destinations"]] == ["mac"], d
-        r = c.call("build", {"scheme": "NoSuchScheme"})
+        # Switched as the toolbar's menus do.
+        assert c.call("XcodeSwitchScheme", {"scheme": "ZKit"})["structuredContent"]["scheme"] == "ZKit"
+        assert z.dump()["scheme"] == "ZKit"
+        assert c.call("XcodeSwitchScheme", {"scheme": "zhello"})["structuredContent"]["scheme"] == "zhello"
+        assert c.call("XcodeSwitchRunDestination", {"destination": "My Mac"})["structuredContent"]["destination"] == "mac"
+        r = c.call("BuildProject", {"scheme": "NoSuchScheme"})
         assert r["isError"] and "No scheme named" in text(r), r
-        r = c.call("list_schemes", {"project": "/nonexistent/project"})
+        r = c.call("XcodeSwitchRunDestination", {"destination": "Nowhere"})
+        assert r["isError"] and "No run destination" in text(r), r
+        r = c.call("XcodeListSchemes", {"project": "/nonexistent/project"})
         assert r["isError"] and "No open project contains" in text(r), r
 
     def cancel_while_building():
         # The copy has never been built: the test run's build takes a while.
-        rid = c.start("tools/call", {"name": "test", "arguments": {}}, progress="cancel-me")
+        rid = c.start("tools/call", {"name": "RunAllTests", "arguments": {}}, progress="cancel-me")
         deadline = time.time() + 120
         while not c.progress("cancel-me") and time.time() < deadline:
             time.sleep(0.1)
@@ -3770,7 +3780,7 @@ def mcp_checks(samples):
         c.cancel(rid)
         z.wait_for(lambda s: s["phase"] == "Stopped", timeout=15, interval=0.3)
         assert c.response(rid, timeout=3) is None, "a cancelled request gets no response"
-        assert c.call("get_build_log")["structuredContent"]["phase"] == "stopped"
+        assert c.call("GetBuildLog")["structuredContent"]["phase"] == "stopped"
 
     def build_with_an_error():
         broken = os.path.join(project, "Sources", "ZKit", "Broken.swift")
@@ -3781,11 +3791,11 @@ def mcp_checks(samples):
         finally:
             if os.path.exists(broken):
                 os.remove(broken)
-        s2 = c.call("build")["structuredContent"]
+        s2 = c.call("BuildProject")["structuredContent"]
         assert s2["success"] and s2["status"] == "succeeded" and s2["errors"] == [] and s2["log_path"] != s["log_path"], s2
 
     def broken_build(broken):
-        r = c.call("build", progress="b")
+        r = c.call("BuildProject", progress="b")
         s = r["structuredContent"]
         assert not r["isError"] and not s["success"] and s["status"] == "failed" and s["error_count"] >= 1, s
         error = next(e for e in s["errors"] if (e["path"] or "").endswith("Broken.swift"))
@@ -3793,96 +3803,101 @@ def mcp_checks(samples):
         steps = [p["progress"] for p in c.progress("b")]
         assert steps and steps == sorted(set(steps)), steps
         assert s["log_path"] and os.path.exists(s["log_path"]), s
-        issues = c.call("get_issues", {"severity": "error"})["structuredContent"]
+        issues = c.call("XcodeListNavigatorIssues", {"severity": "error"})["structuredContent"]
         assert any((i["path"] or "").endswith("Broken.swift") for i in issues["issues"]), issues
-        only = c.call("get_issues", {"path": "Sources/ZKit/Broken.swift"})["structuredContent"]["issues"]
+        only = c.call("XcodeListNavigatorIssues", {"path": "Sources/ZKit/Broken.swift"})["structuredContent"]["issues"]
         assert only and all(i["path"].endswith("Broken.swift") for i in only), only
-        log = c.call("get_build_log", {"raw": True, "filter": "error:"})["structuredContent"]
+        log = c.call("GetBuildLog", {"raw": True, "filter": "error:"})["structuredContent"]
         assert log["lines"] and all("error:" in l for l in log["lines"]) and log["reports"][0]["success"] is False, log
         return s
 
     def tests_with_results():
-        r = c.call("test", progress="t")["structuredContent"]
+        r = c.call("RunAllTests", progress="t")["structuredContent"]
         names = {t["name"] for t in r["tests"]}
         assert r["success"] and r["failed"] == 0 and r["total"] >= 4, r
         assert {"plainGreeting()", "GreeterXCTests/testPlainGreeting"} <= names, names
         assert all(t["status"] == "passed" for t in r["tests"]), r["tests"]
-        one = c.call("test", {"tests": ["ZKitTests/excitedGreeting()"]})["structuredContent"]
+        one = c.call("RunSomeTests", {"tests": ["ZKitTests/excitedGreeting()"]})["structuredContent"]
         assert [t["name"] for t in one["tests"]] == ["excitedGreeting()"] and one["passed"] == 1, one
         failing = os.path.join(project, "Tests", "ZKitTests", "FailingTests.swift")
         with open(failing, "w") as f:
             f.write("import Testing\n\n@Test func failsOnPurpose() {\n    #expect(1 == 2)\n}\n")
         try:
-            r = c.call("test")["structuredContent"]
+            r = c.call("RunAllTests")["structuredContent"]
             assert not r["success"] and r["failed"] == 1 and r["status"] == "failed", r
             assert any(t["name"] == "failsOnPurpose()" and t["status"] == "failed" for t in r["tests"]), r["tests"]
             assert any((f["path"] or "").endswith("FailingTests.swift") and f["line"] == 4 for f in r["failures"]), r["failures"]
         finally:
             os.remove(failing)
-        r = c.call("test", {"tests": ["NoSuchTest"]})
+        r = c.call("RunSomeTests", {"tests": ["NoSuchTest"]})
         assert r["isError"] and "no test named NoSuchTest" in text(r), r
-        results = c.call("get_test_results")["structuredContent"]
-        assert results["total"] >= 4 and results["last_run"] == "All tests", results
+        listed = c.call("GetTestList")["structuredContent"]
+        found = {t["name"]: t for t in listed["tests"]}
+        assert listed["loaded"] and listed["last_run"] == "All tests", listed
+        plain = found["ZKitTests/plainGreeting()"]
+        assert plain["status"] == "passed" and plain["path"].endswith("GreeterTests.swift") and plain["line"] == 5, plain
+        assert found["ZKitTests/GreeterXCTests/testPlainGreeting"]["kind"] == "test", found.keys()
+        assert found["ZKitTests/GreeterXCTests"]["kind"] == "suite", found.keys()
 
     def run_and_console():
-        r = c.call("run", {"wait_seconds": 2})["structuredContent"]
+        r = c.call("RunProject", {"wait_seconds": 2})["structuredContent"]
         assert r["success"] and r["status"] in ("finished", "running") and "tick 3" in r["console"], r
-        lines = c.call("get_console", {"max_lines": 50})["structuredContent"]["lines"]
+        lines = c.call("GetConsoleOutput", {"max_lines": 50})["structuredContent"]["lines"]
         assert "tick 1" in lines and any(l.startswith("Program ended") for l in lines), lines
-        assert "stopped" in c.call("stop")["structuredContent"]
+        assert "stopped" in c.call("StopProject")["structuredContent"]
 
     def editor_tools():
-        r = c.call("open_file", {"path": "Sources/ZKit/Greeter.swift", "line": 9, "column": 5})["structuredContent"]
+        r = c.call("OpenFile", {"path": "Sources/ZKit/Greeter.swift", "line": 9, "column": 5})["structuredContent"]
         assert r["path"] == greeter, r
         z.wait_for(lambda s: (s["active"] or {}).get("path") == greeter and s["active"]["line"] == 9, timeout=10, interval=0.3)
         z.run("keys shift-down", "wait 200")
-        e = c.call("get_active_editor", {"include_text": True})["structuredContent"]
+        e = c.call("XcodeGetCurrentFile", {"include_text": True})["structuredContent"]
         lines = open(greeter).read().splitlines(keepends=True)
         assert e["path"] == greeter and e["language"] == "swift" and not e["unsaved_changes"], e
         assert e["selection"] == {"start": {"line": 9, "column": 5}, "end": {"line": 10, "column": 5}}, e["selection"]
         assert e["selected_text"] == lines[8][4:] + lines[9][:4] and e["text"] == "".join(lines), e["selected_text"]
         # What the editor shows, unsaved edits included.
         z.run("type // mcp", "wait 200")
-        e = c.call("get_active_editor", {"include_text": True})["structuredContent"]
+        e = c.call("XcodeGetCurrentFile", {"include_text": True})["structuredContent"]
         assert e["unsaved_changes"] and "// mcp" in e["text"] and e["selected_text"] == "", e
         for _ in range(10):
             z.run("keys cmd-z", "wait 150")
-            if not c.call("get_active_editor")["structuredContent"]["unsaved_changes"]:
+            if not c.call("XcodeGetCurrentFile")["structuredContent"]["unsaved_changes"]:
                 break
-        assert not c.call("get_active_editor")["structuredContent"]["unsaved_changes"], "undone"
-        r = c.call("open_file", {"path": "Sources/Nope.swift"})
+        assert not c.call("XcodeGetCurrentFile")["structuredContent"]["unsaved_changes"], "undone"
+        r = c.call("OpenFile", {"path": "Sources/Nope.swift"})
         assert r["isError"] and "No file at" in text(r), r
 
     def debugger_paused_at_a_breakpoint():
-        r = c.call("debugger_evaluate", {"command": "p 1"})
+        r = c.call("EvaluateInDebugger", {"command": "p 1"})
         assert r["isError"] and "Nothing is being debugged" in text(r), r
         line = line_of(main_swift, 'print("tick')
         z.run(f"open {main_swift}:{line}", "wait 300", "keys cmd-\\")
         try:
-            r = c.call("run", {"wait_seconds": 0})["structuredContent"]
+            r = c.call("RunProject", {"wait_seconds": 0})["structuredContent"]
             assert r["status"] == "running" and r["debugging"], r
             stopped(z, variables=False)
-            e = c.call("debugger_evaluate", {"command": "p i"})["structuredContent"]
+            e = c.call("EvaluateInDebugger", {"command": "p i"})["structuredContent"]
             assert e["state"] == "Stopped" and e["frame"]["line"] == line and e["frame"]["path"].endswith("main.swift"), e
             assert e["output"].strip().endswith(" 1"), e
             # Shown in the console as if typed at its prompt.
             assert "(lldb) p i" in z.dump()["console_tail"]
-            assert c.call("stop")["structuredContent"]["stopped"]
+            assert c.call("StopProject")["structuredContent"]["stopped"]
             z.wait_for(lambda s: not s["debugger"]["state"].startswith(("Running", "Stopped", "Starting")), timeout=30)
         finally:
             z.run(f"open {main_swift}:{line}", "wait 300", "keys cmd-\\")
 
     def window_screenshot():
-        r = c.call("screenshot")
+        r = c.call("TakeScreenshot")
         s = r["structuredContent"]
         image = next(b for b in r["content"] if b["type"] == "image")
         png = base64.b64decode(image["data"])
         assert image["mimeType"] == "image/png" and png[:8] == b"\x89PNG\r\n\x1a\n", image["mimeType"]
         # A pixel per point: the window's size, not a Retina capture's.
         assert s["target"] == "window" and 700 <= s["width"] <= 2000 and 400 <= s["height"] <= 1400, s
-        r = c.call("screenshot", {"target": "simulator"})
+        r = c.call("TakeScreenshot", {"target": "simulator"})
         assert r["isError"] and "No simulator is booted" in text(r), r
-        r = c.call("screenshot", {"target": "simulator", "udid": "mac"})
+        r = c.call("TakeScreenshot", {"target": "simulator", "udid": "mac"})
         assert r["isError"] and "isn’t a simulator" in text(r), r
 
     def agent(s=None):
@@ -3912,9 +3927,9 @@ def mcp_checks(samples):
 
     def agent_panel_hands_over_the_tools():
         z.run("agent show", "wait 300")
-        before = send("mcp list_schemes")
+        before = send("mcp XcodeListSchemes")
         reply = answered(before, timeout=60)
-        assert reply.startswith("mcp list_schemes ok") and '"scheme":"zhello"' in reply, reply
+        assert reply.startswith("mcp XcodeListSchemes ok") and '"scheme":"zhello"' in reply, reply
         # Read-only tools aren't asked about.
         assert not any(e["kind"] == "tool" and e["title"].startswith("zcode:") for e in entries()), entries()
         with open(acp_log) as f:
@@ -3925,27 +3940,27 @@ def mcp_checks(samples):
         assert server["name"] == "zcode" and env["ZCODE_MCP_SOCKET"] == sock, server
 
     def agent_tools_that_change_things_ask_first():
-        before = send("mcp build")
+        before = send("mcp BuildProject")
         call = asked("zcode: Build “zhello”")
         z.run("agent allow")
         reply = answered(before)
-        assert reply.startswith("mcp build ok") and '"success":true' in reply, reply
+        assert reply.startswith("mcp BuildProject ok") and '"success":true' in reply, reply
         status = next(e for e in entries() if e.get("id") == call["id"])["status"]
         assert status == "Completed", status
-        before = send("mcp stop")
+        before = send("mcp StopProject")
         asked("zcode: Stop")
         z.run("agent reject")
         reply = answered(before, timeout=30)
-        assert reply == "mcp stop error: The user didn’t allow stop in zcode.", reply
+        assert reply == "mcp StopProject error: The user didn’t allow StopProject in zcode.", reply
         # Always Allow holds for the thread, not the next one.
-        before = send("mcp stop")
+        before = send("mcp StopProject")
         asked("zcode: Stop")
         z.run("agent allow always")
-        assert answered(before, timeout=30).startswith("mcp stop ok")
-        before = send("mcp stop")
-        assert answered(before, timeout=30).startswith("mcp stop ok") and not pending()
+        assert answered(before, timeout=30).startswith("mcp StopProject ok")
+        before = send("mcp StopProject")
+        assert answered(before, timeout=30).startswith("mcp StopProject ok") and not pending()
         z.run("agent new", "wait 300")
-        send("mcp stop")
+        send("mcp StopProject")
         asked("zcode: Stop")
         z.run("agent allow")
         z.wait_for(lambda s: agent(s)["status"] == "idle" and not pending(s), timeout=30, interval=0.3)
@@ -3954,16 +3969,16 @@ def mcp_checks(samples):
         check("MCP: the socket is the user's alone (0600, peer checked); a silent client doesn't block it", private_socket)
         check("MCP: initialize in 2025-06-18 and 2025-11-25, tools/list, errors", handshake_revisions)
         check("MCP: 2026-07-28 (server/discover, the revision per request, an unknown one refused)", modern_revision)
-        check("MCP: list_schemes and list_destinations; a scheme or project that isn't there", schemes_and_destinations)
+        check("MCP: schemes and run destinations listed and switched; a scheme, destination or project that isn't there", schemes_and_destinations)
         check("MCP: a test run cancelled while it builds stops, with no response", cancel_while_building)
-        check("MCP: build with an error (progress, structured errors, get_issues, get_build_log), then fixed", build_with_an_error)
-        check("MCP: test with per-test results, one test, a failure with its line", tests_with_results)
+        check("MCP: a build with an error (progress, structured errors, the Issue navigator, the log), then fixed", build_with_an_error)
+        check("MCP: RunAllTests and RunSomeTests with per-test results, a failure with its line; GetTestList", tests_with_results)
         check("MCP: run and the console, stop", run_and_console)
-        check("MCP: open_file and get_active_editor (selection, unsaved edits)", editor_tools)
-        check("MCP: debugger_evaluate at a breakpoint, shown in the console", debugger_paused_at_a_breakpoint)
+        check("MCP: OpenFile and XcodeGetCurrentFile (selection, unsaved edits)", editor_tools)
+        check("MCP: EvaluateInDebugger at a breakpoint, shown in the console", debugger_paused_at_a_breakpoint)
         check("MCP: a window screenshot (PNG, a pixel per point); no simulator, not a device", window_screenshot)
         check("MCP: the agent panel hands its agent zcode's server; read-only tools aren't asked about", agent_panel_hands_over_the_tools)
-        check("MCP: the agent's build and stop ask in the panel: Allow, Reject, Always Allow for the thread", agent_tools_that_change_things_ask_first)
+        check("MCP: the agent's BuildProject and StopProject ask in the panel: Allow, Reject, Always Allow for the thread", agent_tools_that_change_things_ask_first)
     finally:
         for each in clients:
             each.close()
