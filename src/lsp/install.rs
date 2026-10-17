@@ -134,7 +134,7 @@ pub fn install(spec: &ServerSpec, lookup: &Lookup, log: &Path) -> Result<Program
             .args(["install", "--no-audit", "--no-fund", "--no-progress", "--loglevel=error", "--prefix"])
             .arg(&dir)
             .arg(format!("{package}@latest"))
-            .args(with.iter().map(|extra| format!("{extra}@latest")))
+            .args(with.iter())
             .env("PATH", path)
             .current_dir(&dir)
             .stdin(std::process::Stdio::null())

@@ -1,0 +1,9 @@
+:root {
+  --accent: #0a84ff;
+  font-family: -apple-system, system-ui, sans-serif;
+}
+
+#app {
+  color: var(--accent);
+  padding: 16px;
+}

@@ -25,7 +25,8 @@ pub enum Launch {
     /// An npm package's executable: the project's `node_modules/.bin`, then
     /// `PATH`, then zcode's own copy (installed on first use unless
     /// `auto_install_language_servers` is off). `with` are installed next
-    /// to it (TypeScript, for the servers that need its library).
+    /// to it, as npm specs (TypeScript, for the servers that need its
+    /// library).
     Npm { package: &'static str, bin: &'static str, with: &'static [&'static str] },
     /// Only ever the project's own (`node_modules/.bin`): never installed.
     Project { bin: &'static str },
@@ -60,6 +61,10 @@ pub struct ServerSpec {
     pub scope: Scope,
 }
 
+/// TypeScript for the servers that load its library themselves: 5.x, the
+/// last with a JavaScript API (7 is the native compiler, which has none).
+const TYPESCRIPT: &[&str] = &["typescript@5"];
+
 /// The JavaScript and TypeScript languages, as LSP names them.
 const SCRIPT: &[&str] = &["javascript", "javascriptreact", "typescript", "typescriptreact"];
 
@@ -77,7 +82,7 @@ pub static SERVERS: &[ServerSpec] = &[
         id: "vue-language-server",
         languages: &["vue"],
         languages_with: &[],
-        launch: Launch::Npm { package: "@vue/language-server", bin: "vue-language-server", with: &["typescript"] },
+        launch: Launch::Npm { package: "@vue/language-server", bin: "vue-language-server", with: TYPESCRIPT },
         args: &["--stdio"],
         scope: Scope::Web,
     },
@@ -85,7 +90,7 @@ pub static SERVERS: &[ServerSpec] = &[
         id: "svelte-language-server",
         languages: &["svelte"],
         languages_with: &[],
-        launch: Launch::Npm { package: "svelte-language-server", bin: "svelteserver", with: &["typescript"] },
+        launch: Launch::Npm { package: "svelte-language-server", bin: "svelteserver", with: TYPESCRIPT },
         args: &["--stdio"],
         scope: Scope::Web,
     },
@@ -93,7 +98,7 @@ pub static SERVERS: &[ServerSpec] = &[
         id: "astro-language-server",
         languages: &["astro"],
         languages_with: &[],
-        launch: Launch::Npm { package: "@astrojs/language-server", bin: "astro-ls", with: &["typescript"] },
+        launch: Launch::Npm { package: "@astrojs/language-server", bin: "astro-ls", with: TYPESCRIPT },
         args: &["--stdio"],
         scope: Scope::Web,
     },
