@@ -11,9 +11,12 @@ offline; `--network` also lists a public package's versions from GitHub.
 `--only <text>[,<text>…]` runs just the checks whose names contain one of them.
 """
 
+import base64
 import json
 import os
 import plistlib
+import socket
+import stat
 import shutil
 import subprocess
 import sys
@@ -21,6 +24,7 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
 SAMPLES = os.path.normpath(os.path.join(ROOT, "samples"))
 # Tests run against a private copy so edits, breakpoints and session state from
 # other work in the repo can't leak in (and test edits never touch the repo).
@@ -523,6 +527,28 @@ def xcode_project_checks(z, samples, sim):
         phase = z.dump()["phase"]
         assert phase == "Stopped" or phase.startswith("Finished"), phase
 
+    def mcp_simulator_screenshot():
+        # zcode's MCP server (this instance listens in the run's own
+        # configuration folder) takes the running app's simulator screen.
+        from mcp_client import McpClient
+        z.run("keys cmd-r")
+        console_has(z, "HelloZ launched")
+        client = McpClient([BINARY, "mcp"], env=dict(os.environ, ZCODE_CONFIG_DIR=CONFIG_DIR), cwd=samples)
+        try:
+            client.initialize()
+            destinations = client.call("list_destinations")["structuredContent"]
+            chosen = next(d for d in destinations["destinations"] if d["id"] == destinations["destination"])
+            assert chosen["kind"] == "simulator" and chosen["booted"], chosen
+            result = client.call("screenshot", {"target": "simulator"}, timeout=120)
+            assert not result.get("isError"), result
+            shot = result["structuredContent"]
+            assert shot["simulator"]["udid"] == chosen["id"] and shot["height"] > shot["width"] > 300, shot
+            image = next(b for b in result["content"] if b["type"] == "image")
+            assert image["mimeType"] == "image/png" and base64.b64decode(image["data"])[:8] == b"\x89PNG\r\n\x1a\n"
+        finally:
+            client.close()
+        z.run("keys cmd-.", "wait 1500")
+
     def debug_on_simulator():
         # Under the debugger, with Main Thread Checker inserted (the default).
         z.run(f"open {content}:{appear_line}", "wait 300", "keys cmd-\\", "keys cmd-r")
@@ -585,6 +611,7 @@ def xcode_project_checks(z, samples, sim):
         check("Simulator: one test and one suite from gutter diamonds (XCTest scope)", single_tests_on_simulator)
         check("Simulator: test plan (Smoke) honored by the in-simulator runner", test_plan_on_simulator)
         check("Run on iOS Simulator (⌘R) with console", run_on_simulator)
+        check("MCP: a screenshot of the running app's simulator (simctl io screenshot)", mcp_simulator_screenshot)
         check("Debug on iOS Simulator (breakpoint stop, LLDB console)", debug_on_simulator)
 
 
@@ -3417,7 +3444,13 @@ def agent_checks(samples):
         assert init["protocolVersion"] == 1 and init["clientCapabilities"]["fs"] == {"readTextFile": True, "writeTextFile": True}, init
         assert init["clientCapabilities"].get("terminal") is False and init["clientInfo"]["name"] == "zcode", init
         new = next(m for m in sent if m.get("method") == "session/new")["params"]
-        assert new["cwd"] == project and new["mcpServers"] == [], new
+        assert new["cwd"] == project, new
+        # zcode's own MCP server, for this panel (scripts/e2e.py's MCP checks use it).
+        servers = new["mcpServers"]
+        assert [m["name"] for m in servers] == ["zcode"] and servers[0]["args"] == ["mcp"], servers
+        assert os.path.realpath(servers[0]["command"]) == os.path.realpath(BINARY), servers
+        server_env = {e["name"]: e["value"] for e in servers[0]["env"]}
+        assert len(server_env["ZCODE_MCP_AGENT"]) == 32 and server_env["ZCODE_MCP_SOCKET"] == os.path.join(config, "zcode.sock"), server_env
 
     def permission_then_an_undoable_write():
         z.run(f"open {greeter}:1", "wait 300", "type // unsaved", "keys enter")
@@ -3612,6 +3645,328 @@ def agent_checks(samples):
         check("Agent panel: New Conversation (⌃⌘H) lets go of the thread's buffers; the agent keeps running", new_thread_lets_go_of_buffers)
         check("Agent panel: the agent ends with zcode; a relaunch shows the panel and Follow, without an agent", relaunch_without_an_agent)
     finally:
+        z.quit()
+        shutil.rmtree(config, ignore_errors=True)
+
+
+MCP_TOOLS = ["list_schemes", "list_destinations", "build", "run", "stop", "test", "get_test_results", "get_issues",
+             "get_build_log", "get_console", "open_file", "get_active_editor", "debugger_evaluate", "screenshot"]
+MCP_CHANGING = {"build", "run", "stop", "test", "debugger_evaluate"}
+
+
+def mcp_checks(samples):
+    """zcode's MCP server on a copy of ZKit, through `zcode mcp` and
+    scripts/mcp_client.py, in a configuration folder of its own: no zcode
+    running; a private socket that a silent client doesn't block; the
+    handshake revisions and 2026-07-28 (server/discover, the revision per
+    request, an unsupported one refused); the tools; schemes and
+    destinations; a test run cancelled while it builds; a build with an
+    error (progress, structured errors, issues, the log), then without;
+    tests with structured results, one test, a failing one; run and the
+    console; the editor; the debugger paused at a breakpoint; a window
+    screenshot; and the agent panel's agent (scripts/fake_acp_agent.py)
+    calling the tools, asked first for the ones that change things."""
+    from mcp_client import McpClient, McpError, MODERN
+    project = os.path.realpath(os.path.join(WORK, "McpKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    main_swift = os.path.join(project, "Sources", "zhello", "main.swift")
+    config = tempfile.mkdtemp(prefix="zcode-e2e-mcp-config-")
+    acp_log = os.path.join(config, "acp.jsonl")
+    fake = [sys.executable, os.path.join(ROOT, "scripts", "fake_acp_agent.py")]
+    with open(os.path.join(config, "settings.json"), "w") as f:
+        json.dump({"agent_servers": {"fake": {"command": fake[0], "args": fake[1:], "env": {"FAKE_ACP_LOG": acp_log}}},
+                   "agent": {"default_agent": "fake"}}, f)
+    sock = os.path.join(config, "zcode.sock")
+    client_env = dict(os.environ, ZCODE_CONFIG_DIR=config)
+    clients = []
+
+    def client(modern=False, initialize=True):
+        c = McpClient([BINARY, "mcp"], env=client_env, cwd=project, modern=modern)
+        clients.append(c)
+        if initialize and not modern:
+            c.initialize()
+        return c
+
+    def text(result):
+        return next((b["text"] for b in result["content"] if b["type"] == "text"), "")
+
+    def no_zcode_running():
+        empty = tempfile.mkdtemp(prefix="zcode-e2e-mcp-none-")
+        out = subprocess.run([BINARY, "mcp"], env=dict(os.environ, ZCODE_CONFIG_DIR=empty), input="", capture_output=True,
+                             text=True, timeout=10)
+        assert out.returncode == 1 and "isn’t running" in out.stderr and out.stdout == "", out
+        shutil.rmtree(empty, ignore_errors=True)
+
+    check("MCP: `zcode mcp` with no zcode running says so and exits", no_zcode_running)
+    z = Zcode(project, {"ZCODE_CONFIG_DIR": config, "ZCODE_AGENT_NO_LOGIN_SHELL": "1"})
+    # The client most checks share.
+    c = client()
+
+    def private_socket():
+        st = os.stat(sock)
+        assert stat.S_ISSOCK(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o600 and st.st_uid == os.getuid(), oct(st.st_mode)
+        # A connection that never says anything doesn't hold up the next.
+        idle = socket.socket(socket.AF_UNIX)
+        idle.connect(sock)
+        try:
+            started = time.time()
+            client()
+            assert time.time() - started < 6, time.time() - started
+        finally:
+            idle.close()
+
+    def handshake_revisions():
+        h = client(initialize=False)
+        r = h.initialize("2025-06-18")
+        assert r["protocolVersion"] == "2025-06-18" and r["serverInfo"]["name"] == "zcode", r
+        assert r["capabilities"] == {"tools": {"listChanged": False}} and "instructions" in r, r
+        assert client(initialize=False).initialize("2099-01-01")["protocolVersion"] == "2025-11-25"
+        tools = h.tools()
+        assert [t["name"] for t in tools] == MCP_TOOLS, [t["name"] for t in tools]
+        assert {t["name"] for t in tools if not t["annotations"]["readOnlyHint"]} == MCP_CHANGING
+        assert all(t["inputSchema"]["type"] == "object" for t in tools)
+        for method, params, code in [("no/such/method", {}, -32601), ("tools/call", {"name": "no_such_tool"}, -32602),
+                                     ("tools/call", {"name": "get_issues", "arguments": {"severity": "fatal"}}, -32602)]:
+            try:
+                h.request(method, params)
+                raise AssertionError(f"{method} should fail")
+            except McpError as e:
+                assert e.code == code, (method, e.code)
+
+    def modern_revision():
+        m = client(modern=True)
+        d = m.request("server/discover")
+        assert d["supportedVersions"][0] == MODERN and "2025-11-25" in d["supportedVersions"], d
+        assert d["resultType"] == "complete" and d["_meta"]["io.modelcontextprotocol/serverInfo"]["name"] == "zcode", d
+        listed = m.request("tools/list")
+        assert listed["resultType"] == "complete" and listed["ttlMs"] > 0 and len(listed["tools"]) == len(MCP_TOOLS), listed.keys()
+        r = m.call("list_schemes")
+        assert r["resultType"] == "complete" and r["structuredContent"]["scheme"] == "zhello", r
+        try:
+            c.request("tools/list", {"_meta": {"io.modelcontextprotocol/protocolVersion": "1900-01-01"}})
+            raise AssertionError("an unknown revision should be refused")
+        except McpError as e:
+            assert e.code == -32022 and e.data["requested"] == "1900-01-01" and MODERN in e.data["supported"], e.data
+
+    def schemes_and_destinations():
+        s = c.call("list_schemes")["structuredContent"]
+        assert s["project"] == {"root": project, "name": "McpKit", "kind": "swift_package"}, s["project"]
+        assert "zhello" in s["schemes"] and s["scheme"] == "zhello" and s["configuration"] == "Debug", s
+        d = c.call("list_destinations")["structuredContent"]
+        assert d["destination"] == "mac" and [x["id"] for x in d["destinations"]] == ["mac"], d
+        r = c.call("build", {"scheme": "NoSuchScheme"})
+        assert r["isError"] and "No scheme named" in text(r), r
+        r = c.call("list_schemes", {"project": "/nonexistent/project"})
+        assert r["isError"] and "No open project contains" in text(r), r
+
+    def cancel_while_building():
+        # The copy has never been built: the test run's build takes a while.
+        rid = c.start("tools/call", {"name": "test", "arguments": {}}, progress="cancel-me")
+        deadline = time.time() + 120
+        while not c.progress("cancel-me") and time.time() < deadline:
+            time.sleep(0.1)
+        assert c.progress("cancel-me"), "progress before the cancel"
+        c.cancel(rid)
+        z.wait_for(lambda s: s["phase"] == "Stopped", timeout=15, interval=0.3)
+        assert c.response(rid, timeout=3) is None, "a cancelled request gets no response"
+        assert c.call("get_build_log")["structuredContent"]["phase"] == "stopped"
+
+    def build_with_an_error():
+        broken = os.path.join(project, "Sources", "ZKit", "Broken.swift")
+        with open(broken, "w") as f:
+            f.write('let broken: Int = "text"\n')
+        try:
+            s = broken_build(broken)
+        finally:
+            if os.path.exists(broken):
+                os.remove(broken)
+        s2 = c.call("build")["structuredContent"]
+        assert s2["success"] and s2["status"] == "succeeded" and s2["errors"] == [] and s2["log_path"] != s["log_path"], s2
+
+    def broken_build(broken):
+        r = c.call("build", progress="b")
+        s = r["structuredContent"]
+        assert not r["isError"] and not s["success"] and s["status"] == "failed" and s["error_count"] >= 1, s
+        error = next(e for e in s["errors"] if (e["path"] or "").endswith("Broken.swift"))
+        assert error["line"] == 1 and error["severity"] == "error" and error["column"], error
+        steps = [p["progress"] for p in c.progress("b")]
+        assert steps and steps == sorted(set(steps)), steps
+        assert s["log_path"] and os.path.exists(s["log_path"]), s
+        issues = c.call("get_issues", {"severity": "error"})["structuredContent"]
+        assert any((i["path"] or "").endswith("Broken.swift") for i in issues["issues"]), issues
+        only = c.call("get_issues", {"path": "Sources/ZKit/Broken.swift"})["structuredContent"]["issues"]
+        assert only and all(i["path"].endswith("Broken.swift") for i in only), only
+        log = c.call("get_build_log", {"raw": True, "filter": "error:"})["structuredContent"]
+        assert log["lines"] and all("error:" in l for l in log["lines"]) and log["reports"][0]["success"] is False, log
+        return s
+
+    def tests_with_results():
+        r = c.call("test", progress="t")["structuredContent"]
+        names = {t["name"] for t in r["tests"]}
+        assert r["success"] and r["failed"] == 0 and r["total"] >= 4, r
+        assert {"plainGreeting()", "GreeterXCTests/testPlainGreeting"} <= names, names
+        assert all(t["status"] == "passed" for t in r["tests"]), r["tests"]
+        one = c.call("test", {"tests": ["ZKitTests/excitedGreeting()"]})["structuredContent"]
+        assert [t["name"] for t in one["tests"]] == ["excitedGreeting()"] and one["passed"] == 1, one
+        failing = os.path.join(project, "Tests", "ZKitTests", "FailingTests.swift")
+        with open(failing, "w") as f:
+            f.write("import Testing\n\n@Test func failsOnPurpose() {\n    #expect(1 == 2)\n}\n")
+        try:
+            r = c.call("test")["structuredContent"]
+            assert not r["success"] and r["failed"] == 1 and r["status"] == "failed", r
+            assert any(t["name"] == "failsOnPurpose()" and t["status"] == "failed" for t in r["tests"]), r["tests"]
+            assert any((f["path"] or "").endswith("FailingTests.swift") and f["line"] == 4 for f in r["failures"]), r["failures"]
+        finally:
+            os.remove(failing)
+        r = c.call("test", {"tests": ["NoSuchTest"]})
+        assert r["isError"] and "no test named NoSuchTest" in text(r), r
+        results = c.call("get_test_results")["structuredContent"]
+        assert results["total"] >= 4 and results["last_run"] == "All tests", results
+
+    def run_and_console():
+        r = c.call("run", {"wait_seconds": 2})["structuredContent"]
+        assert r["success"] and r["status"] in ("finished", "running") and "tick 3" in r["console"], r
+        lines = c.call("get_console", {"max_lines": 50})["structuredContent"]["lines"]
+        assert "tick 1" in lines and any(l.startswith("Program ended") for l in lines), lines
+        assert "stopped" in c.call("stop")["structuredContent"]
+
+    def editor_tools():
+        r = c.call("open_file", {"path": "Sources/ZKit/Greeter.swift", "line": 9, "column": 5})["structuredContent"]
+        assert r["path"] == greeter, r
+        z.wait_for(lambda s: (s["active"] or {}).get("path") == greeter and s["active"]["line"] == 9, timeout=10, interval=0.3)
+        z.run("keys shift-down", "wait 200")
+        e = c.call("get_active_editor", {"include_text": True})["structuredContent"]
+        lines = open(greeter).read().splitlines(keepends=True)
+        assert e["path"] == greeter and e["language"] == "swift" and not e["unsaved_changes"], e
+        assert e["selection"] == {"start": {"line": 9, "column": 5}, "end": {"line": 10, "column": 5}}, e["selection"]
+        assert e["selected_text"] == lines[8][4:] + lines[9][:4] and e["text"] == "".join(lines), e["selected_text"]
+        # What the editor shows, unsaved edits included.
+        z.run("type // mcp", "wait 200")
+        e = c.call("get_active_editor", {"include_text": True})["structuredContent"]
+        assert e["unsaved_changes"] and "// mcp" in e["text"] and e["selected_text"] == "", e
+        for _ in range(10):
+            z.run("keys cmd-z", "wait 150")
+            if not c.call("get_active_editor")["structuredContent"]["unsaved_changes"]:
+                break
+        assert not c.call("get_active_editor")["structuredContent"]["unsaved_changes"], "undone"
+        r = c.call("open_file", {"path": "Sources/Nope.swift"})
+        assert r["isError"] and "No file at" in text(r), r
+
+    def debugger_paused_at_a_breakpoint():
+        r = c.call("debugger_evaluate", {"command": "p 1"})
+        assert r["isError"] and "Nothing is being debugged" in text(r), r
+        line = line_of(main_swift, 'print("tick')
+        z.run(f"open {main_swift}:{line}", "wait 300", "keys cmd-\\")
+        try:
+            r = c.call("run", {"wait_seconds": 0})["structuredContent"]
+            assert r["status"] == "running" and r["debugging"], r
+            stopped(z, variables=False)
+            e = c.call("debugger_evaluate", {"command": "p i"})["structuredContent"]
+            assert e["state"] == "Stopped" and e["frame"]["line"] == line and e["frame"]["path"].endswith("main.swift"), e
+            assert e["output"].strip().endswith(" 1"), e
+            # Shown in the console as if typed at its prompt.
+            assert "(lldb) p i" in z.dump()["console_tail"]
+            assert c.call("stop")["structuredContent"]["stopped"]
+            z.wait_for(lambda s: not s["debugger"]["state"].startswith(("Running", "Stopped", "Starting")), timeout=30)
+        finally:
+            z.run(f"open {main_swift}:{line}", "wait 300", "keys cmd-\\")
+
+    def window_screenshot():
+        r = c.call("screenshot")
+        s = r["structuredContent"]
+        image = next(b for b in r["content"] if b["type"] == "image")
+        png = base64.b64decode(image["data"])
+        assert image["mimeType"] == "image/png" and png[:8] == b"\x89PNG\r\n\x1a\n", image["mimeType"]
+        # A pixel per point: the window's size, not a Retina capture's.
+        assert s["target"] == "window" and 700 <= s["width"] <= 2000 and 400 <= s["height"] <= 1400, s
+        r = c.call("screenshot", {"target": "simulator"})
+        assert r["isError"] and "No simulator is booted" in text(r), r
+        r = c.call("screenshot", {"target": "simulator", "udid": "mac"})
+        assert r["isError"] and "isn’t a simulator" in text(r), r
+
+    def agent(s=None):
+        return (s or z.dump())["agent"]
+
+    def entries(s=None):
+        return agent(s)["entries"]
+
+    def pending(s=None):
+        return [e for e in entries(s) if e["kind"] == "tool" and (e["permission"] or {}).get("pending")]
+
+    def send(message):
+        before = len(entries())
+        z.run(f"agent send {message}")
+        return before
+
+    def answered(before, timeout=300):
+        s = z.wait_for(lambda s: agent(s)["status"] == "idle" and len(entries(s)) > before
+                       and entries(s)[-1]["kind"] == "assistant", timeout=timeout, interval=0.3)
+        return entries(s)[-1]["text"]
+
+    def asked(title):
+        s = z.wait_for(lambda s: pending(s), timeout=30, interval=0.2)
+        p = pending(s)[0]
+        assert p["title"] == title and p["permission"]["options"] == ["Allow", "Always Allow", "Reject"], p
+        return p
+
+    def agent_panel_hands_over_the_tools():
+        z.run("agent show", "wait 300")
+        before = send("mcp list_schemes")
+        reply = answered(before, timeout=60)
+        assert reply.startswith("mcp list_schemes ok") and '"scheme":"zhello"' in reply, reply
+        # Read-only tools aren't asked about.
+        assert not any(e["kind"] == "tool" and e["title"].startswith("zcode:") for e in entries()), entries()
+        with open(acp_log) as f:
+            sent = [json.loads(l)["msg"] for l in f if json.loads(l)["dir"] == "in"]
+        new = next(m for m in sent if m.get("method") == "session/new")["params"]
+        server = new["mcpServers"][0]
+        env = {e["name"]: e["value"] for e in server["env"]}
+        assert server["name"] == "zcode" and env["ZCODE_MCP_SOCKET"] == sock, server
+
+    def agent_tools_that_change_things_ask_first():
+        before = send("mcp build")
+        call = asked("zcode: Build “zhello”")
+        z.run("agent allow")
+        reply = answered(before)
+        assert reply.startswith("mcp build ok") and '"success":true' in reply, reply
+        status = next(e for e in entries() if e.get("id") == call["id"])["status"]
+        assert status == "Completed", status
+        before = send("mcp stop")
+        asked("zcode: Stop")
+        z.run("agent reject")
+        reply = answered(before, timeout=30)
+        assert reply == "mcp stop error: The user didn’t allow stop in zcode.", reply
+        # Always Allow holds for the thread, not the next one.
+        before = send("mcp stop")
+        asked("zcode: Stop")
+        z.run("agent allow always")
+        assert answered(before, timeout=30).startswith("mcp stop ok")
+        before = send("mcp stop")
+        assert answered(before, timeout=30).startswith("mcp stop ok") and not pending()
+        z.run("agent new", "wait 300")
+        send("mcp stop")
+        asked("zcode: Stop")
+        z.run("agent allow")
+        z.wait_for(lambda s: agent(s)["status"] == "idle" and not pending(s), timeout=30, interval=0.3)
+
+    try:
+        check("MCP: the socket is the user's alone (0600, peer checked); a silent client doesn't block it", private_socket)
+        check("MCP: initialize in 2025-06-18 and 2025-11-25, tools/list, errors", handshake_revisions)
+        check("MCP: 2026-07-28 (server/discover, the revision per request, an unknown one refused)", modern_revision)
+        check("MCP: list_schemes and list_destinations; a scheme or project that isn't there", schemes_and_destinations)
+        check("MCP: a test run cancelled while it builds stops, with no response", cancel_while_building)
+        check("MCP: build with an error (progress, structured errors, get_issues, get_build_log), then fixed", build_with_an_error)
+        check("MCP: test with per-test results, one test, a failure with its line", tests_with_results)
+        check("MCP: run and the console, stop", run_and_console)
+        check("MCP: open_file and get_active_editor (selection, unsaved edits)", editor_tools)
+        check("MCP: debugger_evaluate at a breakpoint, shown in the console", debugger_paused_at_a_breakpoint)
+        check("MCP: a window screenshot (PNG, a pixel per point); no simulator, not a device", window_screenshot)
+        check("MCP: the agent panel hands its agent zcode's server; read-only tools aren't asked about", agent_panel_hands_over_the_tools)
+        check("MCP: the agent's build and stop ask in the panel: Allow, Reject, Always Allow for the thread", agent_tools_that_change_things_ask_first)
+    finally:
+        for each in clients:
+            each.close()
         z.quit()
         shutil.rmtree(config, ignore_errors=True)
 
@@ -3857,7 +4212,8 @@ def package_dependency_checks(samples):
 def warm_open(samples, background=False, limit_ms=150):
     """Starts a resident zcode (a regular window, or `--background`), then
     times `zcode <project>` through it."""
-    socket = os.path.expanduser("~/Library/Caches/zcode/zcode.sock")
+    # The run's configuration folder holds the socket (never the user's).
+    sock = os.path.join(CONFIG_DIR, "zcode.sock")
     log = os.path.join(WORK, "instance.log")
     env = {k: v for k, v in os.environ.items() if k not in ("ZCODE_DEBUG_DIR",)}
     env["ZCODE_TRACE_STARTUP"] = "1"
@@ -3865,7 +4221,7 @@ def warm_open(samples, background=False, limit_ms=150):
         server = subprocess.Popen([BINARY] + (["--background"] if background else []), env=env, stdout=out, stderr=out)
     try:
         deadline = time.time() + 15
-        while not os.path.exists(socket) and time.time() < deadline:
+        while not os.path.exists(sock) and time.time() < deadline:
             time.sleep(0.1)
         time.sleep(2.0 if background else 1.0)
         started = time.time()
@@ -3884,8 +4240,8 @@ def warm_open(samples, background=False, limit_ms=150):
     finally:
         server.kill()
         server.wait()
-        if os.path.exists(socket):
-            os.remove(socket)
+        if os.path.exists(sock):
+            os.remove(sock)
 
 
 def compare_apps():
@@ -4380,6 +4736,9 @@ def main():
 
     print("Agent panel (a copy of samples/ZKit, scripts/fake_acp_agent.py):")
     agent_checks(samples)
+
+    print("zcode as an MCP server (a copy of samples/ZKit, scripts/mcp_client.py):")
+    mcp_checks(samples)
 
     print("Package dependencies (offline, a local repository of the Tally fixture):")
     package_dependency_checks(samples)
