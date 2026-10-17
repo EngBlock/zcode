@@ -144,6 +144,7 @@ def prompt_text(blocks):
 
 def prompt(rid, params):
     session = params["sessionId"]
+    state["turn"] = state.get("turn", 0) + 1
     state["cancelled"].discard(session)
     cwd = state["sessions"][session]["cwd"]
     blocks = params["prompt"]
@@ -169,17 +170,17 @@ def run(session, cwd, word, rest, blocks):
             time.sleep(0.05)
     elif word == "read":
         path = path_in(cwd, rest)
-        update(session, {"sessionUpdate": "tool_call", "toolCallId": "read-1", "title": f"Read {rest}", "kind": "read",
+        update(session, {"sessionUpdate": "tool_call", "toolCallId": f"read-{state['turn']}", "title": f"Read {rest}", "kind": "read",
                          "status": "in_progress", "locations": [{"path": path, "line": 1}]})
         result, error = request("fs/read_text_file", {"sessionId": session, "path": path})
         if error:
-            update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "read-1", "status": "failed",
+            update(session, {"sessionUpdate": "tool_call_update", "toolCallId": f"read-{state['turn']}", "status": "failed",
                              "content": [{"type": "content", "content": {"type": "text", "text": error["message"]}}]})
             say(session, f"Couldn't read it: {error['message']}")
             return
         content = result["content"]
         first = content.splitlines()[0] if content else ""
-        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "read-1", "status": "completed",
+        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": f"read-{state['turn']}", "status": "completed",
                          "content": [{"type": "content", "content": {"type": "text", "text": content[:400]}}]})
         say(session, f"First line: `{first}` ({len(content)} characters)")
     elif word in ("edit", "self-edit"):
@@ -205,45 +206,45 @@ def run(session, cwd, word, rest, blocks):
             diff = {"oldText": before[start:end], "newText": before[start:end].replace(old, new, 1)}
         else:
             diff = {"oldText": before, "newText": after}
-        call = {"toolCallId": "edit-1", "title": f"Edit {rel}", "kind": "edit", "status": "pending",
+        call = {"toolCallId": f"edit-{state['turn']}", "title": f"Edit {rel}", "kind": "edit", "status": "pending",
                 "locations": [{"path": path, "line": line}],
                 "content": [dict(type="diff", path=path, **diff)]}
         update(session, dict(sessionUpdate="tool_call", **call))
         if word == "self-edit":
             with open(path, "w") as f:
                 f.write(after)
-            update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "edit-1", "status": "completed"})
+            update(session, {"sessionUpdate": "tool_call_update", "toolCallId": f"edit-{state['turn']}", "status": "completed"})
             say(session, f"Changed {rel} myself.")
             return
-        result, error = request("session/request_permission", {"sessionId": session, "toolCall": {"toolCallId": "edit-1", "title": f"Edit {rel}"},
+        result, error = request("session/request_permission", {"sessionId": session, "toolCall": {"toolCallId": f"edit-{state['turn']}", "title": f"Edit {rel}"},
                                  "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"},
                                              {"optionId": "always", "name": "Always Allow", "kind": "allow_always"},
                                              {"optionId": "reject", "name": "Reject", "kind": "reject_once"}]})
         outcome = (result or {}).get("outcome", {})
         if outcome.get("outcome") == "cancelled":
-            update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "edit-1", "status": "failed"})
+            update(session, {"sessionUpdate": "tool_call_update", "toolCallId": f"edit-{state['turn']}", "status": "failed"})
             return "cancelled"
         if outcome.get("optionId") == "reject":
-            update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "edit-1", "status": "failed"})
+            update(session, {"sessionUpdate": "tool_call_update", "toolCallId": f"edit-{state['turn']}", "status": "failed"})
             say(session, "Not changed.")
             return
-        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "edit-1", "status": "in_progress"})
+        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": f"edit-{state['turn']}", "status": "in_progress"})
         _, error = request("fs/write_text_file", {"sessionId": session, "path": path, "content": after})
         if error:
-            update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "edit-1", "status": "failed"})
+            update(session, {"sessionUpdate": "tool_call_update", "toolCallId": f"edit-{state['turn']}", "status": "failed"})
             say(session, f"Couldn't write it: {error['message']}")
             return
-        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "edit-1", "status": "completed"})
+        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": f"edit-{state['turn']}", "status": "completed"})
         say(session, f"Changed {rel}.")
     elif word == "create":
         rel, _, text = rest.partition(" ")
         path = path_in(cwd, rel)
-        update(session, {"sessionUpdate": "tool_call", "toolCallId": "create-1", "title": f"Create {rel}", "kind": "edit",
+        update(session, {"sessionUpdate": "tool_call", "toolCallId": f"create-{state['turn']}", "title": f"Create {rel}", "kind": "edit",
                          "status": "in_progress", "locations": [{"path": path}],
                          "content": [{"type": "diff", "path": path, "oldText": None, "newText": text + "\n"}]})
         _, error = request("fs/write_text_file", {"sessionId": session, "path": path, "content": text + "\n"})
         status = "failed" if error else "completed"
-        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": "create-1", "status": status})
+        update(session, {"sessionUpdate": "tool_call_update", "toolCallId": f"create-{state['turn']}", "status": status})
         say(session, f"Couldn't create it: {error['message']}" if error else f"Created {rel}.")
     elif word == "outside":
         path = os.path.join(os.path.dirname(cwd), "zcode-agent-outside.txt")

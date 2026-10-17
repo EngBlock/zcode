@@ -106,6 +106,8 @@ XCODE_SHORTCUTS = [
     ("cmd-7", "zcode::ShowDebugNavigator", "View ▸ Navigators ▸ Debug"),
     ("cmd-8", "zcode::ShowBreakpointNavigator", "View ▸ Navigators ▸ Breakpoints"),
     ("cmd-9", "zcode::ShowReportNavigator", "View ▸ Navigators ▸ Reports"),
+    ("cmd-0", "zcode::ShowCodingAssistant", "View ▸ Navigators ▸ Show Coding Assistant"),
+    ("ctrl-cmd-h", "zcode::NewConversation", "File ▸ New ▸ Conversation"),
     ("cmd-shift-y", "zcode::ToggleDebugArea", "View ▸ Debug Area ▸ Show Debug Area"),
     ("cmd-alt-1", "zcode::ShowFileInspector", "View ▸ Inspectors ▸ File"),
     ("cmd-shift-c", "zcode::ActivateConsole", "View ▸ Debug Area ▸ Activate Console"),
@@ -231,6 +233,9 @@ def check(name, fn):
     except Exception as e:  # noqa: BLE001
         failed += 1
         print(f"  ✗ {name}: {e}")
+        if os.environ.get("E2E_TRACE"):
+            import traceback
+            traceback.print_exc()
 
 
 def keys_right(n):
@@ -3310,6 +3315,307 @@ def vim_checks(samples):
         z.quit()
 
 
+def agent_checks(samples):
+    """The agent panel on a copy of ZKit, with scripts/fake_acp_agent.py as
+    the agent (no network or account) in a configuration folder of its own:
+    nothing loaded until ⌘0 and no agent until a message is sent; streamed
+    answers and thinking; a permission prompt, then a write that lands in
+    the open buffer (unsaved edits and all, as the agent read them) as one
+    ⌘Z; Reject; files created and changed by the agent itself taken into
+    buffers; Review against what a file was before; writes outside the
+    project refused; @-mentions typed and picked, sent with the buffer's
+    text; Follow; plan, modes, Stop, a crash, signing in; New Thread letting
+    go of buffers; the panel and Follow after a relaunch without an agent;
+    the agent ended with the window."""
+    project = os.path.realpath(os.path.join(WORK, "AgentKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    main_swift = os.path.join(project, "Sources", "zhello", "main.swift")
+    package = os.path.join(project, "Package.swift")
+    made = os.path.join(project, "Sources", "ZKit", "Made.swift")
+    config = tempfile.mkdtemp(prefix="zcode-e2e-agent-config-")
+    acp_log = os.path.join(config, "acp.jsonl")
+    fake = [sys.executable, os.path.join(ROOT, "scripts", "fake_acp_agent.py")]
+    with open(os.path.join(config, "settings.json"), "w") as f:
+        json.dump({
+            "agent_servers": {
+                "fake": {"command": fake[0], "args": fake[1:], "env": {"FAKE_ACP_LOG": acp_log}},
+                "fake-auth": {"command": fake[0], "args": fake[1:], "env": {"FAKE_ACP_REQUIRE_AUTH": "1"}},
+            },
+            "agent": {"default_agent": "fake"},
+        }, f)
+    env = {"ZCODE_CONFIG_DIR": config, "ZCODE_AGENT_NO_LOGIN_SHELL": "1"}
+    with open(greeter) as f:
+        greeter_original = f.read()
+    with open(package) as f:
+        package_original = f.read()
+    z = Zcode(project, env)
+
+    def agent(s=None):
+        return (s or z.dump())["agent"]
+
+    def entries(s=None):
+        return agent(s)["entries"]
+
+    def agents_running():
+        """zcode's children running the fake agent."""
+        out = subprocess.run(["pgrep", "-P", str(z.proc.pid)], capture_output=True, text=True).stdout
+        return [int(p) for p in out.split() if "fake_acp_agent" in subprocess.run(["ps", "-o", "args=", "-p", p], capture_output=True, text=True).stdout]
+
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    def turn(text, done=lambda a: a["status"] == "idle", timeout=20):
+        """Sends a message and waits for the turn to end (or `done`)."""
+        before = len(entries())
+        z.run(f"agent send {text}")
+        return z.wait_for(lambda s: len(entries(s)) > before and done(agent(s)), timeout=timeout, interval=0.2)
+
+    def last_text(s=None):
+        return entries(s)[-1].get("text", "")
+
+    def pending(s=None):
+        return [e for e in entries(s) if e["kind"] == "tool" and (e["permission"] or {}).get("pending")]
+
+    def not_loaded_at_startup():
+        s = z.dump()
+        assert agent(s) == {"shown": False, "loaded": False}, agent(s)
+        assert agents_running() == [], agents_running()
+
+    def cmd_0_shows_the_panel_without_an_agent():
+        z.run("keys cmd-0", "wait 300")
+        a = agent()
+        assert a["shown"] and a["composer_focused"] and a["agent"] == "fake", a
+        assert a["agents"] == ["claude", "codex", "gemini", "fake", "fake-auth"], a["agents"]
+        assert not a["running"] and a["pid"] is None and agents_running() == [], a
+        # ⌘0 from the message field hides it; again shows it.
+        z.run("keys cmd-0", "wait 200")
+        assert not agent()["shown"]
+        z.run("keys cmd-0", "wait 200")
+        assert agent()["shown"] and agent()["composer_focused"]
+
+    def streams_an_answer():
+        # Typed and sent with Return, through the real key path.
+        z.run("type hello", "keys enter")
+        s = z.wait_for(lambda s: agent(s)["status"] == "idle" and len(entries(s)) == 3, timeout=20, interval=0.2)
+        e = entries(s)
+        assert [x["kind"] for x in e] == ["user", "thought", "assistant"], e
+        assert e[0]["text"] == "hello" and e[1]["text"] == "The user says hello.", e
+        assert e[2]["text"] == "# Hello from the fake agent\n\n- one\n- two\n", e
+        a = agent(s)
+        assert a["running"] and a["session"] == "fake-session-1" and a["composer"] == "" and a["stop_reason"] == "EndTurn", a
+        assert agents_running() == [a["pid"]], (agents_running(), a["pid"])
+        assert a["list_items"] == 3 and a["commands"] == ["init"], a
+        # What zcode told the agent about itself.
+        with open(acp_log) as f:
+            sent = [json.loads(l)["msg"] for l in f if json.loads(l)["dir"] == "in"]
+        init = next(m for m in sent if m.get("method") == "initialize")["params"]
+        assert init["protocolVersion"] == 1 and init["clientCapabilities"]["fs"] == {"readTextFile": True, "writeTextFile": True}, init
+        assert init["clientCapabilities"].get("terminal") is False and init["clientInfo"]["name"] == "zcode", init
+        new = next(m for m in sent if m.get("method") == "session/new")["params"]
+        assert new["cwd"] == project and new["mcpServers"] == [], new
+
+    def permission_then_an_undoable_write():
+        z.run(f"open {greeter}:1", "wait 300", "type // unsaved", "keys enter")
+        assert z.dump()["active"]["dirty"]
+        s = turn("edit Sources/ZKit/Greeter.swift public struct => PUBLIC struct", done=lambda a: bool(pending({"agent": a})))
+        call = pending(s)[0]
+        assert call["title"] == "Edit Sources/ZKit/Greeter.swift" and call["permission"]["options"] == ["Allow", "Always Allow", "Reject"], call
+        assert call["content"][0]["diff"] == greeter, call
+        with open(greeter) as f:
+            assert f.read() == greeter_original, "nothing written before the answer"
+        assert agent(s)["status"] == "generating"
+        z.run("agent allow")
+        s = z.wait_for(lambda s: agent(s)["status"] == "idle", timeout=20, interval=0.2)
+        assert last_text(s) == "Changed Sources/ZKit/Greeter.swift.", last_text(s)
+        tool = [e for e in entries(s) if e["kind"] == "tool"][-1]
+        assert tool["status"] == "Completed" and tool["permission"]["outcome"] == "allow", tool
+        expected = "// unsaved\n" + greeter_original.replace("public struct", "PUBLIC struct", 1)
+        with open(greeter) as f:
+            assert f.read() == expected, "the agent read the unsaved buffer and its write was saved"
+        active = s["active"]
+        assert active["text"] == expected and not active["dirty"], active["dirty"]
+        assert [c["path"] for c in agent(s)["changes"]] == [greeter], agent(s)["changes"]
+        assert agent(s)["opened_buffers"] == [], "the file was open already"
+        # One ⌘Z in the editor takes the agent's edit back, and only it.
+        z.run(f"open {greeter}", "keys cmd-z", "wait 200")
+        assert z.dump()["active"]["text"] == "// unsaved\n" + greeter_original
+        z.run("keys cmd-shift-z", "wait 200")
+        assert z.dump()["active"]["text"] == expected
+
+    def rejected_permission():
+        s = turn("edit Sources/ZKit/Greeter.swift Greeter => Welcomer", done=lambda a: bool(pending({"agent": a})))
+        z.run("agent reject")
+        s = z.wait_for(lambda s: agent(s)["status"] == "idle", timeout=20, interval=0.2)
+        tool = [e for e in entries(s) if e["kind"] == "tool"][-1]
+        assert tool["status"] == "Failed" and tool["permission"]["outcome"] == "reject", tool
+        assert last_text(s) == "Not changed.", last_text(s)
+        with open(greeter) as f:
+            assert "Welcomer" not in f.read()
+
+    def created_and_self_edited_files_land_in_buffers():
+        s = turn("create Sources/ZKit/Made.swift let made = 1")
+        with open(made) as f:
+            assert f.read() == "let made = 1\n"
+        change = next(c for c in agent(s)["changes"] if c["path"] == made)
+        assert change["created"] and change["added"] == 1, change
+        assert made in agent(s)["opened_buffers"] and "Made.swift" in s["buffers"], s["buffers"]
+        # A closed file the agent changes on disk itself, reported as the changed line only.
+        s = turn("self-edit Package.swift name: \"ZKit\" => name: \"ZKitRenamed\"")
+        s = z.wait_for(lambda s: package in agent(s)["opened_buffers"], timeout=10, interval=0.2)
+        change = next(c for c in agent(s)["changes"] if c["path"] == package)
+        assert not change["created"] and (change["added"], change["removed"]) == (1, 1), change
+        z.run(f"open {package}", "wait 300")
+        active = z.dump()["active"]
+        assert "ZKitRenamed" in active["text"] and not active["dirty"] and active["can_undo"], active
+        z.run("keys cmd-z", "wait 200")
+        assert z.dump()["active"]["text"] == package_original, "⌘Z goes back to what it was before the agent"
+        z.run("keys cmd-shift-z", "wait 200")
+
+    def review_and_reject():
+        z.run(f"agent review Package.swift", "wait 400")
+        s = z.dump()
+        tabs = s["panes"]["list"][0]
+        assert tabs["active"] == "Package.swift (Agent Changes)", tabs
+        diff = s["git"]["diff"]
+        assert diff["base"] == "Before the Agent" and len(diff["hunks"]) == 1 and diff["base_text"] == package_original, diff
+        z.run("keys cmd-w", "agent reject-file Package.swift", "wait 400")
+        with open(package) as f:
+            assert f.read() == package_original
+        assert package not in [c["path"] for c in agent()["changes"]]
+        # A file the agent created goes to the Trash.
+        z.run("agent reject-file Sources/ZKit/Made.swift", "wait 400")
+        assert not os.path.exists(made)
+        empty_trash_item("Made.swift")
+
+    def writes_outside_the_project_are_refused():
+        s = turn("outside")
+        outside = os.path.join(os.path.dirname(project), "zcode-agent-outside.txt")
+        assert last_text(s).startswith(f"refused: {outside} is outside the project"), last_text(s)
+        assert not os.path.exists(outside)
+
+    def mentions_typed_and_picked():
+        z.run(f"open {greeter}:1", "wait 300", "type // draft", "keys enter", "keys cmd-0", "wait 200")
+        if not agent()["composer_focused"]:
+            z.run("keys cmd-0", "wait 200")
+        z.run("agent type echo", "keys space", "type @", "wait 400")
+        s = z.dump()
+        assert s["modal_open"], "typing @ opens the mention picker"
+        z.run("type Greeter", "wait 300", "keys enter", "wait 300")
+        a = agent()
+        assert not z.dump()["modal_open"] and a["composer_focused"], a
+        assert a["composer_tokens"] == [f"file://{greeter}"] and a["composer"] == "echo @Greeter.swift ", a["composer"]
+        z.run(f"agent mention Sources/zhello/main.swift:1-2")
+        s = turn("")
+        blocks = json.loads(last_text(s).split("\n", 1)[1].rsplit("```", 1)[0])
+        assert [b["type"] for b in blocks][:3] == ["text", "resource", "text"] or [b["type"] for b in blocks][:2] == ["text", "resource"], blocks
+        resources = [b for b in blocks if b["type"] == "resource"]
+        assert resources[0]["uri"] == f"file://{greeter}" and resources[0]["text"].startswith("// draft\n"), resources[0]
+        with open(greeter) as f:
+            assert not f.read().startswith("// draft"), "the buffer's text, unsaved edits included"
+        with open(main_swift) as f:
+            first_two = "".join(f.readlines()[:2])
+        assert resources[1]["uri"] == f"file://{main_swift}#L1:2" and resources[1]["text"] == first_two, resources[1]
+        assert entries(s)[-2]["mentions"] == ["@Greeter.swift", "@main.swift:1-2"], entries(s)[-2]
+
+    def follow_the_agent():
+        z.run("agent follow on", "keys cmd-0", "wait 100")
+        if not agent()["composer_focused"]:
+            z.run("keys cmd-0", "wait 100")
+        z.run("agent type read Sources/zhello/main.swift", "keys enter")
+        s = z.wait_for(lambda s: agent(s)["status"] == "idle" and s["active"] and s["active"]["path"] == main_swift, timeout=20, interval=0.2)
+        assert agent(s)["composer_focused"], "the keyboard stays in the message field"
+        assert last_text(s).startswith("First line: `"), last_text(s)
+        z.run("agent follow off")
+
+    def plan_modes_and_stop():
+        s = turn("plan")
+        assert agent(s)["plan"] == ["Completed Read the code", "InProgress Change it", "Pending Test it"], agent(s)["plan"]
+        z.run("agent mode plan", "wait 300")
+        s = turn("mode")
+        assert last_text(s) == "mode: plan" and agent(s)["modes"]["current"] == "plan", agent(s)["modes"]
+        s = turn("slow", done=lambda a: a["status"] == "generating" and "chunk 3" in a["entries"][-1].get("text", ""))
+        z.run("agent cancel")
+        s = z.wait_for(lambda s: agent(s)["status"] == "idle", timeout=10, interval=0.2)
+        assert agent(s)["stop_reason"] == "Cancelled" and "chunk 99" not in last_text(s), agent(s)["stop_reason"]
+        # Stop answers a waiting permission request as cancelled.
+        turn("edit Sources/ZKit/Greeter.swift Greeter => Hi", done=lambda a: bool(pending({"agent": a})))
+        z.run("agent cancel")
+        s = z.wait_for(lambda s: agent(s)["status"] == "idle", timeout=10, interval=0.2)
+        tool = [e for e in entries(s) if e["kind"] == "tool"][-1]
+        assert tool["permission"]["outcome"] is None and not tool["permission"]["pending"] and tool["status"] == "Failed", tool
+
+    def a_crash_then_a_new_agent():
+        pid = agent()["pid"]
+        s = turn("crash", done=lambda a: a["status"].startswith("error"))
+        assert agent(s)["status"] == "error: fake exited: fake agent: something went wrong", agent(s)["status"]
+        assert not agent(s)["running"] and not alive(pid)
+        s = turn("hello")
+        assert agent(s)["running"] and agent(s)["pid"] != pid and last_text(s).startswith("# Hello"), agent(s)
+
+    def signing_in():
+        z.run("agent agent fake-auth", "wait 200")
+        assert entries() == [] and agent()["agent"] == "fake-auth"
+        s = turn("hello", done=lambda a: a["status"].startswith("auth"))
+        assert agent(s)["status"] == "auth: fake-login", agent(s)["status"]
+        z.run("agent auth fake-login")
+        s = z.wait_for(lambda s: agent(s)["status"] == "idle" and len(entries(s)) == 3, timeout=20, interval=0.2)
+        assert last_text(s).startswith("# Hello"), "the message waiting for the sign-in is sent"
+        z.run("agent agent fake", "wait 200")
+
+    def new_thread_lets_go_of_buffers():
+        turn("create Sources/ZKit/Made2.swift let two = 2")
+        made2 = os.path.join(project, "Sources", "ZKit", "Made2.swift")
+        assert "Made2.swift" in z.dump()["buffers"]
+        z.run("keys ctrl-cmd-h", "wait 300")
+        s = z.dump()
+        assert entries(s) == [] and agent(s)["changes"] == [] and agent(s)["opened_buffers"] == [], agent(s)
+        assert "Made2.swift" not in s["buffers"], s["buffers"]
+        assert agent(s)["running"] and agent(s)["session"] is None, "the agent stays; the next message starts a session"
+        s = turn("hello")
+        assert agent(s)["session"] == "fake-session-2", agent(s)["session"]
+        os.remove(made2)
+
+    def relaunch_without_an_agent():
+        nonlocal z
+        z.run("agent follow on", "wait 200")
+        pid = agent()["pid"]
+        z.quit()
+        deadline = time.time() + 5
+        while alive(pid) and time.time() < deadline:
+            time.sleep(0.1)
+        assert not alive(pid), "the agent ends with zcode"
+        z = Zcode(project, env)
+        s = z.wait_for(lambda s: agent(s).get("shown"), timeout=10, interval=0.3)
+        a = agent(s)
+        assert a["follow"] and a["agent"] == "fake" and entries(s) == [], a
+        assert not a["running"] and agents_running() == [], "no agent until a message is sent"
+
+    try:
+        check("Agent panel: nothing loaded at startup", not_loaded_at_startup)
+        check("Agent panel: ⌘0 shows it (and hides it from its field) without starting an agent", cmd_0_shows_the_panel_without_an_agent)
+        check("Agent panel: a message sent with Return starts the agent; thinking and an answer stream in", streams_an_answer)
+        check("Agent panel: a permission prompt, then the agent's write in the open buffer (unsaved edits included), saved, one ⌘Z", permission_then_an_undoable_write)
+        check("Agent panel: Reject leaves the file alone", rejected_permission)
+        check("Agent panel: files the agent creates, or changes on disk itself, land in buffers ⌘Z undoes", created_and_self_edited_files_land_in_buffers)
+        check("Agent panel: Review compares with the file before the agent; Reject puts it back (or trashes a new file)", review_and_reject)
+        check("Agent panel: writes outside the project are refused", writes_outside_the_project_are_refused)
+        check("Agent panel: @ opens the mention picker; mentions send the buffer's text (and a symbol's lines)", mentions_typed_and_picked)
+        check("Agent panel: Follow Agent opens what it reads, keeping the keyboard in the panel", follow_the_agent)
+        check("Agent panel: plan, modes, and Stop (a waiting permission request cancelled)", plan_modes_and_stop)
+        check("Agent panel: a crashed agent says why; the next message starts another", a_crash_then_a_new_agent)
+        check("Agent panel: an agent that wants signing in, then the waiting message", signing_in)
+        check("Agent panel: New Conversation (⌃⌘H) lets go of the thread's buffers; the agent keeps running", new_thread_lets_go_of_buffers)
+        check("Agent panel: the agent ends with zcode; a relaunch shows the panel and Follow, without an agent", relaunch_without_an_agent)
+    finally:
+        z.quit()
+        shutil.rmtree(config, ignore_errors=True)
+
+
 def tally_repo():
     """The Tally fixture package as a bare git repository with release tags."""
     out = subprocess.run(["sh", os.path.join(ROOT, "tests", "fixtures", "packages", "make_repo.sh"), os.path.join(WORK, "repos")],
@@ -4071,6 +4377,9 @@ def main():
 
     print("Settings, key bindings and themes (a copy of samples/ZKit):")
     settings_checks(samples)
+
+    print("Agent panel (a copy of samples/ZKit, scripts/fake_acp_agent.py):")
+    agent_checks(samples)
 
     print("Package dependencies (offline, a local repository of the Tally fixture):")
     package_dependency_checks(samples)
