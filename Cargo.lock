@@ -8939,6 +8939,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "parking_lot",
+ "raw-window-handle",
  "regex",
  "serde",
  "serde_json",

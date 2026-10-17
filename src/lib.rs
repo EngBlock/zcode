@@ -21,6 +21,7 @@ pub mod picker;
 pub mod plist;
 pub mod project;
 pub mod scheme;
+pub mod screenshot;
 pub mod search;
 pub mod session;
 pub mod settings;

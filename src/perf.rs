@@ -142,7 +142,7 @@ pub fn watch_first_pixels(number: u32, main_started: Instant) {
         while Instant::now() < deadline {
             // Taken after the capture returns, so a slow capture (up to ~20
             // ms) counts against zcode, never for it.
-            if crate::debug::window_shows_content(number) == Some(true) {
+            if crate::screenshot::window_shows_content(number) == Some(true) {
                 let _ = MAIN_TO_FIRST_PIXELS.set(main_started.elapsed());
                 return;
             }

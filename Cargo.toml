@@ -39,9 +39,11 @@ log = "0.4"
 lsp-types = { version = "0.97", features = ["proposed"] }
 nucleo-matcher = "0.3"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSResponder", "NSGraphics"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSResponder", "NSGraphics", "NSView"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray"] }
 parking_lot = "0.12"
+# A window's AppKit view, for its window number (screenshots).
+raw-window-handle = "0.6"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
