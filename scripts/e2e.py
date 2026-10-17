@@ -1409,7 +1409,7 @@ def editor_extension_checks(samples):
     """The editor's extension points (crates/zcode-editor) in the real window,
     through the control channel's `editor` probe, on a copy of ZKit."""
     project = os.path.join(WORK, "EditorKit")
-    shutil.copytree(os.path.join(samples, "ZKit"), project)
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
     greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
     with open(greeter) as f:
         text = f.read()
@@ -1492,6 +1492,332 @@ def editor_extension_checks(samples):
         check("Editor: a keystroke interceptor runs before the keymap and typing; block caret", modal)
     finally:
         z.quit()
+
+
+SHAPES_SWIFT = """protocol Shape {
+    func area() -> Double
+}
+
+class Base: Shape {
+    func area() -> Double { 0 }
+}
+
+final class Square: Base {
+    let side: Double
+    init(side: Double) { self.side = side }
+    override func area() -> Double { side * side }
+}
+
+func total(of shapes: [Shape]) -> Double {
+    let areas = shapes.map { $0.area() }
+    var sum = 0.0
+    for a in areas { sum += a }
+    return sum
+}
+
+func report() {
+    let sq = Square(side: 2)
+    let t = total(of: [sq])
+    print(t)
+}
+"""
+
+ADD_C = """int add(int left, int right) { return left + right; }
+
+int main(void) {
+    int total = add(1, 2);
+    return total;
+}
+"""
+
+
+def big_swift(blocks=300):
+    """About 6,000 lines of Swift with inferred types, calls and properties."""
+    out = []
+    for i in range(blocks):
+        out.append(f"""struct Item{i} {{
+    var name = "item {i}"
+    var weight = {i}.5
+    func scaled(by factor: Double) -> Double {{
+        let base = weight * factor
+        let label = name.uppercased()
+        let parts = [label, String(base)]
+        return parts.isEmpty ? 0 : base
+    }}
+}}
+
+func use{i}() -> Double {{
+    let item = Item{i}()
+    let first = item.scaled(by: 2)
+    let second = item.scaled(by: first)
+    var sum = first + second
+    sum += Double(item.name.count)
+    return sum
+}}
+
+""")
+    return "".join(out)
+
+
+def language_feature_checks(samples):
+    """sourcekit-lsp's inlay hints, semantic tokens, signature help and call
+    and type hierarchies on a copy of ZKit with a class hierarchy, a loose C
+    file (clangd's parameter names) and a 6,000-line Swift file; then the
+    same project through a proxy that counts requests, and one that hides
+    the features."""
+    project = os.path.join(WORK, "LspKit")
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    shapes = os.path.join(project, "Sources", "ZKit", "Shapes.swift")
+    big = os.path.join(project, "Sources", "ZKit", "Big.swift")
+    add_c = os.path.join(project, "tools", "add.c")
+    os.makedirs(os.path.dirname(add_c))
+    for path, text in [(shapes, SHAPES_SWIFT), (big, big_swift()), (add_c, ADD_C)]:
+        with open(path, "w") as f:
+            f.write(text)
+    proxy = os.path.join(ROOT, "scripts", "lsp_proxy.py")
+    traffic = os.path.join(WORK, "lsp-traffic.log")
+
+    def features(z):
+        return z.dump()["language_features"]
+
+    def hints_at(z, path, line, timeout=90):
+        """Waits for the active editor's hints, opened at `line`."""
+        z.run(f"open {path}:{line}")
+        return z.wait_for(lambda s: s["language_features"]["inlay_hints"]["active"], timeout=timeout, interval=0.5)[
+            "language_features"]["inlay_hints"]["active"]
+
+    z = Zcode(project)
+    was_on = features(z)["inlay_hints"]["enabled"]
+    shapes_text = SHAPES_SWIFT
+
+    def offset_after(needle):
+        return shapes_text.index(needle) + len(needle)
+
+    def server_features():
+        z.run(f"open {shapes}:1")
+        s = z.wait_for(lambda s: s["lsp"] == "Ready", timeout=120)
+        f = s["language_features"]["server"]
+        assert f["inlay_hints"] and f["semantic_tokens_full"] and f["call_hierarchy"] and f["type_hierarchy"], f
+        assert "(" in f["signature_help"], f
+
+    def inlay_hints():
+        z.run("inlay-hints on")
+        hints = hints_at(z, shapes, line_of(shapes, "let areas"))
+        assert [offset_after("let areas"), ": [Double]"] in hints, hints
+        assert [offset_after("let sq"), ": Square"] in hints and [offset_after("for a"), ": Double"] in hints, hints
+        z.run("screenshot " + os.path.join(WORK, "inlay-hints.png"))
+        # A new binding gets its hint once typing stops; the others move with the text.
+        z.run(f"open {shapes}:{line_of(shapes, 'print(t)')}", "keys end", "keys enter", "type let extra = t * 2")
+        s = z.wait_for(lambda s: any(h[1] == ": Double" and "extra" in s["active"]["line_text"]
+                                     for h in s["language_features"]["inlay_hints"]["active"]
+                                     if h[0] > offset_after("print(t)")), timeout=20, interval=0.5)
+        hints = s["language_features"]["inlay_hints"]["active"]
+        assert [offset_after("let areas"), ": [Double]"] in hints, hints
+        z.run("keys cmd-z", "wait 300")
+        for _ in range(4):
+            if not z.dump()["active"]["dirty"]:
+                break
+            z.run("keys cmd-z", "wait 200")
+        assert not z.dump()["active"]["dirty"]
+        # Off: gone from every view.
+        z.run("inlay-hints off", "wait 300")
+        assert not features(z)["inlay_hints"]["active"], features(z)["inlay_hints"]
+
+    def parameter_names_in_c():
+        z.run("inlay-hints on")
+        hints = hints_at(z, add_c, 4)
+        call = ADD_C.index("add(1") + 4
+        assert [call, "left: "] in hints and [call + 3, "right: "] in hints, hints
+        z.run("screenshot " + os.path.join(WORK, "parameter-hints.png"))
+
+    def semantic_tokens():
+        z.run(f"open {shapes}:1")
+        s = z.wait_for(lambda s: s["language_features"]["semantic_tokens"]["count"], timeout=60, interval=0.5)
+        tokens = s["language_features"]["semantic_tokens"]["first"]
+        # `Square(side: 2)` is a type, not a function call; operators aren't tokens.
+        assert "Square" in tokens and "Shape" in tokens and "area" in tokens, tokens
+        assert "*" not in tokens and "+=" not in tokens, tokens
+        before = s["language_features"]["semantic_tokens"]["count"]
+        # Typing keeps them (they follow the edit) and they come back for the new text.
+        z.run(f"open {shapes}:{line_of(shapes, 'print(t)')}", "keys end", "keys enter", "type print(sq.side)", "wait 1200")
+        assert features(z)["semantic_tokens"]["count"] >= before + 2, features(z)["semantic_tokens"]
+        for _ in range(4):
+            if not z.dump()["active"]["dirty"]:
+                break
+            z.run("keys cmd-z", "wait 200")
+
+    def signature_help():
+        z.run(f"open {shapes}:{line_of(shapes, 'print(t)')}", "keys end", "keys enter", "type total(")
+        s = z.wait_for(lambda s: s["language_features"]["signature_help"], timeout=15, interval=0.3)
+        assert s["language_features"]["signature_help"] == "total([of: [any Shape]]) -> Double", s["language_features"]
+        z.run("screenshot " + os.path.join(WORK, "signature-help.png"))
+        z.run("type [sq])", "wait 800")
+        assert features(z)["signature_help"] is None, "closed past the call"
+        z.run("type ; _ = Square(", "wait 800")
+        assert features(z)["signature_help"] == "init([side: Double])", features(z)["signature_help"]
+        z.run("keys escape", "wait 300")
+        assert features(z)["signature_help"] is None, "Escape closes it"
+        for _ in range(6):
+            if not z.dump()["active"]["dirty"]:
+                break
+            z.run("keys cmd-z", "wait 200")
+        assert not z.dump()["active"]["dirty"]
+
+    def hierarchy(timeout=180):
+        """Waits for the hierarchy to have a root and its first level."""
+        deadline = time.time() + timeout
+        while True:
+            h = features(z)["hierarchy"]
+            if h["rows"] and len(h["rows"]) > 1 and not h["loading"]:
+                return h
+            if time.time() > deadline:
+                raise TimeoutError(h)
+            time.sleep(1)
+
+    def call_hierarchy_from_the_focused_pane():
+        # Two panes on Shapes.swift; the second, focused one is on `total`.
+        z.run(f"open {shapes}:1", "keys ctrl-cmd-t", "wait 400")
+        total_line = line_of(shapes, "func total")
+        z.run(f"open {shapes}:{total_line}", keys_right(6), "wait 200")
+        assert z.dump()["panes"]["focused"] == 1
+        # The index may still be building: ask again until it answers, as a user would.
+        deadline = time.time() + 180
+        while True:
+            z.run("keys ctrl-shift-cmd-h", "wait 1500")
+            h = features(z)["hierarchy"]
+            if h["rows"] and len(h["rows"]) > 1:
+                break
+            assert time.time() < deadline, h
+        h = hierarchy()
+        s = z.dump()
+        assert s["navigator"] == "Find" and h["shown"] and h["kind"] == "Callers", h
+        assert h["rows"] == ["total(of:) — Shapes.swift:15", "  report() — Shapes.swift:24"], h["rows"]
+        # A caller opens at its call, in the focused pane.
+        z.run("hierarchy open 1", "wait 500")
+        s = z.dump()
+        assert s["panes"]["focused"] == 1 and s["active"]["line"] == line_of(shapes, "total(of: [sq])"), s["active"]["line"]
+        # report() has no callers.
+        z.run("hierarchy expand 1", "wait 1500")
+        assert hierarchy()["rows"][1:] == ["  report() — Shapes.swift:24"], hierarchy()
+        # Callees: what total(of:) calls, the SDK's by module.
+        z.run("hierarchy kind callees")
+        h = hierarchy()
+        assert "  Shape.area() — Shapes.swift:2" in h["rows"] and "  Collection.map(_:) — Swift" in h["rows"], h["rows"]
+        z.run("screenshot " + os.path.join(WORK, "call-hierarchy.png"))
+        # A callee opens at its declaration.
+        row = h["rows"].index("  Shape.area() — Shapes.swift:2")
+        z.run(f"hierarchy open {row}", "wait 500")
+        assert z.dump()["active"]["line"] == 2
+        z.run("keys ctrl-shift-cmd-w", "wait 300")
+
+    def type_hierarchy():
+        z.run(f"open {shapes}:{line_of(shapes, 'class Base')}", keys_right(7), "action zcode::FindDescendentTypes")
+        h = hierarchy()
+        assert h["kind"] == "Subtypes" and h["rows"] == ["Base — Shapes.swift:5", "  Square — Shapes.swift:9"], h
+        z.run("hierarchy kind supertypes")
+        assert hierarchy()["rows"] == ["Base — Shapes.swift:5", "  Shape — Shapes.swift:1"], hierarchy()
+        # Re-rooted on Shape, a protocol: Find Conforming Types.
+        z.run(f"open {shapes}:1", keys_right(10), "action zcode::FindConformingTypes")
+        h = hierarchy()
+        assert h["rows"][:2] == ["Shape — Shapes.swift:1", "  Base — Shapes.swift:5"], h
+        z.run("hierarchy expand 1", "wait 1500")
+        assert "    Square — Shapes.swift:9" in hierarchy()["rows"], hierarchy()
+        z.run("hierarchy close")
+        assert not features(z)["hierarchy"]["shown"]
+
+    def typing_latency():
+        # In the middle of a 6,000-line file, with hints and tokens on.
+        z.run("inlay-hints on", f"open {big}:3000", "wait 300")
+        z.wait_for(lambda s: s["language_features"]["semantic_tokens"]["count"] > 1000
+                   and s["language_features"]["inlay_hints"]["active"], timeout=120, interval=0.5)
+        z.run("keys end", "keys enter", "wait 300")
+        on = json.loads(z.run("type-latency let measured = use7() + 1.25 * 3")[-1])
+        z.run("inlay-hints off", "wait 1500")
+        off = json.loads(z.run("type-latency let measured = use7() + 1.25 * 3")[-1])
+        print(f"    keystroke → frame in a 6,000-line file: hints and tokens on {on}, hints off {off}")
+        assert on["median_ms"] < 16, on
+        for _ in range(80):
+            if not z.dump()["active"]["dirty"]:
+                break
+            z.run("keys cmd-z")
+
+    try:
+        check("sourcekit-lsp: what it offers (inlay hints, semantic tokens, signature help, call and type hierarchies)", server_features)
+        check("Inlay hints: inferred types after bindings, refreshed after typing, Editor ▸ Inlay Hints off", inlay_hints)
+        check("Inlay hints: clangd's parameter names before C arguments", parameter_names_in_c)
+        check("Semantic tokens: types at calls, properties and functions over tree-sitter; followed by typing", semantic_tokens)
+        check("Signature help: opens on `(`, the argument in brackets, closes after the call and on Escape", signature_help)
+        check("Find Call Hierarchy (⌃⇧⌘H) from the focused pane: callers, callees, opening calls and declarations", call_hierarchy_from_the_focused_pane)
+        check("Find Ancestor / Descendent / Conforming Types in the Find navigator", type_hierarchy)
+        check("Typing in a 6,000-line Swift file with hints and semantic tokens stays under a frame", typing_latency)
+    finally:
+        z.run("inlay-hints " + ("on" if was_on else "off"))
+        z.quit()
+
+    def bounded_traffic():
+        if os.path.exists(traffic):
+            os.remove(traffic)
+        z = Zcode(project, {"ZCODE_SOURCEKIT_LSP": proxy, "ZCODE_LSP_PROXY_LOG": traffic})
+        try:
+            z.run("inlay-hints on", f"open {big}:3000")
+            z.wait_for(lambda s: s["language_features"]["semantic_tokens"]["count"] > 1000
+                       and s["language_features"]["inlay_hints"]["active"], timeout=120, interval=0.5)
+            z.run("wait 1000")
+            before = open(traffic).read().splitlines()
+            # 30 keystrokes, then a pause.
+            z.run("keys end", "keys enter", "type-latency let typed = use3() + use4() * 2.0", "wait 2000")
+            during = open(traffic).read().splitlines()[len(before):]
+            count = lambda method: during.count(method)
+            print(f"    30 keystrokes: {count('textDocument/semanticTokens/full')} semantic token, "
+                  f"{count('textDocument/inlayHint')} inlay hint, {count('textDocument/didChange')} didChange, "
+                  f"{count('$/cancelRequest')} cancel requests")
+            assert 1 <= count("textDocument/semanticTokens/full") <= 3, during
+            assert 1 <= count("textDocument/inlayHint") <= 3, during
+            assert count("textDocument/signatureHelp") <= 4, during
+            # Scrolling through the file asks for hints, not for every row.
+            mark = len(open(traffic).read().splitlines())
+            z.run(*[f"open {big}:{line}" for line in range(200, 6000, 400)], "wait 1500")
+            scrolled = open(traffic).read().splitlines()[mark:]
+            assert scrolled.count("textDocument/inlayHint") <= 16, scrolled.count("textDocument/inlayHint")
+            for _ in range(60):
+                if not z.dump()["active"]["dirty"]:
+                    break
+                z.run("keys cmd-z")
+        finally:
+            z.run("inlay-hints " + ("on" if was_on else "off"))
+            z.quit()
+
+    def without_the_features():
+        if os.path.exists(traffic):
+            os.remove(traffic)
+        hidden = "inlayHintProvider,semanticTokensProvider,signatureHelpProvider,callHierarchyProvider,typeHierarchyProvider"
+        z = Zcode(project, {"ZCODE_SOURCEKIT_LSP": proxy, "ZCODE_LSP_PROXY_LOG": traffic, "ZCODE_LSP_PROXY_HIDE": hidden})
+        try:
+            z.run("inlay-hints on", f"open {shapes}:{line_of(shapes, 'func total')}")
+            s = z.wait_for(lambda s: s["lsp"] == "Ready", timeout=120)
+            assert not any(s["language_features"]["server"].values()), s["language_features"]["server"]
+            z.run(keys_right(6), "keys ctrl-shift-cmd-h", "wait 500", f"open {shapes}:{line_of(shapes, 'print(t)')}",
+                  "keys end", "keys enter", "type total(", "wait 1500")
+            s = z.dump()
+            f = s["language_features"]
+            assert not f["hierarchy"]["shown"] and f["signature_help"] is None, f
+            assert not f["inlay_hints"]["active"] and not f["semantic_tokens"]["count"], f
+            sent = open(traffic).read().splitlines()
+            for method in ["textDocument/inlayHint", "textDocument/semanticTokens/full", "textDocument/signatureHelp",
+                           "textDocument/prepareCallHierarchy"]:
+                assert method not in sent, method
+            # Completion still works.
+            assert "textDocument/completion" in sent
+            for _ in range(4):
+                if not z.dump()["active"]["dirty"]:
+                    break
+                z.run("keys cmd-z", "wait 200")
+        finally:
+            z.run("inlay-hints " + ("on" if was_on else "off"))
+            z.quit()
+
+    check("Requests stay bounded: typing and scrolling ask for tokens and hints a few times, not per keystroke", bounded_traffic)
+    check("A server without these features: nothing asked for, commands say so, the rest works", without_the_features)
 
 
 def pane_checks(samples):
@@ -1722,7 +2048,7 @@ def pane_checks(samples):
 def bookmark_checks(samples):
     """Bookmarks on a copy of ZKit, relaunched at the end to check they're kept."""
     project = os.path.join(WORK, "BookmarkKit")
-    shutil.copytree(os.path.join(samples, "ZKit"), project)
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
     main = os.path.join(project, "Sources", "zhello", "main.swift")
     greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
     tests = os.path.join(project, "Tests", "ZKitTests", "GreeterTests.swift")
@@ -2205,8 +2531,8 @@ def package_dependency_checks(samples):
     root = os.path.join(WORK, "Packages")
     os.makedirs(root)
     shutil.copytree(os.path.join(samples, "HelloClassic"), os.path.join(root, "HelloClassic"))
-    shutil.copytree(os.path.join(samples, "ZKit"), os.path.join(root, "ZKit"))
-    shutil.copytree(os.path.join(samples, "ZKit"), os.path.join(root, "LocalKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), os.path.join(root, "ZKit"), ignore=shutil.ignore_patterns(".build"))
+    shutil.copytree(os.path.join(samples, "ZKit"), os.path.join(root, "LocalKit"), ignore=shutil.ignore_patterns(".build"))
     classic = os.path.join(root, "HelloClassic")
     pbxproj = os.path.join(classic, "HelloClassic.xcodeproj", "project.pbxproj")
     resolved = os.path.join(classic, "HelloClassic.xcodeproj", "project.xcworkspace", "xcshareddata", "swiftpm", "Package.resolved")
@@ -2564,6 +2890,9 @@ def main():
 
     print("Editor extension points (a copy of samples/ZKit):")
     editor_extension_checks(samples)
+
+    print("Language features (a copy of samples/ZKit, sourcekit-lsp):")
+    language_feature_checks(samples)
 
     print("Editor panes (a copy of samples/ZKit):")
     pane_checks(samples)
