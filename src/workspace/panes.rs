@@ -156,7 +156,9 @@ impl Workspace {
                 Target::LspRange(range) => lsp::lsp_range_to_offsets(&text, range),
             };
             state.set_selected_range(range.start..range.start, cx);
-            if range.end > range.start {
+            // Selected, the symbol would be Vim's visual mode: its cursor
+            // goes to the start instead.
+            if range.end > range.start && !state.is_vim_enabled() {
                 state.set_selected_range(range, cx);
             }
             state.focus(window, cx);

@@ -617,7 +617,11 @@ impl Vim {
                 true
             }
             Some(Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End | Key::PageUp | Key::PageDown) => {
-                if let Some(session) = &mut self.insert {
+                // Moving the cursor (not through a completion menu) starts
+                // what `.` repeats over.
+                if !Self::escape_closes_something(state, cx)
+                    && let Some(session) = &mut self.insert
+                {
                     session.moved = true;
                 }
                 false
