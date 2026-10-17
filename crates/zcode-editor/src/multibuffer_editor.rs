@@ -53,8 +53,10 @@ pub enum MultiBufferEvent {
     /// Open the file at `offset`: a header's click, a line number's, or
     /// [`MultiBufferEditor::open_at_cursor`].
     Open { source: SourceId, offset: usize },
-    /// Excerpts were added, removed or grown, or their text changed.
-    Changed,
+    /// Excerpts were added, removed or grown.
+    ExcerptsChanged,
+    /// Text changed, in the multibuffer or in a file it shows.
+    Edited,
 }
 
 struct Source {
@@ -374,7 +376,7 @@ impl MultiBufferEditor {
         if lines_changed {
             self.refresh_headers(cx);
         }
-        cx.emit(MultiBufferEvent::Changed);
+        cx.emit(MultiBufferEvent::Edited);
     }
 
     /// An edit of a file, from anywhere but this multibuffer.
@@ -403,7 +405,7 @@ impl MultiBufferEditor {
         if lines_changed {
             self.refresh_headers(cx);
         }
-        cx.emit(MultiBufferEvent::Changed);
+        cx.emit(MultiBufferEvent::Edited);
     }
 
     /// A file replaced whole: each excerpt shows the same rows of its new text.
@@ -510,6 +512,12 @@ impl MultiBufferEditor {
         self.host.update(cx, |host, cx| {
             host.quiet_edits = true;
             for edit in edits {
+                // An empty editor takes its first text whole, so the
+                // highlighter parses it from scratch rather than as an edit.
+                if host.text().len() == 0 && edit.range.is_empty() {
+                    host.set_value(edit.new_text, window, cx);
+                    continue;
+                }
                 host.edit_keeping_selections(edit.range, &edit.new_text, window, cx);
             }
             host.quiet_edits = false;
@@ -531,7 +539,7 @@ impl MultiBufferEditor {
         }
         self.host.update(cx, |host, cx| host.set_read_only_ranges(read_only, cx));
         self.refresh_headers(cx);
-        cx.emit(MultiBufferEvent::Changed);
+        cx.emit(MultiBufferEvent::ExcerptsChanged);
     }
 
     /// A header above each excerpt's first row.
