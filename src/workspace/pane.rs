@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use gpui_kit::*;
 use zcode_editor::{EditorState, RangeDecorationCollection};
 
-use super::diff_view::DiffView;
+use super::diff_view::{DiffBase, DiffView};
 use crate::terminal::TerminalView;
 use super::multibuffer::MultiBufferView;
 use super::{PlistEditor, ProjectSettings};
@@ -55,16 +55,21 @@ pub fn file_title(path: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
 }
 
-/// A file compared with `HEAD`, its local side a view of the file's buffer.
+/// A file compared with `HEAD` (or with what it was before an agent
+/// changed it), its local side a view of the file's buffer.
 pub struct DiffItem {
     pub path: PathBuf,
+    pub kind: DiffBase,
     pub view: Entity<DiffView>,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
 impl DiffItem {
     pub fn title(&self) -> String {
-        format!("{} (Changes)", file_title(&self.path))
+        match self.kind {
+            DiffBase::Head => format!("{} (Changes)", file_title(&self.path)),
+            DiffBase::BeforeAgent => format!("{} (Agent Changes)", file_title(&self.path)),
+        }
     }
 }
 

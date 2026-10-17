@@ -1,6 +1,7 @@
 //! Xcode's Code Review (Editor ▸ Code Review, ⌥⇧⌘↩) as a tab: a file's
 //! local changes against `HEAD`, side by side or inline (Editor ▸ Side by
-//! Side Comparison / Inline Comparison).
+//! Side Comparison / Inline Comparison). The agent panel's Review shows an
+//! agent's changes the same way, against the file as it was before them.
 //!
 //! The local side is an editor linked to the file's buffer
 //! (`EditorState::link`), so it can be edited, undone and saved like the
@@ -25,11 +26,30 @@ const PAD_KEY: &str = "diff-padding";
 const DELETED_KEY: &str = "diff-deleted";
 const DIFF_DELAY: Duration = Duration::from_millis(30);
 
+/// What a comparison's left side is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiffBase {
+    /// The file in `HEAD` (Code Review), updated by commits and checkouts.
+    Head,
+    /// The file before an agent first changed it (the agent panel's Review).
+    BeforeAgent,
+}
+
+impl DiffBase {
+    pub fn label(self) -> &'static str {
+        match self {
+            DiffBase::Head => "HEAD",
+            DiffBase::BeforeAgent => "Before the Agent",
+        }
+    }
+}
+
 pub struct DiffView {
     pub path: PathBuf,
+    pub kind: DiffBase,
     /// The file as it is: a view of its buffer.
     pub current: Entity<EditorState>,
-    /// `HEAD`'s version, read-only.
+    /// `HEAD`'s version (or the agent's starting point), read-only.
     pub base: Entity<EditorState>,
     base_text: String,
     pub side_by_side: bool,
@@ -50,8 +70,10 @@ impl Focusable for DiffView {
 }
 
 impl DiffView {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         path: PathBuf,
+        kind: DiffBase,
         current: Entity<EditorState>,
         base: Entity<EditorState>,
         base_text: String,
@@ -65,6 +87,7 @@ impl DiffView {
         ];
         let mut this = Self {
             path,
+            kind,
             current,
             base,
             base_text,
@@ -225,6 +248,7 @@ impl DiffView {
         };
         serde_json::json!({
             "path": self.path,
+            "base": self.kind.label(),
             "side_by_side": self.side_by_side,
             "hunks": self.hunks.iter().map(|h| [h.old.start + 1, h.old.end, h.new.start + 1, h.new.end]).collect::<Vec<_>>(),
             "base_text": (self.base_text.len() < 8000).then(|| self.base_text.clone()),
@@ -276,6 +300,7 @@ impl Render for DiffView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let count = self.hunks.len();
+        let base = self.kind.label();
         let caption = |label: &'static str| {
             div().px_2().text_xs().text_color(theme.muted_foreground).border_b_1().border_color(theme.border).child(label)
         };
@@ -283,7 +308,7 @@ impl Render for DiffView {
             h_flex()
                 .flex_1()
                 .min_h_0()
-                .child(v_flex().flex_1().min_w_0().h_full().child(caption("HEAD")).child(div().flex_1().min_h_0().child(self.editor_element(&self.base, cx))))
+                .child(v_flex().flex_1().min_w_0().h_full().child(caption(base)).child(div().flex_1().min_h_0().child(self.editor_element(&self.base, cx))))
                 .child(div().w(px(1.)).h_full().bg(theme.border))
                 .child(v_flex().flex_1().min_w_0().h_full().child(caption("Local Changes")).child(div().flex_1().min_h_0().child(self.editor_element(&self.current, cx))))
                 .into_any_element()
@@ -301,10 +326,13 @@ impl Render for DiffView {
                     .text_xs()
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(div().flex_1().text_color(theme.muted_foreground).child(match count {
-                        0 => "No changes against HEAD".to_string(),
-                        1 => "1 change against HEAD".to_string(),
-                        n => format!("{n} changes against HEAD"),
+                    .child(div().flex_1().text_color(theme.muted_foreground).child(match (count, self.kind) {
+                        (0, DiffBase::Head) => "No changes against HEAD".to_string(),
+                        (1, DiffBase::Head) => "1 change against HEAD".to_string(),
+                        (n, DiffBase::Head) => format!("{n} changes against HEAD"),
+                        (0, DiffBase::BeforeAgent) => "No changes by the agent".to_string(),
+                        (1, DiffBase::BeforeAgent) => "1 change by the agent".to_string(),
+                        (n, DiffBase::BeforeAgent) => format!("{n} changes by the agent"),
                     }))
                     .child(Button::new("diff-previous").icon(IconName::ArrowUp).ghost().xsmall().tooltip("Previous Change (⌃⇧\\)").on_click(
                         cx.listener(|this, _, window, cx| this.jump_to_change(false, window, cx)),
@@ -362,13 +390,26 @@ impl super::Workspace {
     /// Opens (or shows) the comparison of `path` with `HEAD` in the focused pane.
     pub fn open_diff(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let path = path.canonicalize().unwrap_or(path);
-        let pane = self.active_pane;
-        if let Some(ix) = self.pane(pane).and_then(|p| p.items.iter().position(|item| matches!(item, super::Item::Diff(d) if d.path == path))) {
-            self.activate_item(pane, ix, window, cx);
-            return;
-        }
         if self.git_rel(&path).is_none() {
             self.notify_error(format!("“{}” isn’t in a Git repository.", super::pane::file_title(&path)), window, cx);
+            return;
+        }
+        self.open_comparison(path, DiffBase::Head, None, window, cx);
+    }
+
+    /// Opens (or shows, with `base_text` as its left side) a comparison of
+    /// `path` in the focused pane; `HEAD`'s comes from the buffer's git
+    /// state.
+    pub(super) fn open_comparison(&mut self, path: PathBuf, kind: DiffBase, base_text: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let pane = self.active_pane;
+        if let Some(ix) = self.pane(pane).and_then(|p| p.items.iter().position(|item| matches!(item, super::Item::Diff(d) if d.path == path && d.kind == kind))) {
+            if let Some(text) = base_text
+                && let Some(super::Item::Diff(diff)) = self.pane(pane).and_then(|p| p.items.get(ix))
+            {
+                let view = diff.view.clone();
+                view.update(cx, |view, cx| view.set_base(text, window, cx));
+            }
+            self.activate_item(pane, ix, window, cx);
             return;
         }
         if self.buffer(&path).is_none() && !self.open_buffer(&path, window, cx) {
@@ -376,7 +417,7 @@ impl super::Workspace {
         }
         let Some(buffer) = self.buffer(&path) else { return };
         let (shared, read_only) = (buffer.editor.clone(), buffer.read_only);
-        let base_text = buffer.git.bases.as_ref().and_then(|b| b.head.clone()).unwrap_or_default();
+        let base_text = base_text.unwrap_or_else(|| buffer.git.bases.as_ref().and_then(|b| b.head.clone()).unwrap_or_default());
         let language = Self::language_for(&path);
         // Both sides unwrapped, so their rows line up.
         let config = super::settings::EditorConfig { soft_wrap: false, ..self.editor_config() };
@@ -386,7 +427,7 @@ impl super::Workspace {
         let base = cx.new(|cx| Self::new_editor(&config, language, window, cx).default_value(base_text.clone()));
         base.update(cx, |state, cx| state.set_read_only(true, cx));
         let (side_by_side, font_size) = (self.git.side_by_side, self.font_size);
-        let view = cx.new(|cx| DiffView::new(path.clone(), current.clone(), base, base_text, side_by_side, font_size, cx));
+        let view = cx.new(|cx| DiffView::new(path.clone(), kind, current.clone(), base, base_text, side_by_side, font_size, cx));
         let view_id = view.entity_id();
         let focus = current.read(cx).focus_handle(cx);
         let base = view.read(cx).base.clone();
@@ -398,7 +439,7 @@ impl super::Workspace {
         subscriptions.extend(self.install_vim(&base, window, cx));
         let Some(p) = self.pane_mut(pane) else { return };
         let ix = (p.active + 1).min(p.items.len());
-        p.items.insert(ix, super::Item::Diff(super::pane::DiffItem { path, view, _subscriptions: subscriptions }));
+        p.items.insert(ix, super::Item::Diff(super::pane::DiffItem { path, kind, view, _subscriptions: subscriptions }));
         self.activate_item(pane, ix, window, cx);
     }
 
@@ -421,7 +462,7 @@ impl super::Workspace {
     }
 
     pub(super) fn diff_bases_changed(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
-        let views = self.diff_views_of(path);
+        let views: Vec<_> = self.diff_views_of(path).into_iter().filter(|view| view.read(cx).kind == DiffBase::Head).collect();
         if views.is_empty() {
             return;
         }
