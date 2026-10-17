@@ -7,15 +7,14 @@
 //! loaded opens in a window of its own, where the canvas can't build it
 //! ("Active scheme does not build this file"). Then `xed --project
 //! <project> --line <n> <file>` opens the file in the project's window with
-//! line `n` selected (the canvas shows the file's previews as tabs; on a
-//! file's first showing it picks the one the selection is in, after that
-//! the tab last chosen). Xcode has no scripting command for the canvas, so
-//! System Events chooses Editor ▸ Canvas (⌥⌘↩) once the file is in Xcode's
-//! front window, unless it's checked already (Xcode remembers the canvas
-//! per editor, and the item toggles), and Refresh Canvas when the canvas
-//! waits paused. That needs zcode to be allowed to control the computer
-//! (Privacy & Security ▸ Accessibility); without it the file still opens,
-//! and the user is told to press ⌥⌘↩.
+//! line `n` selected (the canvas shows the file's previews as tabs, and
+//! keeps the one last chosen). Xcode has no scripting command for the
+//! canvas, so System Events chooses Editor ▸ Canvas (⌥⌘↩) once the file is
+//! in Xcode's front window, unless it's checked already (Xcode remembers
+//! the canvas per editor, and the item toggles), and Refresh Canvas when
+//! the canvas waits paused. That needs zcode to be allowed to control the
+//! computer (Privacy & Security ▸ Accessibility); without it the file still
+//! opens, and the user is told to press ⌥⌘↩.
 //!
 //! `ZCODE_XCODE_COMMANDS=<file>` records each command as a JSON line (its
 //! arguments) instead of running it, so the e2e suite never opens Xcode on
