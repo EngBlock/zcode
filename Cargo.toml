@@ -12,6 +12,8 @@ exclude = ["vendor/gpui-component"]
 
 [dependencies]
 zcode-editor = { path = "crates/zcode-editor" }
+# The integrated terminal's VT parser, grid and PTY (Apache-2.0).
+alacritty_terminal = { version = "0.26", default-features = false }
 gpui-kit = { version = "=0.7.3", features = [
     "tree-sitter",
     "tree-sitter-swift",

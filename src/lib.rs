@@ -23,6 +23,7 @@ pub mod scheme;
 pub mod search;
 pub mod session;
 pub mod signing;
+pub mod terminal;
 pub mod testing;
 pub mod toolchain;
 pub mod welcome;
