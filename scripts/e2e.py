@@ -135,6 +135,10 @@ XCODE_SHORTCUTS = [
     ("cmd-<", "zcode::EditScheme", "Product ▸ Scheme ▸ Edit Scheme…"),
     ("cmd-alt-r", "zcode::RunWithOptions", "Product ▸ Run…"),
     ("cmd-alt-u", "zcode::TestWithOptions", "Product ▸ Test…"),
+    ("cmd-i", "zcode::Profile", "Product ▸ Profile"),
+    ("cmd-alt-i", "zcode::ProfileWithOptions", "Product ▸ Profile…"),
+    ("ctrl-cmd-i", "zcode::ProfileWithoutBuilding", "Product ▸ Perform Action ▸ Profile Without Building"),
+    ("cmd-shift-i", "zcode::BuildForProfiling", "Product ▸ Build For ▸ Profiling"),
     ("ctrl-shift-0", "zcode::ChooseDestination", "Product ▸ Destination ▸ Choose Destination"),
     ("ctrl-cmd-y", "zcode::DebugContinue", "Debug ▸ Pause / Continue"),
     ("f6", "zcode::StepOver", "Debug ▸ Step Over"),
@@ -212,7 +216,7 @@ class Zcode:
             if predicate(state):
                 return state
             time.sleep(interval)
-        raise TimeoutError("condition not met; last state: " + json.dumps(state)[:600])
+        raise TimeoutError("condition not met; last state: " + json.dumps(state)[:int(os.environ.get("E2E_STATE_CHARS", "600"))])
 
     @staticmethod
     def _count(path):
@@ -686,7 +690,9 @@ def device_checks(samples):
     set_devices()
     project = os.path.join(WORK, "Devices", "HelloZ")
     shutil.copytree(os.path.join(samples, "HelloZ"), project)
-    z = Zcode(project, {"ZCODE_DEVICECTL": os.path.join(ROOT, "scripts", "fake_devicectl.py"), "FAKE_DEVICECTL_DIR": state})
+    xctrace = fake_xctrace("devices")
+    z = Zcode(project, {"ZCODE_DEVICECTL": os.path.join(ROOT, "scripts", "fake_devicectl.py"), "FAKE_DEVICECTL_DIR": state,
+                        **xctrace.env})
     try:
         def menu():
             s = z.wait_for(lambda s: any(l.startswith("Build |") for l in s["destination_menu"])
@@ -780,7 +786,186 @@ def device_checks(samples):
         check("Devices: Run on an unavailable device says why without building", unavailable_device)
         check("Devices: Run signs, installs, waits for unlock, launches with the scheme's arguments and environment; Stop terminates", run_and_stop)
         check("Devices: Run with breakpoints launches suspended and attaches lldb through CoreDevice", debug_attach)
+        def profile_on_device():
+            # Never a real device's: the fake devicectl and xctrace stand in.
+            installs = len([c for c in calls() if c["args"][:3] == ["device", "install", "app"]])
+            z.run(f"destination {udid}", "keys cmd-i")
+            z.wait_for(lambda s: s["modal_open"] and isinstance(s["profile"]["templates"], list), timeout=30, interval=0.3)
+            z.run("type Time Profiler", "keys enter")
+            z.wait_for(lambda s: s["profile"]["recording"], timeout=600, interval=0.5)
+            record = xctrace.records()[-1]
+            assert record[record.index("--device") + 1] == udid, record
+            assert record[record.index("--") + 1] == "dev.zcode.HelloZ" and "--target-stdout" not in record, record
+            assert len([c for c in calls() if c["args"][:3] == ["device", "install", "app"]]) == installs + 1, "installed first"
+            assert "-configuration Release" in open(z.dump()["last_log"]).read()
+            z.run("keys cmd-.")
+            s = z.wait_for(finished, timeout=60, interval=0.3)
+            last = s["profile"]["last"]
+            assert "success: true" in s["phase"] and last["opened"] and xctrace.opened()[-1] == last["trace"], (s["phase"], last)
+            assert last["summary"]["process"] == "HelloZ", last["summary"]
+
         check("Devices: a signing error for Any iOS Device shows in the Issue navigator with where to fix it", signing_error)
+        check("Devices: Profile (⌘I) builds Release, installs, and records the app on the device through xctrace", profile_on_device)
+    finally:
+        z.quit()
+
+
+class fake_xctrace:
+    """scripts/fake_xctrace.py's state for one zcode: its calls, and the
+    traces zcode would have opened in Instruments."""
+
+    def __init__(self, name):
+        self.state = os.path.join(WORK, f"fake-xctrace-{name}")
+        os.makedirs(self.state, exist_ok=True)
+        self.opened_log = os.path.join(self.state, "opened.txt")
+        self.env = {"ZCODE_XCTRACE": os.path.join(ROOT, "scripts", "fake_xctrace.py"), "FAKE_XCTRACE_DIR": self.state,
+                    "ZCODE_OPEN_TRACE_LOG": self.opened_log}
+
+    def records(self):
+        try:
+            with open(os.path.join(self.state, "calls.jsonl")) as f:
+                return [c["args"] for c in map(json.loads, f) if c["args"][:1] == ["record"]]
+        except FileNotFoundError:
+            return []
+
+    def opened(self):
+        try:
+            with open(self.opened_log) as f:
+                return f.read().splitlines()
+        except FileNotFoundError:
+            return []
+
+    def app_pid(self):
+        with open(os.path.join(self.state, "app_pid")) as f:
+            return int(f.read())
+
+
+def profile_checks(samples, sim):
+    """Product ▸ Profile through a fake xctrace (scripts/fake_xctrace.py):
+    this Mac can't record without Developer Tools access, and a real
+    recording would open Instruments on the user's screen. Traces go to the
+    run's own config folder; their paths are logged instead of opened."""
+    xctrace = fake_xctrace("mac")
+    project = os.path.join(WORK, "Profile", "HelloClassic")
+    shutil.copytree(os.path.join(samples, "HelloClassic"), project)
+    scheme = os.path.join(project, "HelloClassic.xcodeproj", "xcshareddata", "xcschemes", "HelloClassic.xcscheme")
+    traces = os.path.join(CONFIG_DIR, "traces")
+
+    def chooser(z):
+        return z.wait_for(lambda s: s["modal_open"] and isinstance(s["profile"]["templates"], list), timeout=30, interval=0.3)
+
+    z = Zcode(project, xctrace.env)
+    try:
+        def time_profiler():
+            z.wait_for(lambda s: s["scheme_options"], timeout=60)
+            z.run("keys cmd-<", "wait 300", "edit-scheme argument -profiled", "edit-scheme variable GREETING=instruments",
+                  "edit-scheme close")
+            z.run("keys cmd-i")
+            s = chooser(z)
+            assert s["profile"]["templates"][:6] == ["Time Profiler", "Allocations", "Leaks", "Animation Hitches", "SwiftUI", "App Launch"], s["profile"]
+            assert "Hitches and Leaks" in s["profile"]["templates"], "the user's templates too"
+            z.run("type Time Profiler", "keys enter")
+            # The Run action's arguments and environment; the app's output in the console.
+            s = console_has(z, "arguments: -profiled GREETING=instruments", timeout=300)
+            assert s["profile"]["recording"]["template"] == "Time Profiler" and not s["profile"]["recording"]["stopping"], s["profile"]
+            assert "-configuration Release" in open(s["last_log"]).read(), "the Profile action's configuration"
+            record = xctrace.records()[-1]
+            assert record[record.index("--template") + 1] == "Time Profiler" and "--no-prompt" in record, record
+            assert record[record.index("--target-stdout") + 1] == "-" and "GREETING=instruments" in record, record
+            assert record[record.index("--") + 1].endswith("/Release/HelloClassic.app") and record[-1] == "-profiled", record
+            assert record[record.index("--output") + 1].startswith(traces), record
+            assert "--time-limit" not in record, record
+            pid = xctrace.app_pid()
+            z.run("keys cmd-.")
+            s = z.wait_for(finished, timeout=60, interval=0.3)
+            assert "success: true" in s["phase"], s["phase"]
+            last = s["profile"]["last"]
+            assert last["template"] == "Time Profiler" and last["opened"] and os.path.isdir(last["trace"]), last
+            assert xctrace.opened() == [last["trace"]], "opened in Instruments"
+            summary = last["summary"]
+            assert summary["process"] == "HelloClassic" and summary["samples"] == 3, summary
+            assert [t["function"] for t in summary["top"]] == ["Greeter.greeting.getter", "objc_msgSend"], summary
+            tail = s["console_tail"]
+            assert "Heaviest functions in HelloClassic (3 samples, 0.00 s):" in tail, tail
+            assert "   66.7%   66.7%  Greeter.greeting.getter  (HelloClassic)" in tail, tail
+            assert f"Saved {last['trace']}" in tail and "Opened the trace in Instruments" in tail, tail
+            # The app the recording launched doesn't outlive it.
+            process_gone(pid)
+
+        def time_limit_without_building():
+            reports = z.dump()["reports"]
+            z.run("settings set profiling.time_limit 2", "keys ctrl-cmd-i")
+            chooser(z)
+            z.run("type Allocations", "keys enter")
+            s = z.wait_for(lambda s: finished(s) and len(xctrace.opened()) == 2, timeout=60, interval=0.3)
+            assert "success: true" in s["phase"] and s["reports"] == reports, "nothing built"
+            record = xctrace.records()[-1]
+            assert record[record.index("--template") + 1] == "Allocations", record
+            assert record[record.index("--time-limit") + 1] == "2s", record
+            assert s["profile"]["last"]["summary"] is None, "Allocations has no samples to summarize"
+            process_gone(xctrace.app_pid())
+            z.run("settings set profiling.time_limit 0")
+
+        def scheme_instrument():
+            original = open(scheme).read()
+            with open(scheme, "w") as f:
+                f.write(original.replace('savedToolIdentifier = ""', 'savedToolIdentifier = "Leaks"'))
+            try:
+                records = len(xctrace.records())
+                z.run("keys cmd-i", "wait 300")
+                assert not z.dump()["modal_open"], "the scheme's instrument: no chooser"
+                z.wait_for(lambda s: s["profile"]["recording"] and len(xctrace.records()) > records, timeout=300, interval=0.5)
+                record = xctrace.records()[-1]
+                assert record[record.index("--template") + 1] == "Leaks", record
+                z.run("keys cmd-.")
+                z.wait_for(finished, timeout=60, interval=0.3)
+                # Profile… asks all the same.
+                z.run("keys cmd-alt-i")
+                chooser(z)
+                z.run("keys escape", "wait 200")
+                assert not z.dump()["modal_open"]
+            finally:
+                with open(scheme, "w") as f:
+                    f.write(original)
+
+        def build_for_profiling():
+            records = len(xctrace.records())
+            z.run("keys cmd-shift-i")
+            s = z.wait_for(finished, timeout=300, interval=0.5)
+            assert s["phase"].startswith("Finished { action: Build, success: true"), s["phase"]
+            assert "-configuration Release" in open(s["last_log"]).read()
+            assert len(xctrace.records()) == records, "nothing recorded"
+
+        check("Profile (⌘I): template chooser, Release build, xctrace with the scheme's options; Stop saves, opens and summarizes", time_profiler)
+        check("Profile Without Building (⌃⌘I) with profiling.time_limit: no build, the recording ends itself", time_limit_without_building)
+        check("Profile: the scheme's instrument skips the chooser; Profile… (⌥⌘I) asks anyway", scheme_instrument)
+        check("Build For ▸ Profiling (⇧⌘I) builds Release without recording", build_for_profiling)
+    finally:
+        z.quit()
+
+    if not sim:
+        return
+    simulator = fake_xctrace("simulator")
+    project = os.path.join(WORK, "Profile", "HelloZ")
+    shutil.copytree(os.path.join(samples, "HelloZ"), project)
+    z = Zcode(project, simulator.env)
+    try:
+        def profile_on_simulator():
+            udid = available_simulator_udid()
+            z.wait_for(lambda s: s["destinations"] > 0, timeout=60)
+            z.run(f"destination {udid}", "keys cmd-i")
+            chooser(z)
+            z.run("type SwiftUI", "keys enter")
+            s = z.wait_for(lambda s: s["profile"]["recording"], timeout=600, interval=0.5)
+            assert any(l.startswith("Installing HelloZ.app") for l in s["console_tail"]), s["console_tail"]
+            record = simulator.records()[-1]
+            assert record[record.index("--device") + 1] == udid, record
+            assert record[record.index("--") + 1].endswith("Release-iphonesimulator/HelloZ.app"), record
+            z.run("keys cmd-.")
+            s = z.wait_for(finished, timeout=60, interval=0.3)
+            assert "success: true" in s["phase"] and simulator.opened() == [s["profile"]["last"]["trace"]], s["profile"]
+
+        check("Profile on a simulator: installs the Release build and records it there", profile_on_simulator)
     finally:
         z.quit()
 
@@ -3700,7 +3885,7 @@ def agent_checks(samples):
 
 MCP_TOOLS = ["XcodeListSchemes", "XcodeSwitchScheme", "XcodeListRunDestinations", "XcodeSwitchRunDestination", "BuildProject",
              "RunProject", "StopProject", "RunAllTests", "RunSomeTests", "GetTestList", "XcodeListNavigatorIssues", "GetBuildLog",
-             "GetConsoleOutput", "XcodeGetCurrentFile", "OpenFile", "EvaluateInDebugger", "TakeScreenshot"]
+             "GetConsoleOutput", "XcodeGetCurrentFile", "OpenFile", "EvaluateInDebugger", "TakeScreenshot", "ProfileProject"]
 MCP_READ_ONLY = {"XcodeListSchemes", "XcodeListRunDestinations", "GetTestList", "XcodeListNavigatorIssues", "GetBuildLog",
                  "GetConsoleOutput", "XcodeGetCurrentFile", "TakeScreenshot"}
 
@@ -4091,7 +4276,8 @@ def mcp_checks(samples):
         shutil.rmtree(empty, ignore_errors=True)
 
     check("MCP: `zcode mcp` with no zcode running says so and exits", no_zcode_running)
-    z = Zcode(project, {"ZCODE_CONFIG_DIR": config, "ZCODE_AGENT_NO_LOGIN_SHELL": "1"})
+    xctrace = fake_xctrace("mcp")
+    z = Zcode(project, {"ZCODE_CONFIG_DIR": config, "ZCODE_AGENT_NO_LOGIN_SHELL": "1", **xctrace.env})
     # The client most checks share.
     c = client()
 
@@ -4236,6 +4422,21 @@ def mcp_checks(samples):
         assert "tick 1" in lines and any(l.startswith("Program ended") for l in lines), lines
         assert "stopped" in c.call("StopProject")["structuredContent"]
 
+    def profile_project():
+        r = c.call("ProfileProject", {"time_limit_seconds": 2})["structuredContent"]
+        assert r["success"] and r["template"] == "Time Profiler" and r["opened_in_instruments"], r
+        assert r["trace"].startswith(os.path.join(config, "traces")) and xctrace.opened() == [r["trace"]], r
+        summary = r["summary"]
+        assert summary["process"] == "zhello" and summary["functions"][0]["function"] == "Greeter.greeting.getter", summary
+        assert summary["functions"][0]["self_percent"] == 66.67, summary
+        record = xctrace.records()[-1]
+        assert record[record.index("--time-limit") + 1] == "2s" and record[record.index("--") + 1].lower().endswith("/release/zhello"), record
+        try:
+            c.call("ProfileProject", {"time_limit_seconds": 0})
+            raise AssertionError("a time limit of 0 should be refused")
+        except McpError as e:
+            assert e.code == -32602, e.code
+
     def editor_tools():
         r = c.call("OpenFile", {"path": "Sources/ZKit/Greeter.swift", "line": 9, "column": 5})["structuredContent"]
         assert r["path"] == greeter, r
@@ -4364,6 +4565,7 @@ def mcp_checks(samples):
         check("MCP: a build with an error (progress, structured errors, the Issue navigator, the log), then fixed", build_with_an_error)
         check("MCP: RunAllTests and RunSomeTests with per-test results, a failure with its line; GetTestList", tests_with_results)
         check("MCP: run and the console, stop", run_and_console)
+        check("MCP: ProfileProject records a Release build with a time limit and returns the trace and heaviest functions", profile_project)
         check("MCP: OpenFile and XcodeGetCurrentFile (selection, unsaved edits)", editor_tools)
         check("MCP: EvaluateInDebugger at a breakpoint, shown in the console", debugger_paused_at_a_breakpoint)
         check("MCP: a window screenshot (PNG, a pixel per point); no simulator, not a device", window_screenshot)
@@ -5093,6 +5295,9 @@ def main():
         classic_project_checks(z, samples)
     finally:
         z.quit()
+
+    print("Profile (copies of HelloClassic and, with --simulator, HelloZ; scripts/fake_xctrace.py):")
+    profile_checks(samples, sim)
 
     print("Property lists, Info and Signing & Capabilities (copies of HelloZ and HelloClassic):")
     plist_checks(samples)
