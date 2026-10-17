@@ -346,6 +346,17 @@ impl Workspace {
         self.build.update(cx, |b, cx| b.stop(cx));
     }
 
+    /// Quitting or closing the window: the app, the debugger and builds
+    /// end. `kill_runs` finishes off what's left before zcode exits.
+    pub fn end_runs(&mut self, cx: &mut Context<Self>) {
+        self.debugger.update(cx, |d, _| d.kill());
+        self.build.update(cx, |b, _| b.end_processes());
+    }
+
+    pub fn kill_runs(&self, cx: &App) {
+        self.build.read(cx).kill_processes();
+    }
+
     // ------------------------------------------------------------------
     // Debug area
 

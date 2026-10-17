@@ -11,6 +11,7 @@ use smol::channel;
 
 use super::breakpoints::{self, Action, Breakpoint, Kind, LogPart};
 use super::dap::{DapClient, DapEvent, initialize_args};
+use crate::build::process::AppProcess;
 
 /// lldb-dap's prefix that makes `evaluate` run an lldb command, as Xcode's
 /// console does, rather than guess between a command and an expression.
@@ -103,6 +104,11 @@ pub struct Debugger {
     pub selected_frame: usize,
     pub variables: Vec<Variable>,
     client: Option<Arc<DapClient>>,
+    /// The debuggee, when it runs on this Mac (launched, or in a
+    /// simulator): Stop makes sure it's gone even if lldb-dap doesn't end it.
+    local_debuggee: Option<AppProcess>,
+    /// Whether this session's debuggee runs on this Mac.
+    debuggee_is_local: bool,
     exit_code: Option<i64>,
     /// A device app launched suspended reports its pending SIGSTOP once
     /// resumed; that stop is continued rather than shown.
@@ -115,6 +121,13 @@ pub struct Debugger {
 }
 
 impl EventEmitter<DebuggerEvent> for Debugger {}
+
+/// A closed window ends its debugging session.
+impl Drop for Debugger {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
 
 impl Default for Debugger {
     fn default() -> Self {
@@ -131,6 +144,8 @@ impl Default for Debugger {
             selected_frame: 0,
             variables: vec![],
             client: None,
+            local_debuggee: None,
+            debuggee_is_local: false,
             exit_code: None,
             resume_launch_stop: false,
             initialized: false,
@@ -453,6 +468,11 @@ impl Debugger {
         self.client = Some(client.clone());
 
         self.resume_launch_stop = matches!(target, Target::AttachDevice(_));
+        self.debuggee_is_local = !matches!(target, Target::AttachDevice(_));
+        self.local_debuggee = match &target {
+            Target::Attach { pid } => AppProcess::find(*pid),
+            _ => None,
+        };
         self.initialized = false;
         let (command, args) = match target {
             Target::Launch { program, cwd, args, env } => {
@@ -578,6 +598,12 @@ impl Debugger {
                         for line in text.lines() {
                             cx.emit(DebuggerEvent::Output(line.to_string()));
                         }
+                    }
+                }
+                // The debuggee's pid (a device's is the device's own).
+                "process" if self.debuggee_is_local => {
+                    if let Some(pid) = body.get("systemProcessId").and_then(Value::as_i64) {
+                        self.local_debuggee = AppProcess::find(pid as i32);
                     }
                 }
                 "exited" => {
@@ -779,12 +805,18 @@ impl Debugger {
     }
 
     fn finish(&mut self, exit_code: Option<i64>, cx: &mut Context<Self>) {
+        let debuggee = self.local_debuggee.take();
         if let Some(client) = self.client.take() {
             let disconnect = client.request("disconnect", json!({ "terminateDebuggee": true }));
             cx.background_spawn(async move {
                 let timeout = smol::Timer::after(std::time::Duration::from_millis(800));
                 futures::future::select(Box::pin(disconnect), timeout).await;
                 client.kill();
+                // Killing lldb-dap ends debugserver, which leaves an app it
+                // launched running on its own, parented to launchd.
+                if let Some(debuggee) = debuggee {
+                    debuggee.terminate(std::time::Duration::from_millis(500));
+                }
             })
             .detach();
         }
@@ -805,6 +837,22 @@ impl Debugger {
         if self.client.is_some() {
             self.finish(None, cx);
         }
+    }
+
+    /// Quitting: the debuggee and lldb-dap end now, without waiting for
+    /// lldb-dap to say so.
+    pub fn kill(&mut self) {
+        if let Some(debuggee) = self.local_debuggee.take() {
+            debuggee.kill();
+        }
+        if let Some(client) = self.client.take() {
+            client.kill();
+        }
+    }
+
+    /// The debuggee's pid when it runs on this Mac.
+    pub fn local_debuggee_pid(&self) -> Option<i32> {
+        self.local_debuggee.as_ref().map(|p| p.pid)
     }
 
     fn thread_id(&self) -> Option<i64> {

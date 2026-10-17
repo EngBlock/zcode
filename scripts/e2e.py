@@ -332,6 +332,26 @@ def debug_run_ends(z, timeout=300):
                       timeout=timeout, interval=0.5)
 
 
+def process_gone(pid, timeout=15):
+    """Waits for a process to be gone (not even a zombie)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.2)
+    out = subprocess.run(["ps", "-o", "pid,ppid,pgid,stat,comm", "-p", str(pid)], capture_output=True, text=True).stdout
+    raise AssertionError(f"process {pid} is still there:\n{out}")
+
+
+def running_app_pid(z, timeout=60):
+    """The pid of the program zcode is running (or debugging) on this Mac."""
+    pid = z.wait_for(lambda s: s["run_pid"], timeout=timeout, interval=0.3)["run_pid"]
+    os.kill(pid, 0)
+    return pid
+
+
 def gutter_row(z, line):
     """Where to click on `line`'s number in the active editor's gutter."""
     g = z.dump()["breakpoints"]["gutter"]
@@ -1089,7 +1109,10 @@ def classic_project_checks(z, samples):
         z.run("keys cmd-r")
         # Split like a shell, the disabled ones left out; streamed live (a pseudo-terminal).
         console_has(z, "arguments: -verbose two words GREETING=hi there")
-        z.run("keys cmd-.", "wait 1500")
+        pid = running_app_pid(z)
+        z.run("keys cmd-.")
+        # Gone, and reaped: Stop leaves nothing behind.
+        process_gone(pid)
 
     def edit_scheme_restores_file():
         z.run("keys cmd-<", "wait 300", "edit-scheme action test", "edit-scheme configuration Release", "edit-scheme close")
@@ -1125,6 +1148,7 @@ def classic_project_checks(z, samples):
         z.run("action zcode::ClearConsole", "keys cmd-r")
         s = stopped(z, variables=False)
         assert f"ContentView.swift:{launched}" in s["debugger"]["frames"][0], s["debugger"]
+        pid = running_app_pid(z)
         z.run("console p ProcessInfo.processInfo.processName")
         out = console_output(z, "p ProcessInfo.processInfo.processName", timeout=120)
         assert any('"HelloClassic"' in l for l in out), out
@@ -1133,9 +1157,27 @@ def classic_project_checks(z, samples):
         s = console_has(z, "launched with 1 argument(s), hit 1", timeout=60)
         console_has(z, "arguments: ", timeout=30)
         assert z.dump()["debugger"]["state"] == "Running", z.dump()["debugger"]
-        z.run("keys cmd-.", "wait 1500", "action zcode::DeleteAllBreakpoints")
+        z.run("keys cmd-.")
+        process_gone(pid)
+        z.run("action zcode::DeleteAllBreakpoints")
 
     check("Mac app under lldb-dap: breakpoint stop, LLDB console, auto-continuing log message", debug_mac_app)
+
+    def stop_at_breakpoint():
+        # Paused at a breakpoint, the app is held by debugserver; Stop still ends it.
+        content = next(p for p in (os.path.join(app, "Views", "ContentView.swift"), os.path.join(app, "ContentView.swift"))
+                       if os.path.exists(p))
+        launched = line_of(content, 'print("HelloClassic launched")')
+        z.run(f"open {content}:{launched}", "wait 300", "keys cmd-\\")
+        z.run("action zcode::ClearConsole", "keys cmd-r")
+        stopped(z, variables=False)
+        pid = running_app_pid(z)
+        z.run("keys cmd-.")
+        process_gone(pid)
+        assert z.dump()["run_pid"] is None
+        z.run("action zcode::DeleteAllBreakpoints")
+
+    check("Stop (⌘.) ends a Mac app paused at a breakpoint, leaving no process", stop_at_breakpoint)
 
     suite = os.path.join(root, "HelloClassicTests", "GreeterSuite.swift")
     xctests = os.path.join(root, "HelloClassicTests", "GreeterTests.swift")
@@ -5142,11 +5184,13 @@ def main():
             assert not os.path.exists(os.path.join(project, "HelloClassic.xcodeproj", "xcshareddata")), "no scheme file written"
             z.run("keys cmd-r")
             console_has(z, "arguments: -session GREETING=from-session")
-            z.run("keys cmd-.", "wait 1500")
+            pid = running_app_pid(z)
         finally:
             z.quit()
+        # Quitting zcode ends the app it ran rather than leaving it to launchd.
+        process_gone(pid)
 
-    check("Schemes xcodebuild makes up keep their options in the session; ⌘R uses them", schemeless_project)
+    check("Schemes xcodebuild makes up keep their options in the session; ⌘R uses them; quitting ends the app", schemeless_project)
 
     shutil.rmtree(DEBUG_DIR, ignore_errors=True)
     shutil.rmtree(CONFIG_DIR, ignore_errors=True)

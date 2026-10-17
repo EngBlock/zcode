@@ -1,10 +1,13 @@
-//! Spawning tool processes in their own process group and streaming output.
+//! Spawning tool processes in their own process group and streaming output;
+//! ending a launched app wherever it ended up.
 
 use std::os::fd::{FromRawFd as _, OwnedFd};
 use std::os::unix::process::CommandExt as _;
-use std::process::{Command, Stdio};
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use futures::AsyncBufReadExt as _;
@@ -20,6 +23,22 @@ pub struct ProcessHandle {
 impl ProcessHandle {
     pub fn is_running(&self) -> bool {
         self.pgid.load(Ordering::SeqCst) > 0
+    }
+
+    /// The process group's leader: the program run, or 0.
+    pub fn pid(&self) -> i32 {
+        self.pgid.load(Ordering::SeqCst).max(0)
+    }
+
+    /// SIGKILL the whole process group now (quitting: nothing waits to
+    /// escalate).
+    pub fn kill(&self) {
+        let pgid = self.pgid.load(Ordering::SeqCst);
+        if pgid > 0 {
+            unsafe {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+        }
     }
 
     /// SIGTERM the whole process group, escalating to SIGKILL.
@@ -127,15 +146,90 @@ pub async fn run_streaming_tty(
         .stderr(Stdio::from(slave))
         .env("NSUnbufferedIO", "YES");
     let program = format!("{:?}", cmd.get_program());
-    let mut child = cmd.spawn().with_context(|| format!("failed to start {program}"))?;
+    let child = cmd.spawn().with_context(|| format!("failed to start {program}"))?;
     // Only the child may hold the terminal open, so reading ends with it.
     drop(cmd);
     handle.pgid.store(child.id() as i32, Ordering::SeqCst);
+    let mut child = Reaped(Some(child));
     let output = smol::Unblock::new(std::fs::File::from(master));
     pump(Some(Box::new(output)), lines).await;
-    let status = smol::unblock(move || child.wait()).await?;
+    let mut waited = child.0.take().expect("waited once");
+    let status = smol::unblock(move || waited.wait()).await?;
     handle.pgid.store(0, Ordering::SeqCst);
     Ok(status.code())
+}
+
+/// A child that is waited for even when the run is dropped (Stop cancels
+/// it), so it doesn't stay a zombie holding its pid.
+struct Reaped(Option<Child>);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            std::thread::spawn(move || child.wait().ok());
+        }
+    }
+}
+
+/// A process zcode started that may not be its child or in a group it
+/// owns (lldb-dap's debuggee, whose parent is debugserver, is orphaned
+/// when the adapter goes), known by its pid and executable so a reused pid
+/// is never signalled.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AppProcess {
+    pub pid: i32,
+    pub executable: PathBuf,
+}
+
+impl AppProcess {
+    /// The process `pid` as it is now (`None` when it's gone).
+    pub fn find(pid: i32) -> Option<Self> {
+        Some(Self { pid, executable: executable_of(pid)? })
+    }
+
+    pub fn is_running(&self) -> bool {
+        executable_of(self.pid).is_some_and(|path| path == self.executable)
+    }
+
+    /// SIGKILL it now, if it's still this program.
+    pub fn kill(&self) {
+        if self.is_running() {
+            unsafe {
+                libc::kill(self.pid, libc::SIGKILL);
+            }
+        }
+    }
+
+    /// SIGTERM it, then SIGKILL if it outlives `grace`.
+    pub fn terminate(&self, grace: Duration) {
+        if !self.is_running() {
+            return;
+        }
+        unsafe {
+            libc::kill(self.pid, libc::SIGTERM);
+        }
+        let this = self.clone();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + grace;
+            while std::time::Instant::now() < deadline {
+                if !this.is_running() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            this.kill();
+        });
+    }
+}
+
+/// A live process's executable (a zombie has none).
+pub fn executable_of(pid: i32) -> Option<PathBuf> {
+    if pid <= 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let len = unsafe { libc::proc_pidpath(pid, buf.as_mut_ptr() as *mut libc::c_void, buf.len() as u32) };
+    (len > 0).then(|| PathBuf::from(String::from_utf8_lossy(&buf[..len as usize]).into_owned()))
 }
 
 /// Runs a short command to completion, returning combined output.
@@ -170,5 +264,59 @@ mod tests {
         assert!(started.elapsed() < Duration::from_millis(1500), "arrived at exit");
         assert_eq!(smol::block_on(rx.recv()).unwrap(), "second");
         assert_eq!(run.join().unwrap().unwrap(), Some(3));
+    }
+
+    fn gone(pid: i32) -> bool {
+        // A reaped child is gone altogether; signal 0 finds a zombie too.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn a_dropped_run_is_reaped_after_terminate() {
+        // Stop drops the run's task while its program runs; the program
+        // gets the signal and then mustn't linger as a zombie.
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg("30");
+        let (tx, _rx) = channel::unbounded();
+        let handle = ProcessHandle::default();
+        let run = smol::spawn(run_streaming_tty(cmd, tx, handle.clone()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while handle.pid() == 0 && Instant::now() < deadline {
+            smol::block_on(smol::Timer::after(Duration::from_millis(20)));
+        }
+        let pid = handle.pid();
+        assert!(pid > 0);
+        drop(run);
+        handle.terminate();
+        assert!(gone(pid), "{pid} is still there");
+    }
+
+    #[test]
+    fn an_app_process_outside_any_group_is_killed_by_pid() {
+        // Like a debuggee whose debugserver went away: not our child's
+        // group, found again by pid and path.
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg("30").process_group(0);
+        let mut child = cmd.spawn().unwrap();
+        let pid = child.id() as i32;
+        let app = AppProcess::find(pid).unwrap();
+        assert_eq!(app.executable, PathBuf::from("/bin/sleep"));
+        assert!(app.is_running());
+        // Another program that has its pid isn't touched.
+        let stranger = AppProcess { pid, executable: "/bin/cat".into() };
+        assert!(!stranger.is_running());
+        stranger.kill();
+        assert!(app.is_running());
+        app.terminate(Duration::from_secs(2));
+        child.wait().unwrap();
+        assert!(!app.is_running());
+        assert!(AppProcess::find(pid).is_none());
     }
 }

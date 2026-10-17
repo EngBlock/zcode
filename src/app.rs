@@ -167,6 +167,7 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
                             workspace.update(cx, |ws, cx| {
                                 ws.save_session(cx);
                                 ws.stop_terminals(cx);
+                                ws.end_runs(cx);
                                 ws.lsp.update(cx, |lsp, cx| lsp.shutdown(cx)).detach();
                             });
                         }
@@ -246,10 +247,12 @@ fn quit(cx: &mut App) {
         .filter_map(|w| w.upgrade())
         .collect();
     let mut shutdowns = vec![];
-    for workspace in workspaces {
+    for workspace in &workspaces {
         workspace.update(cx, |ws, cx| {
             ws.save_session(cx);
             ws.stop_terminals(cx);
+            // Apps it ran don't outlive zcode (they'd be launchd's).
+            ws.end_runs(cx);
             shutdowns.push(ws.lsp.update(cx, |lsp, cx| lsp.shutdown(cx)));
         });
     }
@@ -258,7 +261,12 @@ fn quit(cx: &mut App) {
         let timeout = cx.background_executor().timer(Duration::from_millis(600));
         futures::future::select(Box::pin(all), Box::pin(timeout)).await;
         crate::instance::cleanup();
-        cx.update(|cx| cx.quit());
+        cx.update(|cx| {
+            for workspace in &workspaces {
+                workspace.read(cx).kill_runs(cx);
+            }
+            cx.quit()
+        });
     })
     .detach();
 }

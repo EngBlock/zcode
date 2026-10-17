@@ -851,6 +851,9 @@ impl Workspace {
             },
         });
         // Added separately: one `json!` this size reaches the macro recursion limit.
+        // The running program: the app lldb-dap launched or attached to on
+        // this Mac, else what Run started (the app, simctl or devicectl).
+        state["run_pid"] = self.debugger.read(cx).local_debuggee_pid().or(build.run_pid()).into();
         state["breakpoints"] = self.breakpoints_summary(cx);
         state["bookmarks"] = self.bookmarks_summary(cx);
         state["packages"] = self.packages_summary(cx);

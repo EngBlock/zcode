@@ -175,6 +175,13 @@ pub struct BuildController {
 
 impl EventEmitter<BuildEvent> for BuildController {}
 
+/// A closed window stops what it built and ran, as Xcode does.
+impl Drop for BuildController {
+    fn drop(&mut self) {
+        self.end_processes();
+    }
+}
+
 impl BuildController {
     pub fn new(project: ProjectInfo, cache_dir: PathBuf, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
@@ -614,6 +621,37 @@ impl BuildController {
             cx.emit(BuildEvent::PhaseChanged);
             cx.notify();
         }
+    }
+
+    /// Quitting or closing the window: everything this window started ends
+    /// without waiting for the main loop (`kill` follows once quitting has
+    /// waited a moment).
+    pub fn end_processes(&mut self) {
+        self.process.terminate();
+        self.index_process.terminate();
+        if let Some(RunTarget::Simulator { udid, bundle_id }) = self.run_target.take() {
+            // simctl keeps going after zcode has quit.
+            Command::new("/usr/bin/xcrun")
+                .args(["simctl", "terminate", &udid, &bundle_id])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map(|mut simctl| std::thread::spawn(move || simctl.wait()))
+                .ok();
+        }
+    }
+
+    /// SIGKILL what `end_processes` asked to end and is still there.
+    pub fn kill_processes(&self) {
+        self.process.kill();
+        self.index_process.kill();
+    }
+
+    /// The pid of the run's program (a Mac app or package product,
+    /// `simctl` or `devicectl`), for the control channel.
+    pub fn run_pid(&self) -> Option<i32> {
+        matches!(self.phase, Phase::Running { .. }).then(|| self.process.pid()).filter(|pid| *pid > 0)
     }
 
     fn maybe_start_index_build(&mut self, cx: &mut Context<Self>) {
