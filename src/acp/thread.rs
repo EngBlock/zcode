@@ -153,8 +153,11 @@ impl Thread {
         Change::Updated(last)
     }
 
+    /// The tool call `id` in the current turn (since the user's last
+    /// message): an id an agent used in an earlier turn is a new call.
     pub fn tool_call_index(&self, id: &str) -> Option<usize> {
-        self.entries.iter().rposition(|e| matches!(e, Entry::Tool(call) if call.id == id))
+        let turn = self.entries.iter().rposition(|e| matches!(e, Entry::User(_))).map_or(0, |ix| ix + 1);
+        self.entries[turn..].iter().rposition(|e| matches!(e, Entry::Tool(call) if call.id == id)).map(|ix| turn + ix)
     }
 
     pub fn tool_call(&self, id: &str) -> Option<&ToolCallEntry> {
@@ -372,6 +375,17 @@ mod tests {
         assert_eq!(change, Change::Appended);
         assert_eq!(thread.end_turn(), [0]);
         assert!(matches!(&thread.entries[0], Entry::Tool(call) if call.status == ToolCallStatus::Failed && call.title == "Run tests"));
+    }
+
+    #[test]
+    fn a_tool_call_id_from_an_earlier_turn_is_a_new_call() {
+        let mut thread = Thread::default();
+        let call = json!({ "sessionUpdate": "tool_call", "toolCallId": "t1", "title": "Read", "status": "completed" });
+        thread.apply(update(call.clone()));
+        thread.push_user(UserMessage::default());
+        assert_eq!(thread.apply(update(call)), Change::Appended);
+        assert_eq!(thread.apply(update(json!({ "sessionUpdate": "tool_call_update", "toolCallId": "t1", "status": "failed" }))), Change::Updated(2));
+        assert!(matches!(&thread.entries[0], Entry::Tool(call) if call.status == ToolCallStatus::Completed));
     }
 
     #[test]
