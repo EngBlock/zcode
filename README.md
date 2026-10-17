@@ -161,9 +161,13 @@ if zcode is not faster.
   interceptor or observer then, and the status bar follows Vim through an
   event an editor only emits with it on. On, insert mode passes keystrokes
   through after a check, and what `.` repeats is worked out once, at
-  Escape. Typing in the middle of a 6,000-line Swift file: median
-  keystroke to frame 3.8 ms with Vim mode off and 3.8 ms in insert mode
-  (p95 3.9 ms both).
+  Escape. Typing in the middle of a 6,000-line Swift file, four
+  alternating rounds each: median keystroke to frame 3.8–5.2 ms with Vim
+  mode off and 5.0–5.2 ms in insert mode (load average 6–13). Cold launch,
+  alternating with `master` (load average ~7): the welcome window's first
+  pixels at 247.0 ms against 248.4 ms (median of 24), and ZKit with two
+  Swift tabs restored at 226.3 ms against 224.5 ms to the first frame
+  (median of 20), 225.9 ms with Vim mode on.
 * Swift highlighting uses a compact tree-sitter query
   (`src/languages/swift-highlights.scm`) that compiles in ~11 ms. The upstream
   query takes ~185 ms, and the editor pays that cost for every Swift file it
