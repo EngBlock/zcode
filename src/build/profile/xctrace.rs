@@ -8,7 +8,6 @@
 
 use std::ffi::OsStr;
 use std::io::Write as _;
-use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
@@ -140,16 +139,6 @@ pub fn record_command(recording: &Recording) -> Command {
     cmd.args(["--launch", "--"]).arg(recording.target).args(&recording.launch.arguments);
     if let Some(dir) = &recording.launch.working_directory {
         cmd.current_dir(dir);
-    }
-    // zcode's threads block SIGINT, and a child inherits that: unblocked,
-    // Stop's SIGINT reaches xctrace, which then saves the trace.
-    unsafe {
-        cmd.pre_exec(|| {
-            let mut none: libc::sigset_t = std::mem::zeroed();
-            libc::sigemptyset(&mut none);
-            libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
-            Ok(())
-        });
     }
     cmd
 }

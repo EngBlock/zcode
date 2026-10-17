@@ -75,6 +75,21 @@ impl ProcessHandle {
     }
 }
 
+/// The program starts with no signals blocked. zcode starts programs from
+/// its background threads (GCD's), which block SIGTERM, SIGINT, SIGHUP and
+/// most others, and a child inherits that: Stop's SIGTERM would wait for
+/// the SIGKILL after it, and xctrace would never see Ctrl-C's SIGINT.
+fn unblock_signals(cmd: &mut Command) {
+    unsafe {
+        cmd.pre_exec(|| {
+            let mut none: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut none);
+            libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+            Ok(())
+        });
+    }
+}
+
 /// Runs `cmd`, sending each stdout/stderr line to `lines`. Resolves to the
 /// exit code (`None` when killed by a signal).
 pub async fn run_streaming(
@@ -87,6 +102,7 @@ pub async fn run_streaming(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("NSUnbufferedIO", "YES");
+    unblock_signals(&mut cmd);
     let program = format!("{:?}", cmd.get_program());
     // `From<std::process::Command>` does not carry stdio settings over.
     let mut child = smol::process::Command::from(cmd)
@@ -157,6 +173,7 @@ pub async fn run_streaming_tty(
         .stdout(Stdio::from(slave.try_clone()?))
         .stderr(Stdio::from(slave))
         .env("NSUnbufferedIO", "YES");
+    unblock_signals(&mut cmd);
     let program = format!("{:?}", cmd.get_program());
     let mut child = cmd.spawn().with_context(|| format!("failed to start {program}"))?;
     drop(cmd);
@@ -309,6 +326,32 @@ mod tests {
         assert_eq!(code, Some(4));
         assert!(started.elapsed() < Duration::from_secs(5), "waited for the terminal to close");
         assert_eq!(smol::block_on(rx.recv()).unwrap(), "started");
+    }
+
+    #[test]
+    fn programs_start_with_no_signals_blocked() {
+        // As on gpui's background threads: SIGTERM blocked where the
+        // program is started.
+        std::thread::spawn(|| {
+            unsafe {
+                let mut term: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut term);
+                libc::sigaddset(&mut term, libc::SIGTERM);
+                libc::pthread_sigmask(libc::SIG_BLOCK, &term, std::ptr::null_mut());
+            }
+            for tty in [false, true] {
+                let mut cmd = Command::new("/bin/sh");
+                cmd.args(["-c", "kill -TERM $$; sleep 1; echo survived"]);
+                let (tx, rx) = channel::unbounded();
+                let code = smol::block_on(async {
+                    if tty { run_streaming_tty(cmd, tx, ProcessHandle::default()).await } else { run_streaming(cmd, tx, ProcessHandle::default()).await }
+                });
+                assert_eq!(code.unwrap(), None, "terminated by SIGTERM (tty: {tty})");
+                assert!(rx.try_recv().is_err(), "nothing printed");
+            }
+        })
+        .join()
+        .unwrap();
     }
 
     fn gone(pid: i32) -> bool {
