@@ -1,5 +1,6 @@
 //! zcode — a fast, Zed-inspired editor for the Apple ecosystem.
 
+pub mod acp;
 pub mod actions;
 pub mod assets;
 pub mod app;
