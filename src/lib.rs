@@ -21,6 +21,7 @@ pub mod perf_panel;
 pub mod picker;
 pub mod plist;
 pub mod predictions;
+pub mod previews;
 pub mod project;
 pub mod scheme;
 pub mod screenshot;

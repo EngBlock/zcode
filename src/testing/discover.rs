@@ -136,11 +136,9 @@ thread_local! {
     static SWIFT_PARSER: std::cell::RefCell<Option<Parser>> = const { std::cell::RefCell::new(None) };
 }
 
-pub fn swift_declarations(text: &str) -> Declarations {
-    if !may_declare_tests(text) {
-        return Declarations::default();
-    }
-    let tree = SWIFT_PARSER.with(|cell| {
+/// Parses Swift with this thread's parser (previews are found with it too).
+pub fn parse_swift(text: &str) -> Option<tree_sitter::Tree> {
+    SWIFT_PARSER.with(|cell| {
         let mut cell = cell.borrow_mut();
         let parser = cell.get_or_insert_with(|| {
             let mut parser = Parser::new();
@@ -148,8 +146,14 @@ pub fn swift_declarations(text: &str) -> Declarations {
             parser
         });
         parser.parse(text, None)
-    });
-    let Some(tree) = tree else { return Declarations::default() };
+    })
+}
+
+pub fn swift_declarations(text: &str) -> Declarations {
+    if !may_declare_tests(text) {
+        return Declarations::default();
+    }
+    let Some(tree) = parse_swift(text) else { return Declarations::default() };
     let mut out = Declarations::default();
     collect(tree.root_node(), text, &[], &mut out);
     out
