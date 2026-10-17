@@ -423,7 +423,7 @@ themes or session. It covers:
   Vim mode); the Editor menu's toggles and ⌘+ writing the file, with their
   checkmarks; trailing whitespace, final newline and format on save through
   sourcekit-lsp; `terminal.shell`; `keymap.json` with an `Editor` binding,
-  one for Vim's normal mode, Unbind, `null` in the Find navigator and a
+  one for Vim's normal mode, one only in the Find navigator, Unbind and a
   mistake reported; themes in gpui-component's and Zed's formats, edited
   live, a missing one, and Select Theme…; an Xcode theme imported from a
   fixture and Xcode's own Midnight read in place; a fixture's Xcode key

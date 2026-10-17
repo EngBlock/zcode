@@ -3784,16 +3784,27 @@ def settings_checks(samples):
   { "bindings": { "cmd-shift-b": "zcode::ShowFindNavigator", "cmd-1": ["zed::Unbind", "zcode::ShowProjectNavigator"] } },
   { "context": "Editor", "bindings": { "ctrl-k": "DuplicateLine" } },
   { "context": "Editor && vim_mode == normal", "bindings": { "space f": "zcode::OpenQuickly" } },
-  { "context": "Navigator && navigator == find", "bindings": { "cmd-shift-b": null } },
+  { "context": "Navigator && navigator == find", "bindings": { "ctrl-alt-n": "zcode::ShowProjectNavigator", "cmd-shift-k": null } },
   { "context": "Terminal", "bindings": { "cmd-j": "zcode::Nope" } }
 ]
 """)
-        st = settings(wait_settings(lambda st: st["user_bindings"] == 6))
+        st = settings(wait_settings(lambda st: st["user_bindings"] == 7))
         assert [p["message"] for p in st["problems"]] == ["keymap.json: “cmd-j”: no action named “zcode::Nope”"], st["problems"]
         keymap = json.loads(z.run("keymap")[-1])
         assert "cmd-shift-b" in keymap["zcode::ShowFindNavigator"], keymap["zcode::ShowFindNavigator"]
         z.run(f"open {greeter}", "wait 300", "keys cmd-shift-b", "wait 200")
-        assert z.dump()["navigator"] == "Find"
+        assert z.dump()["navigator"] == "Find", (z.dump()["navigator"], z.dump()["settings"]["key_context"])
+        # ⌃⌥N, bound in the Find navigator only: nothing in the editor…
+        z.run("pane focus 0", "wait 200")
+        assert "Navigator navigator=find" not in z.dump()["settings"]["key_context"], z.dump()["settings"]["key_context"]
+        z.run("keys ctrl-alt-n", "wait 200")
+        assert z.dump()["navigator"] == "Find", "not in the editor"
+        # …and back to the Project navigator from the Find navigator's field.
+        z.run("keys cmd-shift-f", "wait 200")
+        assert "Navigator navigator=find" in z.dump()["settings"]["key_context"], z.dump()["settings"]["key_context"]
+        z.run("keys ctrl-alt-n", "wait 200")
+        assert z.dump()["navigator"] == "Project", "the Navigator context's binding"
+        z.run(f"open {greeter}", "wait 200", "keys cmd-shift-b", "wait 200")
         z.run("keys cmd-1", "wait 200")
         assert z.dump()["navigator"] == "Find", "Unbind took ⌘1 off Show Project Navigator"
         z.run(f"open {greeter}", "wait 200")

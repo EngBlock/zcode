@@ -431,6 +431,8 @@ impl Workspace {
             "active_editor": editor,
             "problems": self.settings.problems.iter().map(|p| json!({ "error": p.error, "message": p.message })).collect::<Vec<_>>(),
             "menu_checked": crate::actions::menu_checkmarks(cx),
+            // The focused element's key contexts, outermost first (for keymap.json).
+            "key_context": window.context_stack().iter().map(|c| format!("{c:?}")).collect::<Vec<_>>(),
             "user_bindings": cx.try_global::<SettingsStore>().map(|st| st.keymap.content.blocks.iter().map(|b| b.bindings.len()).sum::<usize>()),
         })
     }
