@@ -9,6 +9,7 @@
 pub mod binary;
 pub mod definitions;
 pub mod edit;
+pub mod openstep;
 pub mod schema;
 
 use std::ops::Range;
