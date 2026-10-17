@@ -127,6 +127,10 @@ impl InputModeKind for EditorMode {
         state.dismiss_signature_help(cx);
     }
 
+    fn on_mouse_down(state: &mut InputBaseState<Self>) {
+        state.vim_mouse_down();
+    }
+
     fn is_context_menu_open(state: &InputBaseState<Self>, cx: &App) -> bool {
         state.is_context_menu_open(cx)
     }

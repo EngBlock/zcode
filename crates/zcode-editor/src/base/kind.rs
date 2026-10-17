@@ -355,6 +355,8 @@ pub struct EditorExtras {
     pub(crate) signature_help: Option<crate::SignatureHelpState>,
     pub(crate) hover_definition: HoverDefinition,
     pub(crate) context_menu_task: Task<anyhow::Result<()>>,
+    /// Vim mode's state, while it's on (`vim/`).
+    pub(crate) vim: Option<Box<crate::vim::Vim>>,
 }
 
 impl Default for EditorExtras {
@@ -369,6 +371,7 @@ impl Default for EditorExtras {
             signature_help: None,
             hover_definition: HoverDefinition::default(),
             context_menu_task: Task::ready(Ok(())),
+            vim: None,
         }
     }
 }

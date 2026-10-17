@@ -93,6 +93,7 @@ mod history;
 mod linked;
 mod modal;
 mod viewport;
+mod vim;
 pub mod multibuffer;
 mod multibuffer_editor;
 #[cfg(test)]
@@ -128,6 +129,7 @@ pub use highlights::HighlightPriority;
 pub use history::{HistoryRequest, TransactionId};
 pub use modal::{CursorShape, KeystrokeInterceptor};
 pub use viewport::ViewportChanged;
+pub use vim::{VimCommand, VimMode, VimStatus};
 pub use multibuffer_editor::{EXPAND_LINES, HeaderStyle, MultiBufferEditor, MultiBufferEvent};
 pub use decorations::{
     RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, TextDecoration,
