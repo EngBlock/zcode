@@ -194,7 +194,6 @@ impl Workspace {
         let tree = cx.new(|cx| TreeState::new(cx));
         let debugger = cx.new(|_| Debugger::default());
         let find_input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in Workspace"));
-        let replace_input = cx.new(|cx| InputState::new(window, cx).placeholder("Replace With"));
 
         mark("find input");
         let mut session = Session::load();
@@ -276,7 +275,7 @@ impl Workspace {
             raw_log: false,
             find: FindState {
                 input: find_input,
-                replace_input,
+                replace_input: None,
                 replacing: false,
                 options: SearchOptions::default(),
                 results: Arc::new(vec![]),
@@ -796,6 +795,7 @@ impl Workspace {
             "log_lines": build.log.len(),
             "reports": build.reports.len(),
             "find_results": self.find.results.iter().map(|f| f.matches.len()).sum::<usize>(),
+            "find_replacing": self.find.replacing && self.find.replace_input.is_some(),
             "outline": self.outline.iter().map(|o| o.name.clone()).collect::<Vec<_>>(),
             "scm_branch": self.git.status.branch,
             "scm_changes": self.git.status.files.len(),

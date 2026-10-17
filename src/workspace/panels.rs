@@ -947,10 +947,7 @@ impl Render for Workspace {
                 this.find.replacing = false;
                 this.show_navigator_tab(NavigatorTab::Find, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &FindAndReplaceInWorkspace, window, cx| {
-                this.find.replacing = true;
-                this.show_navigator_tab(NavigatorTab::Find, window, cx)
-            }))
+            .on_action(cx.listener(|this, _: &FindAndReplaceInWorkspace, window, cx| this.show_find_and_replace(window, cx)))
             .on_action(cx.listener(|this, _: &ShowFindResultsInEditor, window, cx| {
                 this.show_find_results_in_editor(window, cx);
             }))

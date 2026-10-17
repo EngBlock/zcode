@@ -106,6 +106,8 @@ pub struct MultiBufferView {
     messages: Vec<(PathBuf, u32, Severity, String)>,
     /// What the tab's bar says.
     pub summary: String,
+    /// How long adding the last page took, in milliseconds.
+    last_page_ms: f64,
     font_size: f32,
 }
 
@@ -170,6 +172,8 @@ impl MultiBufferView {
             "excerpts": editor.summary(cx).iter().map(|(title, rows, row)| serde_json::json!({ "file": title.to_string(), "lines": [rows.start, rows.end], "row": row })).collect::<Vec<_>>(),
             "files": self.paths.values().map(|p| super::pane::file_title(p)).collect::<Vec<_>>(),
             "pending_files": self.pending.len(),
+            "pages": self.pages,
+            "last_page_ms": self.last_page_ms,
             "text": (host.text().len() < 16000).then(|| host.text().to_string()),
             "line": position.line + 1,
             "column": position.character + 1,
@@ -398,6 +402,7 @@ impl Workspace {
             pages: 0,
             messages: vec![],
             summary,
+            last_page_ms: 0.,
             font_size,
         });
         self.install_multibuffer_lanes(&view, cx);
@@ -450,6 +455,7 @@ impl Workspace {
         if files.is_empty() {
             return;
         }
+        let started = std::time::Instant::now();
         let editor = view.read(cx).editor.clone();
         let mut highlights = vec![];
         let mut messages = vec![];
@@ -487,6 +493,7 @@ impl Workspace {
         self.refresh_issue_messages(view, cx);
         self.refresh_view_diagnostics(view, cx);
         self.load_git_bases(new_paths, cx);
+        view.update(cx, |view, _| view.last_page_ms = started.elapsed().as_secs_f64() * 1000.);
     }
 
     /// `file`'s places as they are in the buffer: line, the bytes to

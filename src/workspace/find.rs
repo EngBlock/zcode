@@ -13,8 +13,9 @@ use crate::search::{FileMatches, SearchOptions};
 
 pub struct FindState {
     pub input: Entity<InputState>,
-    /// Find and Replace: the replacement, shown with Replace All.
-    pub replace_input: Entity<InputState>,
+    /// Find and Replace: the replacement, shown with Replace All (made
+    /// the first time, not at launch).
+    pub replace_input: Option<Entity<InputState>>,
     pub replacing: bool,
     pub options: SearchOptions,
     pub results: Arc<Vec<FileMatches>>,
@@ -26,6 +27,16 @@ pub struct FindState {
 }
 
 impl Workspace {
+    /// Find ▸ Find and Replace in Workspace (⌥⇧⌘F): the Find navigator
+    /// with a Replace field.
+    pub(super) fn show_find_and_replace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find.replace_input.is_none() {
+            self.find.replace_input = Some(cx.new(|cx| InputState::new(window, cx).placeholder("Replace With")));
+        }
+        self.find.replacing = true;
+        self.show_navigator_tab(super::NavigatorTab::Find, window, cx);
+    }
+
     pub fn run_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let query = self.find.input.read(cx).value().to_string();
         let _ = window;

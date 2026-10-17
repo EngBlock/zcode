@@ -502,19 +502,19 @@ impl Workspace {
                     .child(Input::new(&self.find.input).small().cleanable(true))
                     // Find and Replace in Workspace: Replace All edits the
                     // results in a tab, unsaved and undone in one step.
-                    .when(self.find.replacing, |el| {
+                    .when_some(self.find.replace_input.clone().filter(|_| self.find.replacing), |el, replace_input| {
                         let can_replace = !self.find.searching && total > 0 && self.find.title.is_none();
                         el.child(
                             h_flex()
                                 .gap_1()
-                                .child(div().flex_1().child(Input::new(&self.find.replace_input).small().cleanable(true)))
+                                .child(div().flex_1().child(Input::new(&replace_input).small().cleanable(true)))
                                 .child(
                                     Button::new("find-replace-all")
                                         .label("Replace All")
                                         .xsmall()
                                         .disabled(!can_replace)
                                         .on_click(cx.listener(|this, _, window, cx| {
-                                            let replacement = this.find.replace_input.read(cx).value().to_string();
+                                            let replacement = this.find.replace_input.as_ref().map(|i| i.read(cx).value().to_string()).unwrap_or_default();
                                             this.replace_all_in_workspace(replacement, window, cx);
                                         })),
                                 ),
