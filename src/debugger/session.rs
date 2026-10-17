@@ -702,19 +702,25 @@ impl Debugger {
 
     /// Runs a line typed at the console's `(lldb)` prompt.
     pub fn run_console_command(&mut self, command: &str, cx: &mut Context<Self>) {
-        cx.emit(DebuggerEvent::Output(format!("(lldb) {command}")));
-        let Some((client, frame_id)) = self.paused_frame() else {
+        if self.evaluate_command(command, cx).is_none() {
             cx.emit(DebuggerEvent::Output("The process is running; pause it to use the console.".into()));
-            return;
-        };
+        }
+    }
+
+    /// Runs an lldb command in the paused frame, as the console's prompt
+    /// does (echoed and answered in the console); its output. `None` when
+    /// execution isn't paused.
+    pub fn evaluate_command(&mut self, command: &str, cx: &mut Context<Self>) -> Option<Task<String>> {
+        cx.emit(DebuggerEvent::Output(format!("(lldb) {command}")));
+        let (client, frame_id) = self.paused_frame()?;
         let request = client.request(
             "evaluate",
             json!({ "expression": format!("{COMMAND_PREFIX}{command}"), "context": "repl", "frameId": frame_id }),
         );
-        cx.spawn(async move |this, cx| {
-            let result = request.await;
+        Some(cx.spawn(async move |this, cx| {
+            let output = command_output(request.await);
             this.update(cx, |this, cx| {
-                for line in command_output(result).lines() {
+                for line in output.lines() {
                     cx.emit(DebuggerEvent::Output(line.to_string()));
                 }
                 // The command may have changed values (`expr i = 5`).
@@ -723,8 +729,8 @@ impl Debugger {
                 }
             })
             .ok();
-        })
-        .detach();
+            output
+        }))
     }
 
     /// Prints a variable's description (`po`) to the console, as the
