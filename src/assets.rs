@@ -76,6 +76,7 @@ gpui_kit::assets::icon_assets!(
         SendHorizontal,
         Shapes,
         Smartphone,
+        Sparkles,
         Square,
         SquareFunction,
         Tag,

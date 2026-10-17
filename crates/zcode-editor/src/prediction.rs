@@ -146,9 +146,11 @@ impl EditorState {
     }
 
     /// The prediction this editor holds, shown or hidden behind the
-    /// completion menu.
+    /// completion menu, if the text and caret still allow it (checked now,
+    /// not when the editor next updates its annotations).
     pub fn edit_prediction_id(&self) -> Option<EditPredictionId> {
-        self.extras.prediction.as_ref().map(|p| p.id)
+        let state = self.extras.prediction.as_ref()?;
+        (!matches!(self.check_edit_prediction(state), Check::Drop)).then_some(state.id)
     }
 
     /// Whether a prediction is on screen.
@@ -486,6 +488,30 @@ mod tests {
         cx.update(|_, cx| editor.update(cx, |state, cx| state.dismiss_edit_prediction(cx)));
         let kept = cx.update(|_, cx| editor.update(cx, |state, cx| state.update_edit_prediction(id, " = 43".into(), cx)));
         assert!(!kept, "a dismissed prediction stops the stream");
+    }
+
+    #[gpui::test]
+    fn the_completion_menu_hides_it_until_it_closes(cx: &mut TestAppContext) {
+        let (editor, mut cx) = open_editor(cx, "ab\n");
+        cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.set_selected_range(2..2, cx);
+                state.set_edit_prediction(EditPrediction::insertion(2, "cd"), cx);
+            })
+        });
+        assert_eq!(shown(&editor, &cx), Some((2..2, "cd".into())));
+        cx.update(|_, cx| {
+            editor.update(cx, |state, cx| {
+                state.extras.context_menu_content.completion.open = true;
+                cx.notify();
+            })
+        });
+        cx.run_until_parked();
+        assert_eq!(shown(&editor, &cx), None);
+        editor.read_with(&cx, |state, _| assert!(state.inlays(KEY).is_empty() && state.edit_prediction_id().is_some()));
+        cx.update(|_, cx| editor.update(cx, |state, cx| state.hide_context_menu(cx)));
+        cx.run_until_parked();
+        assert_eq!(shown(&editor, &cx), Some((2..2, "cd".into())));
     }
 
     #[gpui::test]

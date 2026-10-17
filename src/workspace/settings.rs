@@ -147,6 +147,7 @@ impl Workspace {
         if new.vim_mode != old.vim_mode {
             self.apply_vim_mode(cx);
         }
+        self.apply_prediction_settings(cx);
     }
 
     /// Every editor of the window: files' buffers and every tab's views.

@@ -38,6 +38,7 @@ mod panels;
 mod panes;
 mod pickers;
 mod plist_editor;
+mod predictions;
 mod project_files;
 mod project_settings;
 mod remote_sheet;
@@ -161,6 +162,8 @@ pub struct Workspace {
     /// Find Call Hierarchy and the type hierarchies, in the Find navigator.
     pub hierarchy: hierarchy::HierarchyState,
     pub inlay_hints: inlay_hints::InlayHints,
+    /// Predictive code completion: requests, recent edits, the indicator.
+    predictions: predictions::Predictions,
     /// Whether the language server was ready last time it said anything,
     /// so its features are asked for again once it is (again).
     lsp_ready: bool,
@@ -312,6 +315,7 @@ impl Workspace {
             },
             hierarchy: Default::default(),
             inlay_hints: inlay_hints::InlayHints::new(current_settings.inlay_hints),
+            predictions: predictions::Predictions::new(&current_settings.edit_predictions),
             lsp_ready: false,
             outline: vec![],
             outline_path: None,
@@ -858,6 +862,7 @@ impl Workspace {
         state["vim"] = self.vim_summary(window, cx);
         state["settings"] = self.settings_summary(window, cx);
         state["agent"] = self.agent_summary(window, cx);
+        state["predictions"] = self.predictions_summary(cx);
         state["language_features"] = serde_json::json!({
             "server": self.lsp.read(cx).features().summary(),
             "inlay_hints": self.inlay_hints_summary(cx),

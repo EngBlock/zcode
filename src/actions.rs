@@ -58,6 +58,10 @@ gpui_kit::actions!(
         NextPlaceholder,
         PreviousPlaceholder,
         TabOrPlaceholder,
+        // Predictive code completion
+        ShowPredictiveCompletion,
+        AcceptEditPrediction,
+        DismissEditPrediction,
         // Find
         FindInWorkspace,
         FindSelectedSymbol,
@@ -216,6 +220,8 @@ const PLIST_INPUT: &str = "PlistEditor > Input";
 const MULTIBUFFER: &str = "Input && multibuffer";
 /// A terminal (`src/terminal/view.rs`).
 const TERMINAL: &str = "Terminal";
+/// A code editor showing an edit prediction (Zed's context name).
+const EDIT_PREDICTION: &str = "Input && mode == editor && edit_prediction";
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys(key_bindings());
@@ -258,6 +264,12 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-/", PreviousPlaceholder, Some(EDITOR)),
         KeyBinding::new("tab", TabOrPlaceholder, Some(EDITOR)),
         KeyBinding::new("ctrl-space", ShowCompletions, Some(EDITOR)),
+        // Editor ▸ Show Predictive Completion (Xcode: ⌃⌥Space); while a
+        // prediction shows, Tab accepts it and ⌥] dismisses it (as Escape
+        // does). Later than Tab's binding above, so it wins.
+        KeyBinding::new("ctrl-alt-space", ShowPredictiveCompletion, Some(EDITOR)),
+        KeyBinding::new("tab", AcceptEditPrediction, Some(EDIT_PREDICTION)),
+        KeyBinding::new("alt-]", DismissEditPrediction, Some(EDIT_PREDICTION)),
         // Xcode's keys are ⌃⌘' and ⌃⇧⌘' (and ⌥ for the dialogs); with ⇧ the
         // key may arrive as `"`.
         KeyBinding::new("ctrl-cmd-'", BookmarkLine, None),
@@ -573,6 +585,7 @@ pub fn commands() -> Vec<Command> {
         cmd!("Editor", "Inline Comparison", InlineComparison),
         cmd!("Editor", "-", Quit),
         cmd!("Editor", "Show Completions", ShowCompletions),
+        cmd!("Editor", "Show Predictive Completion", ShowPredictiveCompletion),
         cmd!("Editor", "Show Code Actions", ToggleCodeActions),
         cmd!("Editor", "Fix Issue", FixIssue),
         cmd!("Editor", "Show Callers…", ShowCallers),

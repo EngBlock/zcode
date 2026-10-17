@@ -661,6 +661,7 @@ impl Workspace {
             (pos.line + 1, pos.character + 1, selected, language)
         });
         let vim = self.vim_status(window, cx);
+        let prediction = self.prediction_indicator(cx);
         let perf = Perf::global(cx);
         h_flex()
             .h(px(24.))
@@ -707,6 +708,28 @@ impl Workspace {
                         .font_family(theme.mono_font_family.clone())
                         .child(div().truncate().max_w(px(480.)).text_color(color).child(text))
                         .when(!vim.pending.is_empty(), |el| el.child(vim.pending.to_string())),
+                )
+            })
+            // Predictive completion, while a provider is set: what it's
+            // doing; a click opens its menu.
+            .when_some(prediction, |el, (busy, label, problem)| {
+                el.child(
+                    h_flex()
+                        .id("prediction-status")
+                        .gap_1()
+                        .px_1()
+                        .rounded(theme.radius)
+                        .hover(|el| el.bg(theme.secondary_hover))
+                        .when(problem, |el| el.text_color(theme.danger))
+                        .child(if busy {
+                            Icon::new(IconName::Loader).xsmall().into_any_element()
+                        } else {
+                            Icon::new(gpui_kit::assets::IconName::Sparkles).xsmall().into_any_element()
+                        })
+                        .child(div().truncate().max_w(px(320.)).child(label))
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.show_predictions_menu(event.position, window, cx)
+                        })),
                 )
             })
             .when_some(cursor, |el, (line, col, selected, language)| {
@@ -993,6 +1016,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::next_placeholder))
             .on_action(cx.listener(Self::previous_placeholder))
             .on_action(cx.listener(Self::tab_or_placeholder))
+            .on_action(cx.listener(Self::show_predictive_completion))
+            .on_action(cx.listener(Self::accept_edit_prediction))
+            .on_action(cx.listener(Self::dismiss_edit_prediction))
             .on_action(cx.listener(Self::toggle_soft_wrap))
             .on_action(cx.listener(Self::jump_to_definition))
             .on_action(cx.listener(Self::fix_issue))

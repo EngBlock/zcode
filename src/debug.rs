@@ -63,6 +63,8 @@
 //!                              mentions (the picker), allow|reject [always], cancel, new, agent <id>, follow on|off,
 //!                              mode <id>, auth <method>, review / reject-file / keep [<path>], expand <entry>
 //!                              (see `Workspace::agent_command`); `dump` has `agent`
+//!   predict <command>          predictive code completion: status, request (⌃⌥Space), accept, dismiss,
+//!                              edits (see `Workspace::prediction_command`); `dump` has `predictions`
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -482,6 +484,12 @@ fn run_command(
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.terminal_command(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+        }
+        "predict" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.prediction_command(arg, window, cx)))
                 .map_err(|e| e.to_string())?
         }
         "agent" => {

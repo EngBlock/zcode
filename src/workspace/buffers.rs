@@ -294,6 +294,7 @@ impl Workspace {
                 this.buffer_edited_for_git(&path, cx);
                 this.semantic_tokens_edited(&path, cx);
                 this.inlay_hints_edited(&path, cx);
+                this.predictions_edited(&path, cx);
             }
         })
     }
@@ -360,9 +361,10 @@ impl Workspace {
             cx.subscribe(&editor, |this, editor, event: &zcode_editor::ViewportChanged, cx| {
                 this.inlay_hints_viewport_changed(&editor, &event.rows, cx);
             }),
-            cx.observe(&editor, |this, _, cx| {
+            cx.observe(&editor, |this, editor, cx| {
                 // Inline blame follows the focused editor's cursor.
                 this.refresh_inline_blame(cx);
+                this.predictions_editor_changed(&editor, cx);
                 cx.notify();
             }),
             // Clicking into a pane, or tabbing into it, focuses the pane.

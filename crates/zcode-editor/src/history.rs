@@ -162,6 +162,12 @@ impl EditorState {
         });
     }
 
+    /// A number that changes with every change of the text, for telling
+    /// whether an answer about it is stale.
+    pub fn text_revision(&self) -> u64 {
+        self.document_revision
+    }
+
     /// Whether the user's edits are refused. Read-only editors still select,
     /// copy, search, navigate and show language features.
     pub fn is_read_only(&self) -> bool {
