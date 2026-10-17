@@ -28,6 +28,11 @@ WORK = tempfile.mkdtemp(prefix="zcode-e2e-samples-")
 PERF_LOG = os.path.join(WORK, "perf.jsonl")
 BINARY = os.path.join(ROOT, "target", "release", "zcode")
 DEBUG_DIR = tempfile.mkdtemp(prefix="zcode-e2e-")
+# Settings, key bindings, themes and the session live in a folder of the
+# run's own (ZCODE_CONFIG_DIR), so the suite never reads or changes the
+# user's ~/.config/zcode or their session; every zcode it starts inherits it.
+CONFIG_DIR = tempfile.mkdtemp(prefix="zcode-e2e-config-")
+os.environ["ZCODE_CONFIG_DIR"] = CONFIG_DIR
 
 passed, failed = 0, 0
 ONLY = sys.argv[sys.argv.index("--only") + 1].lower().split(",") if "--only" in sys.argv else None
@@ -149,11 +154,13 @@ class Zcode:
     def __init__(self, project, extra_env=None, keep_vim=False):
         self.log_offset = 0
         env = dict(os.environ, ZCODE_DEBUG_DIR=DEBUG_DIR, **(extra_env or {}))
+        # zcode's own log, for a check that fails: $ZCODE_E2E_STDERR.
+        stderr = open(os.environ["ZCODE_E2E_STDERR"], "a") if os.environ.get("ZCODE_E2E_STDERR") else subprocess.DEVNULL
         self.proc = subprocess.Popen([BINARY, project], env=env,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                     stdout=subprocess.DEVNULL, stderr=stderr)
         self.run("wait 1")
-        # Runs share the user's session: Vim mode is off unless a check
-        # turns it on.
+        # The run's settings are shared by its checks: Vim mode is off
+        # unless a check turns it on.
         if not keep_vim:
             self.run("vim off")
 
@@ -3616,6 +3623,335 @@ def compare_apps():
         assert zcode["median_ms"] < ms, f"{name} ({ms:.0f} ms) launched faster than zcode"
 
 
+def settings_checks(samples):
+    """File-based settings on a copy of ZKit, in the run's own configuration
+    folder (ZCODE_CONFIG_DIR): ⌘, opening settings.json and edits applying as
+    soon as it's saved; a file with a mistake keeping its last good settings
+    and saying where; a project's .zcode/settings.json over the user's; the
+    Editor menu's toggles writing the file and their checkmarks; format and
+    whitespace on save; the terminal's shell; keymap.json with contexts,
+    `null` and Unbind; themes as JSON and Select Theme…; Xcode's themes
+    (a fixture's and Xcode's own, only read) and key bindings imported; the
+    session's old toggles moved into settings.json once; the default files
+    read-only."""
+    project = os.path.realpath(os.path.join(WORK, "SettingsKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    fixtures = os.path.join(ROOT, "tests", "fixtures", "xcode")
+    user_config = os.path.expanduser("~/.config/zcode")
+    before_user = sorted(os.listdir(user_config)) if os.path.isdir(user_config) else None
+    before_user_stamps = {n: os.stat(os.path.join(user_config, n)).st_mtime for n in (before_user or [])}
+    z = Zcode(project)
+    paths = json.loads(z.run("settings paths")[-1])
+    settings_file, keymap_file, themes_dir = paths["settings"], paths["keymap"], paths["themes"]
+
+    def settings(s=None):
+        return (s or z.dump())["settings"]
+
+    def write(path, text):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def write_settings(text):
+        write(settings_file, text)
+
+    def wait_settings(predicate, timeout=10):
+        """Live reload: zcode notices the saved file by itself."""
+        return z.wait_for(lambda s: predicate(settings(s)), timeout=timeout, interval=0.3)
+
+    def own_config_folder():
+        assert paths["config_dir"] == CONFIG_DIR and paths["session"].startswith(CONFIG_DIR), paths
+        assert not paths["settings"].startswith(os.path.expanduser("~/.config")), paths
+
+    def cmd_comma_and_live_reload():
+        z.run(f"open {greeter}", "wait 300", "keys cmd-,", "wait 400")
+        s = z.dump()
+        assert s["active"]["path"] == os.path.realpath(settings_file), s["active"]["path"]
+        assert "// Your zcode settings" in s["active"]["text"], s["active"]["text"]
+        z.run(f"open {greeter}", "wait 300")
+        write_settings('// Mine.\n{\n  "tab_size": 2,\n  "hard_tabs": true,\n  "buffer_font_size": 15,\n  "soft_wrap": "editor_width",\n  "show_whitespaces": "all",\n  "gutter": { "line_numbers": false },\n}\n')
+        s = wait_settings(lambda st: st["tab_size"] == 2)
+        st = settings(s)
+        assert st["active_editor"] == {"tab_size": 2, "hard_tabs": True, "soft_wrap": True, "line_numbers": False, "show_whitespaces": True}, st["active_editor"]
+        assert s["font_size"] == 15 and st["problems"] == [], (s["font_size"], st["problems"])
+        assert "zcode::ToggleSoftWrap" in st["menu_checked"] and "zcode::ToggleInvisibles" in st["menu_checked"], st["menu_checked"]
+        # Tab types a tab now.
+        original = z.dump()["active"]["text"]
+        z.run("keys cmd-up end enter tab", "wait 200")
+        assert z.dump()["active"]["line_text"] == "\t", repr(z.dump()["active"]["line_text"])
+        z.run("keys cmd-z", "wait 200")
+        if z.dump()["active"]["text"] != original:
+            z.run("keys cmd-z", "wait 200")
+        assert z.dump()["active"]["text"] == original
+        write_settings("{}\n")
+        s = wait_settings(lambda st: st["tab_size"] == 4)
+        assert settings(s)["active_editor"]["line_numbers"] and s["font_size"] == 13, settings(s)
+
+    def mistakes_keep_the_last_good_settings():
+        write_settings('{ "tab_size": 3, "tab_szie": 5 }\n')
+        st = settings(wait_settings(lambda st: st["tab_size"] == 3))
+        assert [p["message"] for p in st["problems"]] == ["settings.json: unknown setting “tab_szie”"], st["problems"]
+        write_settings('{\n  "tab_size": 6\n  "soft_wrap": "none"\n}\n')
+        st = settings(wait_settings(lambda st: any(p["error"] for p in st["problems"])))
+        assert st["tab_size"] == 3, "the last good settings stay"
+        assert st["problems"][0]["message"].startswith("settings.json: line 3, column 3: expected `,`"), st["problems"]
+        write_settings('{\n  "tab_size": 0\n}\n')
+        st = settings(wait_settings(lambda st: any("1 to 16" in p["message"] for p in st["problems"])))
+        assert st["problems"][0]["message"].startswith("settings.json: line 2, column 15: expected a number of columns"), st["problems"]
+        write_settings("{}\n")
+        wait_settings(lambda st: st["problems"] == [] and st["tab_size"] == 4)
+
+    def project_settings_win():
+        z.run("settings open project", "wait 300")
+        project_file = os.path.join(project, ".zcode", "settings.json")
+        assert z.dump()["active"]["path"] == project_file
+        write(project_file, '{ "tab_size": 8, "theme": "Default Light", "vim_mode": true }\n')
+        st = settings(wait_settings(lambda st: st["tab_size"] == 8))
+        messages = [p["message"] for p in st["problems"]]
+        assert any(m.endswith(".zcode/settings.json: “theme” is only read from your own settings file") for m in messages), messages
+        assert not st["vim_mode"], "Vim mode is the user's"
+        # A toggle the project sets is written there; others to the user's.
+        z.run(f"open {greeter}", "wait 200", "settings set tab_size 7", "wait 300")
+        assert '"tab_size": 7' in open(project_file).read()
+        os.remove(project_file)
+        st = settings(wait_settings(lambda st: st["tab_size"] == 4))
+        assert st["problems"] == [], st["problems"]
+        z.run("keys cmd-w", "wait 200")
+
+    def toggles_write_the_file_with_checkmarks():
+        z.run(f"open {greeter}", "wait 300")
+        for action, key in [("ToggleInlayHints", "inlay_hints"), ("ShowAuthors", "show_authors"), ("ToggleInvisibles", "show_whitespaces"), ("ToggleSoftWrap", "soft_wrap")]:
+            z.run(f"action zcode::{action}", "wait 200")
+            st = settings()
+            assert st[key] and f"zcode::{action}" in st["menu_checked"], (action, st)
+            z.run(f"action zcode::{action}", "wait 200")
+            st = settings()
+            assert not st[key] and f"zcode::{action}" not in st["menu_checked"], (action, st)
+        text = open(settings_file).read()
+        assert '"inlay_hints": {\n    "enabled": false\n  }' in text and '"show_whitespaces": "none"' in text, text
+        assert '"git": {\n    "show_authors": false\n  }' in text, text
+        z.run("action zcode::InlineComparison", "wait 200")
+        st = settings()
+        assert "zcode::InlineComparison" in st["menu_checked"] and "zcode::SideBySideComparison" not in st["menu_checked"], st["menu_checked"]
+        z.run("action zcode::SideBySideComparison", "keys cmd-+ cmd-+", "wait 300")
+        assert settings()["buffer_font_size"] == 15, settings()["buffer_font_size"]
+        assert '"buffer_font_size": 15\n' in open(settings_file).read(), open(settings_file).read()
+        z.run("keys ctrl-cmd-0", "wait 300")
+        assert z.dump()["font_size"] == 13
+
+    def whitespace_and_format_on_save():
+        write_settings('{ "remove_trailing_whitespace_on_save": true }\n')
+        wait_settings(lambda st: st["remove_trailing_whitespace_on_save"])
+        z.run(f"open {greeter}", "wait 300")
+        z.run("keys cmd-up end space space space", "wait 100")
+        assert z.dump()["active"]["line_text"] == "/// Builds greetings.   "
+        z.run("keys cmd-s", "wait 500")
+        assert open(greeter).read().startswith("/// Builds greetings.\n"), open(greeter).read()[:40]
+        assert z.dump()["active"]["line_text"] == "/// Builds greetings.", "trimmed in the editor too"
+        write_settings('{ "format_on_save": "on" }\n')
+        wait_settings(lambda st: st["format_on_save"])
+        z.wait_for(lambda s: s["lsp"] == "Ready", timeout=120)
+        # Spacing sourcekit-lsp's formatter (swift-format) fixes.
+        z.run("keys escape", f"open {greeter}:2", "wait 300", "keys end enter", "type let extra   =   1", "wait 200", "keys escape cmd-s")
+        z.wait_for(lambda s: not s["active"]["dirty"], timeout=30)
+        saved = open(greeter).read()
+        assert "\n    let extra = 1\n" in saved, "formatted on save: " + saved
+        assert z.dump()["active"]["line_text"].strip() == "let extra = 1", "and in the editor"
+        # A file without a final newline keeps it that way.
+        write_settings('{ "ensure_final_newline_on_save": false }\n')
+        wait_settings(lambda st: not st["ensure_final_newline_on_save"] and not st["format_on_save"])
+        z.run("keys cmd-down", "type // end", "keys cmd-s", "wait 500")
+        assert open(greeter).read().endswith("// end"), open(greeter).read()[-40:]
+        write_settings("{}\n")
+        wait_settings(lambda st: not st["format_on_save"])
+        with open(greeter, "w") as f:
+            f.write(open(os.path.join(samples, "ZKit", "Sources", "ZKit", "Greeter.swift")).read())
+        z.run("wait 3500")
+
+    def terminal_shell_setting():
+        write_settings('{ "terminal": { "shell": { "program": "/bin/bash", "args": ["--norc", "--noprofile"] } } }\n')
+        wait_settings(lambda st: st["terminal_shell"] == ["/bin/bash", ["--norc", "--noprofile"]])
+        z.run("terminal panel", "wait 1000", 'terminal type 0 echo "SHELL_IS=$0"\\n')
+        z.wait_for(lambda s: any(l.strip() == "SHELL_IS=/bin/bash" for l in s["terminals"]["list"][0].get("lines") or []), timeout=20, interval=0.3)
+        z.run("terminal close 0", "wait 300")
+        write_settings("{}\n")
+        wait_settings(lambda st: st["terminal_shell"] is None)
+
+    def keymap_with_contexts():
+        write(keymap_file, """[
+  // Mine: a key for the Find navigator, one only in editors, one only in Vim's normal mode.
+  { "bindings": { "cmd-shift-b": "zcode::ShowFindNavigator", "cmd-1": ["zed::Unbind", "zcode::ShowProjectNavigator"] } },
+  { "context": "Editor", "bindings": { "ctrl-k": "DuplicateLine" } },
+  { "context": "Editor && vim_mode == normal", "bindings": { "space f": "zcode::OpenQuickly" } },
+  { "context": "Navigator && navigator == find", "bindings": { "cmd-shift-b": null } },
+  { "context": "Terminal", "bindings": { "cmd-j": "zcode::Nope" } }
+]
+""")
+        st = settings(wait_settings(lambda st: st["user_bindings"] == 6))
+        assert [p["message"] for p in st["problems"]] == ["keymap.json: “cmd-j”: no action named “zcode::Nope”"], st["problems"]
+        keymap = json.loads(z.run("keymap")[-1])
+        assert "cmd-shift-b" in keymap["zcode::ShowFindNavigator"], keymap["zcode::ShowFindNavigator"]
+        z.run(f"open {greeter}", "wait 300", "keys cmd-shift-b", "wait 200")
+        assert z.dump()["navigator"] == "Find"
+        z.run("keys cmd-1", "wait 200")
+        assert z.dump()["navigator"] == "Find", "Unbind took ⌘1 off Show Project Navigator"
+        z.run(f"open {greeter}", "wait 200")
+        text = z.dump()["active"]["text"]
+        z.run("keys cmd-up ctrl-k", "wait 200")
+        assert z.dump()["active"]["text"].count("/// Builds greetings.") == 2, "⌃K duplicated the line in the editor"
+        z.run("keys cmd-z", "wait 200")
+        assert z.dump()["active"]["text"] == text
+        z.run("vim on", "wait 200", "keys escape space f", "wait 300")
+        assert z.dump()["modal_open"], "space f opened Open Quickly in normal mode"
+        z.run("keys escape", "vim off", "wait 200")
+        write(keymap_file, "[]\n")
+        wait_settings(lambda st: st["user_bindings"] == 0 and st["problems"] == [])
+        z.run("keys cmd-1", "wait 200")
+        assert z.dump()["navigator"] == "Project", "⌘1 is back"
+
+    def json_themes_and_select_theme():
+        write(os.path.join(themes_dir, "Harbor.json"), """{
+  // A set of two, as gpui-component writes them.
+  "name": "Harbor",
+  "themes": [
+    { "name": "Harbor Dark", "mode": "dark", "colors": { "selection.background": "#33507080" },
+      "highlight": { "editor.background": "#102030ff", "syntax": { "keyword": { "color": "#ff6699ff", "font_weight": 700 } } } },
+    { "name": "Harbor Light", "mode": "light", "highlight": { "editor.background": "#f0f4f8ff" } }
+  ]
+}
+""")
+        write(os.path.join(themes_dir, "zedish.json"), """{ "name": "Zedish", "themes": [{ "name": "Zedish Dark", "appearance": "dark",
+  "style": { "background": "#202020", "text": "#e0e0e0", "editor.background": "#181818ff", "syntax": { "keyword": { "color": "#c678ddff" } } } }] }
+""")
+        write_settings('{ "theme": "Harbor Dark" }\n')
+        st = settings(wait_settings(lambda st: st["theme"]["name"] == "Harbor Dark"))
+        assert st["theme"]["editor_background"] == "#102030ff" and st["theme"]["keyword"] == "#ff6699ff", st["theme"]
+        # (gpui-component keeps selections translucent: its own alpha.)
+        assert st["theme"]["selection"].startswith("#335070") and st["theme"]["mode"] == "dark", st["theme"]
+        # Editing the theme's file shows at once.
+        path = os.path.join(themes_dir, "Harbor.json")
+        write(path, open(path).read().replace("#102030ff", "#112233ff"))
+        wait_settings(lambda st: st["theme"]["editor_background"] == "#112233ff")
+        write_settings('{ "theme": "Zedish Dark" }\n')
+        st = settings(wait_settings(lambda st: st["theme"]["name"] == "Zedish Dark"))
+        assert st["theme"]["editor_background"] == "#181818ff" and st["theme"]["keyword"] == "#c678ddff", st["theme"]
+        write_settings('{ "theme": "Nowhere" }\n')
+        st = settings(wait_settings(lambda st: any("Nowhere" in p["message"] for p in st["problems"])))
+        assert st["theme"]["name"] in ("Default Dark", "Default Light"), st["theme"]
+        # Select Theme…: the light one, written to the settings.
+        z.run("action zcode::SelectTheme", "wait 300", "type Harbor Light", "wait 200", "keys enter", "wait 500")
+        st = settings()
+        assert st["theme"]["name"] == "Harbor Light" and st["theme"]["mode"] == "light", st["theme"]
+        assert '"theme": "Harbor Light"' in open(settings_file).read()
+        write_settings("{}\n")
+        wait_settings(lambda st: st["theme"]["name"] in ("Default Dark", "Default Light") and st["problems"] == [])
+
+    def xcode_theme_import():
+        z.run(f"settings import-theme {os.path.join(fixtures, 'Harbor Night.xccolortheme')}", "wait 500")
+        written = os.path.join(themes_dir, "Harbor Night.json")
+        assert os.path.exists(written), os.listdir(themes_dir)
+        st = settings()
+        assert st["theme"]["name"] == "Harbor Night" and st["theme"]["mode"] == "dark", st["theme"]
+        assert st["theme"]["editor_background"] == "#101823ff" and st["theme"]["keyword"] == "#ff6699ff", st["theme"]
+        assert st["theme"]["mono_font"] == "Menlo", st["theme"]
+        # Xcode's own themes, read where Xcode keeps them.
+        found = json.loads(z.run("settings xcode-themes")[-1])["themes"]
+        built_in = [t["name"] for t in found if t["built_in"]]
+        assert "Midnight" in built_in and "Default (Light)" in built_in, found
+        xcode_dir = subprocess.run(["xcode-select", "-p"], capture_output=True, text=True).stdout.strip()
+        midnight = os.path.join(os.path.dirname(xcode_dir), "SharedFrameworks/DVTUserInterfaceKit.framework/Versions/A/Resources/FontAndColorThemes/Midnight.xccolortheme")
+        stamp = os.stat(midnight).st_mtime
+        z.run(f"settings import-theme {midnight}", "wait 500")
+        st = settings()
+        assert st["theme"]["name"] == "Midnight" and st["theme"]["mode"] == "dark", st["theme"]
+        assert os.stat(midnight).st_mtime == stamp, "Xcode's file was only read"
+        write_settings("{}\n")
+        wait_settings(lambda st: st["theme"]["name"] in ("Default Dark", "Default Light"))
+
+    def xcode_key_bindings_import():
+        write(keymap_file, '[\n  // Mine.\n  { "bindings": { "f5": "zcode::Run" } }\n]\n')
+        z.run(f"settings import-keys {os.path.join(fixtures, 'Rebound.idekeybindings')}", "wait 500")
+        blocks = json.loads(re_strip_comments(open(keymap_file).read()))
+        assert blocks[0] == {"bindings": {"f5": "zcode::Run"}}, blocks
+        assert blocks[1]["xcode_import"] == "Rebound.idekeybindings" and blocks[1]["bindings"]["alt-cmd-4"] == "zcode::ShowFindNavigator", blocks
+        assert blocks[1]["bindings"]["cmd-4"] == ["zed::Unbind", "zcode::ShowFindNavigator"], blocks
+        assert blocks[1]["bindings"]["cmd-5"] == ["zed::Unbind", "zcode::ShowIssueNavigator"], blocks
+        assert blocks[2] == {"xcode_import": "Rebound.idekeybindings", "context": "Editor", "bindings": {"ctrl-shift-k": "input::DeleteToEndOfLine"}}, blocks
+        settings(wait_settings(lambda st: st["user_bindings"] >= 5))
+        z.run(f"open {greeter}", "wait 200", "keys cmd-1 cmd-4", "wait 200")
+        assert z.dump()["navigator"] == "Project", "⌘4 was rebound in Xcode"
+        z.run("keys alt-cmd-4", "wait 200")
+        assert z.dump()["navigator"] == "Find"
+        z.run("keys cmd-1 cmd-5", "wait 200")
+        assert z.dump()["navigator"] == "Project", "Issues lost its shortcut in Xcode"
+        # Again: the import's blocks are replaced, not added.
+        z.run(f"settings import-keys {os.path.join(fixtures, 'Rebound.idekeybindings')}", "wait 500")
+        assert len(json.loads(re_strip_comments(open(keymap_file).read()))) == 3
+        # The user's own sets, read where Xcode keeps them (may be empty).
+        for path in json.loads(z.run("settings xcode-key-sets")[-1])["sets"]:
+            stamp = os.stat(path).st_mtime
+            z.run(f"settings import-keys {path}", "wait 300")
+            assert os.stat(path).st_mtime == stamp
+        write(keymap_file, "[]\n")
+        wait_settings(lambda st: st["user_bindings"] == 0)
+
+    def default_files_read_only():
+        z.run("settings open default-settings", "wait 300")
+        a = z.dump()["active"]
+        assert a["read_only"] and '"tab_size": 4' in a["text"], a
+        z.run("keys cmd-w", "settings open default-keymap", "wait 300")
+        a = z.dump()["active"]
+        assert a["read_only"] and a["path"].endswith("default-keymap.json"), a
+        z.run("keys cmd-w", "wait 200")
+
+    def user_config_untouched():
+        after = sorted(os.listdir(user_config)) if os.path.isdir(user_config) else None
+        assert after == before_user, (before_user, after)
+        for name, mtime in before_user_stamps.items():
+            assert os.stat(os.path.join(user_config, name)).st_mtime == mtime, name
+
+    try:
+        check("Settings: e2e uses a configuration folder of its own (ZCODE_CONFIG_DIR)", own_config_folder)
+        check("Settings: ⌘, opens settings.json; saved edits apply at once (tab size, hard tabs, font size, wrap, invisibles, line numbers)", cmd_comma_and_live_reload)
+        check("Settings: a file with a mistake keeps its last good settings and says where", mistakes_keep_the_last_good_settings)
+        check("Settings: a project's .zcode/settings.json wins over the user's, except the app's own settings", project_settings_win)
+        check("Settings: the Editor menu's toggles and ⌘+ write settings.json, with checkmarks", toggles_write_the_file_with_checkmarks)
+        check("Settings: trailing whitespace, final newline and format on save (sourcekit-lsp)", whitespace_and_format_on_save)
+        check("Settings: terminal.shell starts the terminal's shell", terminal_shell_setting)
+        check("Settings: keymap.json with contexts (Editor, vim_mode, Navigator), Unbind and null; mistakes reported", keymap_with_contexts)
+        check("Settings: themes as JSON (gpui-component's and Zed's formats), live, and Select Theme…", json_themes_and_select_theme)
+        check("Settings: Xcode themes import (a fixture, and Xcode's Midnight read in place)", xcode_theme_import)
+        check("Settings: Xcode key bindings import into keymap.json (rebound, removed, text bindings; again replaces)", xcode_key_bindings_import)
+        check("Settings: Open Default Settings and Default Key Bindings are read-only", default_files_read_only)
+    finally:
+        z.quit()
+    check("Settings: the user's ~/.config/zcode is never touched", user_config_untouched)
+
+    def session_toggles_migrate():
+        config = tempfile.mkdtemp(prefix="zcode-e2e-migrate-")
+        write(os.path.join(config, "support", "session.json"), json.dumps({"recent": [], "projects": {}, "font_size": 15.0, "inlay_hints": True, "vim_mode": True, "show_authors": True}))
+        other = Zcode(project, {"ZCODE_CONFIG_DIR": config}, keep_vim=True)
+        try:
+            st = settings(other.dump())
+            assert st["buffer_font_size"] == 15 and st["inlay_hints"] and st["vim_mode"] and st["show_authors"], st
+            assert set(st["menu_checked"]) >= {"zcode::ToggleVimMode", "zcode::ShowAuthors", "zcode::ToggleInlayHints"}, st["menu_checked"]
+            moved = json.loads(re_strip_comments(open(os.path.join(config, "settings.json")).read()))
+            assert moved == {"buffer_font_size": 15.0, "inlay_hints": {"enabled": True}, "vim_mode": True, "git": {"show_authors": True}}, moved
+            session = json.load(open(os.path.join(config, "support", "session.json")))
+            assert not ({"font_size", "vim_mode", "inlay_hints", "show_authors"} & set(session)), session
+        finally:
+            other.quit()
+            shutil.rmtree(config, ignore_errors=True)
+
+    check("Settings: the session's old toggles move into settings.json once", session_toggles_migrate)
+
+
+def re_strip_comments(text):
+    """JSON with `//` comments (as zcode writes them) as plain JSON."""
+    return "\n".join(l for l in text.splitlines() if not l.strip().startswith("//"))
+
+
 def main():
     if not os.path.exists(BINARY):
         sys.exit("build first: cargo build --release")
@@ -3722,6 +4058,9 @@ def main():
     print("Vim mode (a copy of samples/ZKit):")
     vim_checks(samples)
 
+    print("Settings, key bindings and themes (a copy of samples/ZKit):")
+    settings_checks(samples)
+
     print("Package dependencies (offline, a local repository of the Tally fixture):")
     package_dependency_checks(samples)
 
@@ -3765,6 +4104,7 @@ def main():
     check("Schemes xcodebuild makes up keep their options in the session; ⌘R uses them", schemeless_project)
 
     shutil.rmtree(DEBUG_DIR, ignore_errors=True)
+    shutil.rmtree(CONFIG_DIR, ignore_errors=True)
     shutil.rmtree(WORK, ignore_errors=True)
     print(f"\n{passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
