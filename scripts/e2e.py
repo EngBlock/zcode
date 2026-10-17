@@ -146,12 +146,16 @@ def normalize_keys(keys):
 
 
 class Zcode:
-    def __init__(self, project, extra_env=None):
+    def __init__(self, project, extra_env=None, keep_vim=False):
         self.log_offset = 0
         env = dict(os.environ, ZCODE_DEBUG_DIR=DEBUG_DIR, **(extra_env or {}))
         self.proc = subprocess.Popen([BINARY, project], env=env,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.run("wait 1")
+        # Runs share the user's session: Vim mode is off unless a check
+        # turns it on.
+        if not keep_vim:
+            self.run("vim off")
 
     def run(self, *commands, timeout=90):
         log_path = os.path.join(DEBUG_DIR, "log")
@@ -3030,6 +3034,275 @@ def terminal_checks(samples):
         z.quit()
 
 
+VIM_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>VimKit</string>
+</dict>
+</plist>
+"""
+
+
+def vim_checks(samples):
+    """Editor ▸ Vim Mode on a copy of ZKit: off by default and turned on for
+    every tab; normal, insert and visual mode editing a Swift file through
+    the real key path; `:w`, `:q` and `:q!`; search; Escape closing
+    sourcekit-lsp's completion before it leaves insert mode; `:w` in a
+    multibuffer saving the files it changed; terminals, property lists and
+    Open Quickly's field left alone; a mode per pane; typing latency in
+    insert mode against Vim mode off; and the setting after a relaunch."""
+    project = os.path.realpath(os.path.join(WORK, "VimKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    main_swift = os.path.join(project, "Sources", "zhello", "main.swift")
+    big = os.path.join(project, "Sources", "ZKit", "Big.swift")
+    info = os.path.join(project, "Info.plist")
+    with open(big, "w") as f:
+        f.write(big_swift())
+    with open(info, "w") as f:
+        f.write(VIM_PLIST)
+    original = open(greeter).read()
+    name_line = line_of(greeter, "public let name")
+    init_line = line_of(greeter, "self.name = name")
+    env = {"ZCODE_TERMINAL_SHELL": "/bin/zsh -f"}
+    z = Zcode(project, env)
+
+    def vim(s=None):
+        return (s or z.dump())["vim"]
+
+    def mode(s=None):
+        return vim(s)["mode"]
+
+    def line(s=None):
+        return (s or z.dump())["active"]["line_text"]
+
+    def esc():
+        """Escape until normal mode: a completion menu (sourcekit-lsp offers
+        one while a word is typed) takes the first one."""
+        for _ in range(3):
+            z.run("keys escape", "wait 100")
+            if mode() == "NORMAL":
+                return
+        raise AssertionError(f"still {mode()}")
+
+    def off_by_default_then_every_tab():
+        z.run(f"open {greeter}:{name_line}", f"open {main_swift}:1", "wait 300")
+        v = vim()
+        assert not v["enabled"] and v["editors_on"] == 0 and v["mode"] is None, v
+        # Typing types.
+        z.run("type j", "wait 100")
+        assert line().startswith("j"), line()
+        z.run("keys cmd-z", "wait 100")
+        z.run("action zcode::ToggleVimMode", "wait 200")
+        v = vim()
+        assert v["enabled"] and v["editors_on"] == v["editors"] >= 2 and v["mode"] == "NORMAL", v
+        z.run(f"open {greeter}:{name_line}", "wait 200")
+        assert mode() == "NORMAL"
+
+    def normal_insert_and_undo():
+        z.run(f"open {greeter}:{name_line}", "wait 200", "type 0w", "wait 100")
+        s = z.dump()
+        assert s["active"]["column"] == 5 and not s["active"]["dirty"], s["active"]
+        # ciw, typed text, Escape: one change, undone in one step.
+        z.run("type ciw", "wait 100")
+        assert mode() == "INSERT"
+        z.run("type private")
+        esc()
+        s = z.dump()
+        assert mode(s) == "NORMAL" and line(s) == "    private let name: String", line(s)
+        assert s["active"]["column"] == 11 and s["active"]["dirty"], s["active"]
+        z.run("type u", "wait 100")
+        s = z.dump()
+        assert line(s) == "    public let name: String" and not s["active"]["dirty"], s["active"]
+        # . repeats the change on another word.
+        z.run("type ciwopen")
+        esc()
+        z.run("type w.", "wait 100")
+        assert line() == "    open open name: String", line()
+        z.run("type uu", "wait 100")
+        assert line() == "    public let name: String" and not z.dump()["active"]["dirty"]
+        # Operators, counts and text objects.
+        z.run("type $F:D", "wait 100")
+        assert line() == "    public let name", line()
+        z.run("type u0d2w", "wait 100")
+        assert line() == "let name: String", line()
+        z.run("type uyyjp", "wait 100")
+        s = z.dump()
+        assert s["active"]["line"] == name_line + 2 and line(s) == "    public let name: String", (s["active"]["line"], line(s))
+        z.run("type uk", "wait 100")
+        assert open(greeter).read() == original and not z.dump()["active"]["dirty"]
+
+    def visual_and_search():
+        z.run(f"open {greeter}:1", "wait 200", "type /greeting(", "wait 100")
+        assert vim()["command_line"] == "/greeting(", vim()
+        z.run("keys enter", "wait 200")
+        s = z.dump()
+        assert s["active"]["line"] == line_of(greeter, "func greeting") and mode(s) == "NORMAL", s["active"]
+        # Visual line, indent, and undo.
+        z.run("type Vj>", "wait 100")
+        s = z.dump()
+        assert line(s).startswith("        public func greeting"), line(s)
+        z.run("type u", "wait 100")
+        # Visual: the selection is what Vim selects, both ends included.
+        z.run("type 0wve", "wait 100")
+        s = z.dump()
+        assert mode(s) == "VISUAL" and s["active"]["selection"] == "public", s["active"]["selection"]
+        z.run("keys escape", "wait 100")
+        assert mode() == "NORMAL" and not z.dump()["active"]["dirty"]
+
+    def write_and_quit():
+        z.run(f"open {greeter}:{name_line}", "wait 200", "type 0wcwinternal")
+        esc()
+        z.run("type :w", "keys enter", "wait 300")
+        s = z.dump()
+        assert "internal let name" in open(greeter).read() and not s["active"]["dirty"], s["active"]
+        # :q with unsaved changes says so; :q! closes the tab without saving.
+        z.run("type x:q", "keys enter", "wait 200")
+        s = z.dump()
+        assert s["active"]["path"] == greeter and s["active"]["dirty"], s["active"]
+        assert vim(s)["message"].startswith("E37"), vim(s)
+        z.run("type :q!", "keys enter", "wait 300")
+        s = z.dump()
+        tabs = s["panes"]["list"][0]["tabs"]
+        assert "Greeter.swift" not in tabs and "main.swift" in tabs, tabs
+        assert "internal let name" in open(greeter).read(), "the x wasn't saved"
+        # :wq saves and closes; the window stays.
+        z.run(f"open {greeter}:{name_line}", "wait 200", "type 0wcwpublic")
+        esc()
+        z.run("type :wq", "keys enter", "wait 300")
+        s = z.dump()
+        assert open(greeter).read() == original and "Greeter.swift" not in s["panes"]["list"][0]["tabs"], s["panes"]
+
+    def escape_closes_completion_first():
+        z.run(f"open {greeter}:{init_line}", "wait 300")
+        z.wait_for(lambda s: s["lsp"] == "Ready", timeout=120)
+        z.run("type A", "keys enter", "wait 300")
+        for attempt in range(4):
+            z.run("type self.na", "wait 500")
+            try:
+                z.wait_for(lambda s: s["active"]["completion_menu_open"], timeout=10, interval=0.3)
+                break
+            except TimeoutError:
+                z.run("keys ctrl-u", "wait 1000")
+        s = z.dump()
+        assert s["active"]["completion_menu_open"] and mode(s) == "INSERT", s["active"]
+        z.run("keys escape", "wait 200")
+        s = z.dump()
+        assert not s["active"]["completion_menu_open"] and mode(s) == "INSERT", (s["active"]["completion_menu_open"], mode(s))
+        z.run("keys escape", "wait 200")
+        assert mode() == "NORMAL"
+        z.run("type u", "wait 200")
+        assert not z.dump()["active"]["dirty"]
+
+    def multibuffer_write():
+        z.run("keys cmd-shift-f", "wait 200", "type greeting", "keys enter")
+        z.wait_for(lambda s: s["find_results"] > 0, timeout=20, interval=0.3)
+        z.run("action zcode::ShowFindResultsInEditor", "wait 500")
+        s = z.dump()
+        assert s["panes"]["list"][0]["active"] == "Find “greeting”" and mode(s) == "NORMAL", (s["panes"]["list"][0], vim(s))
+        m = s["multibuffer"]["active"]
+        n = next(n for n in m["numbers"] if n["file"] == "Greeter.swift" and n["line"] == line_of(greeter, "func greeting"))
+        z.run(f"click {n['x'] + 300} {n['y']}", "wait 200")
+        assert mode() == "NORMAL", vim()
+        z.run("type A // vim")
+        esc()
+        m = z.dump()["multibuffer"]["active"]
+        assert m["dirty"] == ["Greeter.swift"] and "// vim" in m["text"], m["dirty"]
+        assert "// vim" not in open(greeter).read()
+        z.run("type :w", "keys enter", "wait 300")
+        m = z.dump()["multibuffer"]["active"]
+        assert not m["dirty"] and "// vim" in open(greeter).read(), m["dirty"]
+        z.run("type u:w", "keys enter", "wait 300")
+        assert open(greeter).read() == original
+        z.run("type :q", "keys enter", "wait 300")
+        assert not any(t.startswith("Find") for t in z.dump()["panes"]["list"][0]["tabs"])
+
+    def left_alone():
+        # Open Quickly's field types what's typed.
+        z.run("keys cmd-shift-o", "wait 300", "type Greeterjk", "keys backspace backspace", "wait 300", "keys enter", "wait 300")
+        s = z.dump()
+        assert s["active"]["path"] == greeter and not s["modal_open"], s["active"]["path"]
+        # The terminal gets every key.
+        z.run("keys ctrl-cmd-`", "wait 300")
+        s = z.wait_for(lambda s: s["terminals"]["list"] and s["terminals"]["list"][0]["state"] == "running", timeout=20, interval=0.3)
+        z.run("type echo vim-jk-$((1+1))", "keys enter")
+        z.wait_for(lambda s: "vim-jk-2" in (s["terminals"]["list"][0].get("lines") or []), timeout=10, interval=0.3)
+        s = z.dump()
+        assert s["active"]["path"] == greeter and not s["active"]["dirty"], "the editor behind kept its text"
+        z.run("keys cmd-shift-y", "wait 200")
+        # A property list's outline has no Vim mode; as source code it has.
+        z.run(f"open {info}", "wait 500")
+        s = z.dump()
+        assert s["active"]["plist"] and not s["active"]["plist"]["as_source"] and mode(s) is None, (s["active"]["plist"], vim(s))
+        z.run(f"open-as {info} source", "wait 300")
+        assert mode() == "NORMAL", vim()
+        z.run(f"open-as {info} plist", "wait 300")
+
+    def a_mode_per_pane():
+        z.run(f"open {greeter}:{name_line}", "wait 200", "keys ctrl-cmd-t", "wait 500")
+        panes = z.dump()["panes"]["list"]
+        assert len(panes) == 2 and panes[1]["focused"], panes
+        z.run("type i", "wait 100")
+        panes = z.dump()["panes"]["list"]
+        assert [p["shown"]["vim"] for p in panes] == ["NORMAL", "INSERT"], [p["shown"] for p in panes]
+        z.run("pane focus 0", "wait 200")
+        s = z.dump()
+        assert mode(s) == "NORMAL" and [p["shown"]["vim"] for p in s["panes"]["list"]] == ["NORMAL", "INSERT"]
+        z.run("pane focus 1")
+        esc()
+        z.run("keys ctrl-shift-cmd-w", "wait 300")
+        assert len(z.dump()["panes"]["list"]) == 1
+
+    def typing_latency():
+        z.run(f"open {big}:3001", "wait 1500")
+        z.run("vim off", "wait 200", "keys cmd-right")
+        off = json.loads(z.run("type-latency abcdefghijklmnopqrstuvwxyz")[-1])
+        z.run("keys cmd-z", "wait 300", "vim on", "wait 200", "type A", "wait 100")
+        assert mode() == "INSERT"
+        on = json.loads(z.run("type-latency abcdefghijklmnopqrstuvwxyz")[-1])
+        esc()
+        z.run("type u", "wait 300")
+        print(f"      typing in a 6,000-line file, median / p95: Vim mode off {off['median_ms']:.1f} / {off['p95_ms']:.1f} ms, "
+              f"insert mode {on['median_ms']:.1f} / {on['p95_ms']:.1f} ms")
+        assert on["median_ms"] < 16 and not z.dump()["active"]["dirty"], on
+
+    def kept_after_a_relaunch():
+        nonlocal z
+        z.quit()
+        z = Zcode(project, env)
+        z.run("vim on", f"open {greeter}:{name_line}", "wait 300")
+        z.quit()
+        # Zcode() turns it off for each instance; this one reads it as saved.
+        z = Zcode(project, env, keep_vim=True)
+        s = z.dump()
+        assert vim(s)["enabled"] and mode(s) == "NORMAL", vim(s)
+        z.run("type 0wv", "wait 100")
+        assert mode() == "VISUAL"
+        z.run("keys escape", "action zcode::ToggleVimMode", "wait 200")
+        v = vim()
+        assert not v["enabled"] and v["editors_on"] == 0, v
+
+    try:
+        check("Vim Mode: off by default; Editor ▸ Vim Mode turns it on in every tab", off_by_default_then_every_tab)
+        check("Vim Mode: ciw, . repeat, D, d2w, yy p and u through the real key path, undone in one step each", normal_insert_and_undo)
+        check("Vim Mode: / search, V j >, and a visual selection both ends included", visual_and_search)
+        check("Vim Mode: :w saves, :q refuses unsaved changes (E37), :q! and :wq close the tab, not the window", write_and_quit)
+        check("Vim Mode: Escape closes sourcekit-lsp's completion before it leaves insert mode", escape_closes_completion_first)
+        check("Vim Mode: in a multibuffer, :w saves the files the tab changed", multibuffer_write)
+        check("Vim Mode: Open Quickly's field, terminals and property list outlines are left alone", left_alone)
+        check("Vim Mode: each pane's editor has its own mode", a_mode_per_pane)
+        check("Vim Mode: typing latency in insert mode against Vim mode off", typing_latency)
+        check("Vim Mode: kept after a relaunch, and turned off again", kept_after_a_relaunch)
+    finally:
+        try:
+            z.run("vim off")
+        except Exception:
+            pass
+        z.quit()
+
+
 def tally_repo():
     """The Tally fixture package as a bare git repository with release tags."""
     out = subprocess.run(["sh", os.path.join(ROOT, "tests", "fixtures", "packages", "make_repo.sh"), os.path.join(WORK, "repos")],
@@ -3445,6 +3718,9 @@ def main():
 
     print("Integrated terminal (a copy of samples/ZKit, `zsh -f`):")
     terminal_checks(samples)
+
+    print("Vim mode (a copy of samples/ZKit):")
+    vim_checks(samples)
 
     print("Package dependencies (offline, a local repository of the Tally fixture):")
     package_dependency_checks(samples)
