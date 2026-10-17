@@ -124,6 +124,7 @@ pub use gutter::{
 pub use cursor::Selection;
 pub use edits::BufferEdit;
 pub use highlights::HighlightPriority;
+pub use history::{HistoryRequest, TransactionId};
 pub use modal::{CursorShape, KeystrokeInterceptor};
 pub use viewport::ViewportChanged;
 pub use decorations::{

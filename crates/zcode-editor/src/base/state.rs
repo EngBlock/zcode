@@ -194,6 +194,9 @@ pub struct InputBaseState<M: InputModeKind> {
     /// applying an edit one of them made (`linked.rs`).
     pub(crate) linked_views: Vec<gpui::WeakEntity<Self>>,
     pub(crate) applying_linked_edit: bool,
+    /// Undo and redo are asked for (`HistoryRequest`) instead of replayed:
+    /// a multibuffer keeps the history of the files its excerpts edit.
+    pub(crate) external_history: bool,
     pub(super) inline_tokens: Option<Box<super::inline_tokens::InlineTokenStore>>,
     pub(super) pending_token: Option<super::InlineToken>,
     pub(super) replaying_history: bool,
@@ -611,6 +614,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             programmatic_edit: false,
             linked_views: Vec::new(),
             applying_linked_edit: false,
+            external_history: false,
             inline_tokens: None,
             pending_token: None,
             replaying_history: false,
@@ -2807,6 +2811,10 @@ impl<M: InputModeKind> InputBaseState<M> {
 
     pub(crate) fn replay_history(&mut self, undo: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_editable() {
+            return;
+        }
+        if self.external_history {
+            cx.emit(if undo { crate::HistoryRequest::Undo } else { crate::HistoryRequest::Redo });
             return;
         }
         let replay = if undo {

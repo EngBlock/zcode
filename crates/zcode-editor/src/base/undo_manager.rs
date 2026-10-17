@@ -16,6 +16,8 @@ pub(crate) enum EditIntent {
 
 #[derive(Debug)]
 struct UndoTransaction {
+    /// Which transaction this is, the same through undo and redo.
+    id: u64,
     intent: EditIntent,
     changes: Vec<Change>,
     /// How many changes the most recently appended batch contributed. A batch
@@ -71,6 +73,9 @@ pub(crate) struct History {
     pending: Option<PendingTransaction>,
     pending_intent: Option<EditIntent>,
     coalescing_boundary: bool,
+    next_id: u64,
+    /// The transaction the next batch joins, if it's still the last one.
+    join: Option<u64>,
 }
 
 impl History {
@@ -83,7 +88,25 @@ impl History {
             pending: None,
             pending_intent: None,
             coalescing_boundary: false,
+            next_id: 0,
+            join: None,
         }
+    }
+
+    /// The transaction ⌘Z would undo.
+    pub(super) fn last_id(&self) -> Option<u64> {
+        self.undo_transactions.last().map(|t| t.id)
+    }
+
+    /// The transaction ⇧⌘Z would redo.
+    pub(super) fn next_redo_id(&self) -> Option<u64> {
+        self.redo_transactions.last().map(|t| t.id)
+    }
+
+    /// Makes the next batch part of transaction `id` when that is still the
+    /// last one (`None` clears it).
+    pub(super) fn set_join(&mut self, id: Option<u64>) {
+        self.join = id;
     }
 
     /// The intent requested for the next recorded change, taken by the edit
@@ -186,6 +209,15 @@ impl History {
         }
 
         self.redo_transactions.clear();
+        if let Some(id) = self.join.take()
+            && let Some(last) = self.undo_transactions.last_mut().filter(|last| last.id == id)
+        {
+            last.last_batch_len = changes.len();
+            last.recorded_changes += changes.len();
+            last.changes.extend(changes);
+            self.coalescing_boundary = true;
+            return;
+        }
         let can_coalesce = !self.coalescing_boundary
             && intent != EditIntent::Atomic
             && self.undo_transactions.last().is_some_and(|previous| {
@@ -223,7 +255,9 @@ impl History {
         if self.undo_transactions.len() >= MAX_UNDO_TRANSACTIONS {
             self.undo_transactions.remove(0);
         }
+        self.next_id += 1;
         self.undo_transactions.push(UndoTransaction {
+            id: self.next_id,
             intent,
             last_batch_len: changes.len(),
             recorded_changes: changes.len(),
@@ -467,6 +501,18 @@ impl UndoManager {
 
     pub(crate) fn can_undo(&self) -> bool {
         self.0.borrow().can_undo()
+    }
+
+    pub(crate) fn last_id(&self) -> Option<u64> {
+        self.0.borrow().last_id()
+    }
+
+    pub(crate) fn next_redo_id(&self) -> Option<u64> {
+        self.0.borrow().next_redo_id()
+    }
+
+    pub(crate) fn set_join(&mut self, id: Option<u64>) {
+        self.0.borrow_mut().set_join(id)
     }
 
     pub(crate) fn can_redo(&self) -> bool {
