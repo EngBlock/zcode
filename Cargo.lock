@@ -9193,6 +9193,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "zcode-emmet"
+version = "0.1.0"
+
+[[package]]
 name = "zed-font-kit"
 version = "0.14.1-zed"
 source = "registry+https://github.com/rust-lang/crates.io-index"

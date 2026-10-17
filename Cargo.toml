@@ -6,8 +6,8 @@ description = "A fast, Zed-inspired editor for the Apple ecosystem"
 license = "Apache-2.0"
 
 [workspace]
-members = ["crates/zcode-editor"]
-default-members = [".", "crates/zcode-editor"]
+members = ["crates/zcode-editor", "crates/zcode-emmet"]
+default-members = [".", "crates/zcode-editor", "crates/zcode-emmet"]
 exclude = ["vendor/gpui-component"]
 
 [dependencies]
