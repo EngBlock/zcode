@@ -259,6 +259,13 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs Xcode"]
+    fn xctrace_lists_the_templates() {
+        let names: Vec<String> = list_templates().unwrap().into_iter().map(|t| t.name).collect();
+        assert_eq!(names[..3], ["Time Profiler", "Allocations", "Leaks"], "{names:?}");
+    }
+
+    #[test]
     fn traces_are_named_for_the_scheme_and_template() {
         let path = trace_path(Path::new("/t"), "Hello/Z", "/x/Time Profiler.tracetemplate");
         let name = path.file_name().unwrap().to_string_lossy();
