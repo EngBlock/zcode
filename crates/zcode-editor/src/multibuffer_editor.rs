@@ -355,6 +355,7 @@ impl MultiBufferEditor {
         let SourceEdit { source: id, range, new_text } = source_edit;
         let Some(source) = self.sources.get_mut(&id) else { return };
         let lines_changed = new_text.contains('\n') || source.text.slice(range.clone()).bytes().any(|b| b == b'\n');
+        source.text.replace(range.clone(), &new_text);
         let host_transaction = self.host.read(cx).last_transaction();
         if !(self.step_open && self.undo.last().is_some_and(|step| step.host == host_transaction)) {
             self.undo.push(Step { host: host_transaction, edits: vec![] });
@@ -372,7 +373,6 @@ impl MultiBufferEditor {
         if let Some(transaction) = transaction.filter(|t| Some(*t) != joined) {
             step.edits.push((id, transaction));
         }
-        source.text = source.editor.read(cx).text().clone();
         if lines_changed {
             self.refresh_headers(cx);
         }
@@ -382,8 +382,15 @@ impl MultiBufferEditor {
     /// An edit of a file, from anywhere but this multibuffer.
     fn source_edited(&mut self, id: SourceId, edit: &BufferEdit, window: &mut Window, cx: &mut Context<Self>) {
         let Some(source) = self.sources.get(&id) else { return };
+        // The text as of this edit: events come after the update that made
+        // them, so the editor may be several edits further on (an undo of
+        // several joined edits).
         let old_text = source.text.clone();
-        let new_text = source.editor.read(cx).text().clone();
+        let mut new_text = old_text.clone();
+        if edit.range.end > old_text.len() {
+            return;
+        }
+        new_text.replace(edit.range.clone(), &edit.new_text);
         self.step_open = false;
         let lines_changed = edit.new_text.contains('\n') || old_text.slice(edit.range.clone()).bytes().any(|b| b == b'\n');
         let edits = if edit.range == (0..old_text.len()) && old_text.len() > 0 {
@@ -755,6 +762,27 @@ mod tests {
         assert!(text(&f.b, &mut cx).contains("{}!"));
         assert_eq!(f.mb.read_with(&cx, |mb, _| mb.history_len()), (0, 1), "the stale step is dropped, the typing undone");
         assert_eq!(text(&f.a, &mut cx), A);
+    }
+
+    #[gpui::test]
+    fn undoing_a_long_typed_step_comes_back_an_edit_at_a_time(cx: &mut TestAppContext) {
+        let (f, mut cx) = fixture(cx);
+        let end = text(&f.host, &mut cx).len();
+        cx.update(|window, cx| {
+            f.host.update(cx, |host, cx| {
+                host.focus(window, cx);
+                host.set_selected_range(end..end, cx);
+            })
+        });
+        // Each keystroke joins the file's transaction: undone, they come
+        // back as one event each, after the undo.
+        cx.simulate_input(" // a longer comment");
+        assert_eq!(text(&f.b, &mut cx), B.replacen("{}", "{} // a longer comment", 1));
+        cx.update(|window, cx| f.host.update(cx, |host, cx| host.undo(window, cx)));
+        cx.run_until_parked();
+        assert_eq!(text(&f.b, &mut cx), B);
+        assert_eq!(text(&f.host, &mut cx), "    one();\n    two();\n    fn two() {}");
+        assert_eq!(f.host.read_with(&cx, |host, _| host.selected_range()), end..end, "the cursor where the change was");
     }
 
     #[gpui::test]
