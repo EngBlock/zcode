@@ -63,11 +63,11 @@ pub struct GitState {
 }
 
 impl GitState {
-    pub fn new(session: &crate::session::Session) -> Self {
+    pub fn new(settings: &crate::settings::Settings) -> Self {
         Self {
-            inline_blame: session.inline_blame.unwrap_or(true),
-            show_authors: session.show_authors.unwrap_or(false),
-            side_by_side: session.side_by_side_comparison.unwrap_or(true),
+            inline_blame: settings.inline_blame,
+            show_authors: settings.show_authors,
+            side_by_side: settings.side_by_side_comparison,
             ..Default::default()
         }
     }
@@ -510,9 +510,7 @@ impl Workspace {
             }
             "diff" => self.open_diff(PathBuf::from(arg), window, cx),
             "inline-blame" => {
-                if self.git.inline_blame != (arg == "on") {
-                    self.toggle_inline_blame(cx);
-                }
+                self.set_setting(&["git", "inline_blame", "enabled"], serde_json::json!(arg == "on"), window, cx);
             }
             other => return Err(format!("unknown git command {other}")),
         }

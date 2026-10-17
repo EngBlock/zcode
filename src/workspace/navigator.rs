@@ -35,6 +35,21 @@ pub enum NavigatorTab {
 }
 
 impl NavigatorTab {
+    /// Its name in key contexts.
+    fn key_name(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::SourceControl => "source_control",
+            Self::Bookmarks => "bookmarks",
+            Self::Find => "find",
+            Self::Issues => "issues",
+            Self::Tests => "tests",
+            Self::Debug => "debug",
+            Self::Breakpoints => "breakpoints",
+            Self::Reports => "reports",
+        }
+    }
+
     const ALL: [NavigatorTab; 9] = [
         Self::Project,
         Self::SourceControl,
@@ -169,7 +184,10 @@ impl Workspace {
             NavigatorTab::Reports => self.render_report_navigator(cx).into_any_element(),
         };
 
+        // For keymap.json: `Navigator`, `navigator == find`.
+        let context = format!("Navigator navigator={}", self.navigator.key_name());
         v_flex()
+            .key_context(context.as_str())
             .size_full()
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground)

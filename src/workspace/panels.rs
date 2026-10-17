@@ -707,7 +707,11 @@ impl Workspace {
                     format!("Ln {line}, Col {col}")
                 })
                 .child(language.to_string())
-                .child("Spaces: 4")
+                .child(if self.settings.current.hard_tabs {
+                    format!("Tab Width: {}", self.settings.current.tab_size)
+                } else {
+                    format!("Spaces: {}", self.settings.current.tab_size)
+                })
             })
             .child(
                 h_flex()
@@ -878,10 +882,10 @@ impl Render for Workspace {
                 if let Some(view) = this.active_multibuffer().cloned() {
                     this.save_multibuffer(&view, window, cx);
                 } else if let Some(path) = this.active_file_path() {
-                    this.save_path(&path, window, cx);
+                    this.save_path_from_user(&path, window, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &SaveAll, window, cx| this.save_all(window, cx)))
+            .on_action(cx.listener(|this, _: &SaveAll, window, cx| this.save_all_from_user(window, cx)))
             // Xcode's Close Tab, Editor Pane, Window Tab, or Window.
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
                 let pane = this.active_pane;
@@ -1072,9 +1076,9 @@ impl Render for Workspace {
                 this.new_terminal_tab(crate::terminal::Spawn::shell(dir), window, cx)
             }))
             .on_action(cx.listener(|this, _: &OpenTerminalAtLocation, window, cx| this.open_terminal_at(None, window, cx)))
-            .on_action(cx.listener(|this, _: &IncreaseFontSize, _, cx| this.change_font_size(1., cx)))
-            .on_action(cx.listener(|this, _: &DecreaseFontSize, _, cx| this.change_font_size(-1., cx)))
-            .on_action(cx.listener(|this, _: &ResetFontSize, _, cx| this.change_font_size(0., cx)))
+            .on_action(cx.listener(|this, _: &IncreaseFontSize, window, cx| this.change_font_size(1., window, cx)))
+            .on_action(cx.listener(|this, _: &DecreaseFontSize, window, cx| this.change_font_size(-1., window, cx)))
+            .on_action(cx.listener(|this, _: &ResetFontSize, window, cx| this.change_font_size(0., window, cx)))
             .on_action(cx.listener(|this, _: &Build, window, cx| this.start_build(BuildAction::Build, window, cx)))
             .on_action(cx.listener(|this, _: &Run, window, cx| this.start_build(BuildAction::Run, window, cx)))
             .on_action(cx.listener(|this, _: &Test, window, cx| this.test_all(window, cx)))
@@ -1114,12 +1118,32 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &NextChange, window, cx| this.jump_to_change_anywhere(true, window, cx)))
             .on_action(cx.listener(|this, _: &PreviousChange, window, cx| this.jump_to_change_anywhere(false, window, cx)))
             .on_action(cx.listener(|this, _: &CodeReview, window, cx| this.toggle_code_review(window, cx)))
-            .on_action(cx.listener(|this, _: &SideBySideComparison, _, cx| this.set_comparison(true, cx)))
-            .on_action(cx.listener(|this, _: &InlineComparison, _, cx| this.set_comparison(false, cx)))
-            .on_action(cx.listener(|this, _: &ShowAuthors, _, cx| this.toggle_authors(cx)))
-            .on_action(cx.listener(|this, _: &ToggleInlineBlame, _, cx| this.toggle_inline_blame(cx)))
-            .on_action(cx.listener(|this, _: &ToggleInlayHints, _, cx| this.toggle_inlay_hints(cx)))
-            .on_action(cx.listener(|this, _: &ToggleVimMode, _, cx| this.toggle_vim_mode(cx)))
+            // The Editor menu's toggles write the settings, which apply them.
+            .on_action(cx.listener(|this, _: &SideBySideComparison, window, cx| {
+                this.set_setting(&["git", "side_by_side_comparison"], serde_json::json!(true), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &InlineComparison, window, cx| {
+                this.set_setting(&["git", "side_by_side_comparison"], serde_json::json!(false), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ShowAuthors, window, cx| {
+                this.toggle_setting(&["git", "show_authors"], |s| s.show_authors, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleInlineBlame, window, cx| {
+                this.toggle_setting(&["git", "inline_blame", "enabled"], |s| s.inline_blame, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleInlayHints, window, cx| {
+                this.toggle_setting(&["inlay_hints", "enabled"], |s| s.inlay_hints, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ToggleVimMode, window, cx| this.toggle_vim_mode(window, cx)))
+            .on_action(cx.listener(Self::toggle_invisibles))
+            .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::open_keymap))
+            .on_action(cx.listener(Self::open_project_settings_file))
+            .on_action(cx.listener(Self::open_default_settings))
+            .on_action(cx.listener(Self::open_default_keymap))
+            .on_action(cx.listener(Self::select_theme))
+            .on_action(cx.listener(Self::import_xcode_theme))
+            .on_action(cx.listener(Self::import_xcode_key_bindings))
             .on_action(cx.listener(|this, _: &ShowCallers, window, cx| this.show_callers(window, cx)))
             .on_action(cx.listener(|this, _: &FindCallHierarchy, window, cx| this.find_hierarchy(HierarchyKind::Callers, window, cx)))
             .on_action(cx.listener(|this, _: &FindAncestorTypes, window, cx| this.find_hierarchy(HierarchyKind::Supertypes, window, cx)))

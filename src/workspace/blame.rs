@@ -163,18 +163,19 @@ impl Workspace {
         if self.git.user_email.as_deref() == Some(commit.email.as_str()) { "You" } else { &commit.author }
     }
 
-    /// Editor ▸ Inline Blame.
-    pub fn toggle_inline_blame(&mut self, cx: &mut Context<Self>) {
-        self.git.inline_blame = !self.git.inline_blame;
+    /// Editor ▸ Inline Blame (`git.inline_blame.enabled`), as the settings
+    /// changed.
+    pub(super) fn set_inline_blame(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.git.inline_blame = on;
         self.git.inline.row = None;
         self.refresh_inline_blame(cx);
-        self.save_session(cx);
         cx.notify();
     }
 
-    /// Editor ▸ Authors: the authors column in every editor.
-    pub fn toggle_authors(&mut self, cx: &mut Context<Self>) {
-        self.git.show_authors = !self.git.show_authors;
+    /// Editor ▸ Authors (`git.show_authors`): the authors column in every
+    /// editor.
+    pub(super) fn set_authors(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.git.show_authors = on;
         let views: Vec<Entity<EditorState>> =
             self.panes.iter().flat_map(|p| p.items.iter().filter_map(super::Item::editor)).map(|item| item.editor.clone()).collect();
         for view in views {
@@ -191,7 +192,6 @@ impl Workspace {
                 self.schedule_blame(&path, Duration::ZERO, cx);
             }
         }
-        self.save_session(cx);
         cx.notify();
     }
 

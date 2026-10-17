@@ -378,10 +378,12 @@ impl super::Workspace {
         let (shared, read_only) = (buffer.editor.clone(), buffer.read_only);
         let base_text = buffer.git.bases.as_ref().and_then(|b| b.head.clone()).unwrap_or_default();
         let language = Self::language_for(&path);
-        let current = cx.new(|cx| Self::new_editor(false, language, window, cx));
+        // Both sides unwrapped, so their rows line up.
+        let config = super::settings::EditorConfig { soft_wrap: false, ..self.editor_config() };
+        let current = cx.new(|cx| Self::new_editor(&config, language, window, cx));
         EditorState::link(&shared, &current, window, cx);
         current.update(cx, |state, cx| state.set_read_only(read_only, cx));
-        let base = cx.new(|cx| Self::new_editor(false, language, window, cx).default_value(base_text.clone()));
+        let base = cx.new(|cx| Self::new_editor(&config, language, window, cx).default_value(base_text.clone()));
         base.update(cx, |state, cx| state.set_read_only(true, cx));
         let (side_by_side, font_size) = (self.git.side_by_side, self.font_size);
         let view = cx.new(|cx| DiffView::new(path.clone(), current.clone(), base, base_text, side_by_side, font_size, cx));
@@ -437,8 +439,9 @@ impl super::Workspace {
         });
     }
 
-    /// Editor ▸ Side by Side Comparison / Inline Comparison.
-    pub fn set_comparison(&mut self, side_by_side: bool, cx: &mut Context<Self>) {
+    /// Editor ▸ Side by Side Comparison / Inline Comparison
+    /// (`git.side_by_side_comparison`), as the settings changed.
+    pub(super) fn set_comparison(&mut self, side_by_side: bool, cx: &mut Context<Self>) {
         self.git.side_by_side = side_by_side;
         let views: Vec<Entity<DiffView>> = self
             .panes

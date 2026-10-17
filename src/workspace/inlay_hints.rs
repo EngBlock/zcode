@@ -48,8 +48,9 @@ impl InlayHints {
 }
 
 impl Workspace {
-    pub fn toggle_inlay_hints(&mut self, cx: &mut Context<Self>) {
-        self.inlay_hints.enabled = !self.inlay_hints.enabled;
+    /// Editor ▸ Inlay Hints (`inlay_hints.enabled`), as the settings changed.
+    pub(super) fn set_inlay_hints(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.inlay_hints.enabled = on;
         if self.inlay_hints.enabled {
             self.refresh_inlay_hints(cx);
         } else {
@@ -60,7 +61,6 @@ impl Workspace {
                 item.editor.update(cx, |state, cx| state.clear_inlays(KEY, cx));
             }
         }
-        self.save_session(cx);
         cx.notify();
     }
 

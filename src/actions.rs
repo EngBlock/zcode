@@ -12,6 +12,14 @@ gpui_kit::actions!(
         // App / File
         Quit,
         About,
+        OpenSettings,
+        OpenKeymap,
+        OpenProjectSettingsFile,
+        OpenDefaultSettings,
+        OpenDefaultKeymap,
+        SelectTheme,
+        ImportXcodeTheme,
+        ImportXcodeKeyBindings,
         OpenProject,
         OpenQuickly,
         NewFile,
@@ -122,6 +130,7 @@ gpui_kit::actions!(
         ToggleInlineBlame,
         ToggleInlayHints,
         ToggleVimMode,
+        ToggleInvisibles,
         ShowCallers,
         // Editor (property lists)
         AddPlistItem,
@@ -214,6 +223,8 @@ fn key_bindings() -> Vec<KeyBinding> {
     let mut bindings = vec![
         // App / File
         KeyBinding::new("cmd-q", Quit, None),
+        // Xcode ▸ Settings…; zcode's opens settings.json, as Zed's does.
+        KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-o", OpenProject, None),
         KeyBinding::new("cmd-p", OpenQuickly, None),
         KeyBinding::new("cmd-shift-o", OpenQuickly, None),
@@ -453,6 +464,18 @@ macro_rules! cmd {
 /// Every user-facing command, in menu order. `"-"` names are separators.
 pub fn commands() -> Vec<Command> {
     vec![
+        // The app menu: Xcode's Settings… (⌘,) opens the settings file, as in
+        // Zed, with the keymap, themes and their Xcode importers.
+        cmd!("zcode", "Settings…", OpenSettings),
+        cmd!("zcode", "Key Bindings…", OpenKeymap),
+        cmd!("zcode", "Select Theme…", SelectTheme),
+        cmd!("zcode", "-", Quit),
+        cmd!("zcode", "Import Xcode Theme…", ImportXcodeTheme),
+        cmd!("zcode", "Import Xcode Key Bindings…", ImportXcodeKeyBindings),
+        cmd!("zcode", "-", Quit),
+        cmd!("zcode", "Open Project Settings File", OpenProjectSettingsFile),
+        cmd!("zcode", "Open Default Settings", OpenDefaultSettings),
+        cmd!("zcode", "Open Default Key Bindings", OpenDefaultKeymap),
         cmd!("File", "Open…", OpenProject),
         cmd!("File", "Open Quickly…", OpenQuickly),
         cmd!("File", "-", Quit),
@@ -557,6 +580,7 @@ pub fn commands() -> Vec<Command> {
         cmd!("Editor", "Re-Indent", ReIndent),
         cmd!("Editor", "Format File", FormatFile),
         cmd!("Editor", "Wrap Lines", ToggleSoftWrap),
+        cmd!("Editor", "Invisibles", ToggleInvisibles),
         cmd!("Editor", "-", Quit),
         cmd!("Editor", "Increase Font Size", IncreaseFontSize),
         cmd!("Editor", "Decrease Font Size", DecreaseFontSize),
@@ -654,34 +678,84 @@ pub fn commands() -> Vec<Command> {
     ]
 }
 
-fn menu_item(command: &Command) -> MenuItem {
+fn menu_item(command: &Command, checked: &[&str]) -> MenuItem {
     if command.name == "-" {
         return MenuItem::separator();
     }
+    let action = (command.action)();
     MenuItem::Action {
         name: command.name.into(),
-        action: (command.action)(),
+        checked: checked.contains(&action.name()),
+        action,
         os_action: match command.name {
             "Undo" => Some(OsAction::Undo),
             "Redo" => Some(OsAction::Redo),
             _ => None,
         },
-        checked: false,
         disabled: false,
     }
 }
 
+/// The Editor menu's toggles that are on, by action: the settings of the
+/// window in front (or the user's, without one).
+fn checked_actions(cx: &App) -> Vec<&'static str> {
+    let settings = match cx.try_global::<MenuSettings>() {
+        Some(MenuSettings(Some(settings), _)) => settings.clone(),
+        _ => crate::settings::Settings::get(cx),
+    };
+    let toggles = [
+        ("zcode::ShowAuthors", settings.show_authors),
+        ("zcode::ToggleInlineBlame", settings.inline_blame),
+        ("zcode::ToggleInlayHints", settings.inlay_hints),
+        ("zcode::ToggleVimMode", settings.vim_mode),
+        ("zcode::SideBySideComparison", settings.side_by_side_comparison),
+        ("zcode::InlineComparison", !settings.side_by_side_comparison),
+        ("zcode::ToggleSoftWrap", settings.soft_wrap),
+        ("zcode::ToggleInvisibles", settings.show_whitespaces),
+    ];
+    toggles.into_iter().filter(|(_, on)| *on).map(|(name, _)| name).collect()
+}
+
+/// The front window's settings for the menus' checkmarks, and the
+/// checkmarks the menu bar has.
+#[derive(Default)]
+struct MenuSettings(Option<crate::settings::Settings>, Option<Vec<&'static str>>);
+impl gpui_kit::Global for MenuSettings {}
+
+/// A project window came to the front, or its settings changed.
+pub fn set_menu_settings(settings: crate::settings::Settings, cx: &mut App) {
+    cx.default_global::<MenuSettings>().0 = Some(settings);
+    refresh_menus(cx);
+}
+
+/// Builds the menu bar again if its checkmarks changed (or the key
+/// bindings it shows did).
+pub fn refresh_menus(cx: &mut App) {
+    let checked = checked_actions(cx);
+    if cx.try_global::<MenuSettings>().and_then(|m| m.1.as_ref()) != Some(&checked) {
+        set_menus(cx);
+    }
+}
+
+/// For the control channel's `dump`: what the menu bar shows checked.
+pub fn menu_checkmarks(cx: &App) -> Vec<&'static str> {
+    cx.try_global::<MenuSettings>().and_then(|m| m.1.clone()).unwrap_or_default()
+}
+
 pub fn set_menus(cx: &mut App) {
-    let mut menus = vec![Menu::new("zcode").items([
-        MenuItem::action("About zcode", About),
+    let commands = commands();
+    let checked = checked_actions(cx);
+    let mut app_menu = vec![MenuItem::action("About zcode", About), MenuItem::separator()];
+    app_menu.extend(commands.iter().filter(|c| c.menu == "zcode").map(|c| menu_item(c, &checked)));
+    app_menu.extend([
         MenuItem::separator(),
         MenuItem::action("Performance…", ShowPerformance),
         MenuItem::separator(),
         MenuItem::os_submenu("Services", SystemMenuType::Services),
         MenuItem::separator(),
         MenuItem::action("Quit zcode", Quit),
-    ])];
-    let commands = commands();
+    ]);
+    let mut menus = vec![Menu::new("zcode").items(app_menu)];
     for menu_name in ["File", "Edit", "Find", "Navigate", "Editor", "View", "Product", "Debug", "Integrate"] {
         let mut items: Vec<MenuItem> = Vec::new();
         if menu_name == "Edit" {
@@ -704,17 +778,18 @@ pub fn set_menus(cx: &mut App) {
             if let Some(submenu) = submenu_of(command) {
                 if !submenus.contains(&submenu) {
                     submenus.push(submenu);
-                    let entries = commands.iter().filter(|c| submenu_of(c) == Some(submenu)).map(menu_item).collect::<Vec<_>>();
+                    let entries = commands.iter().filter(|c| submenu_of(c) == Some(submenu)).map(|c| menu_item(c, &checked)).collect::<Vec<_>>();
                     items.push(MenuItem::submenu(Menu::new(submenu).items(entries)));
                 }
                 continue;
             }
-            items.push(menu_item(command));
+            items.push(menu_item(command, &checked));
         }
         menus.push(Menu::new(menu_name).items(items));
     }
     menus.push(Menu::new("Window").items([]));
     cx.set_menus(menus);
+    cx.default_global::<MenuSettings>().1 = Some(checked);
 }
 
 #[cfg(test)]

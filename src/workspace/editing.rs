@@ -369,18 +369,30 @@ impl Workspace {
         window.dispatch_action(Box::new(IndentInline), cx);
     }
 
-    pub(super) fn change_font_size(&mut self, delta: f32, cx: &mut Context<Self>) {
-        self.font_size = if delta == 0. {
-            super::DEFAULT_FONT_SIZE
+    /// Editor ▸ Font Size: `buffer_font_size` in the settings.
+    pub(super) fn change_font_size(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let size = if delta == 0. {
+            crate::settings::DEFAULT_FONT_SIZE
         } else {
-            (self.font_size + delta).clamp(8., 36.)
+            (self.latest_settings(cx).buffer_font_size + delta).clamp(8., 36.)
         };
-        self.save_session(cx);
-        cx.notify();
+        let size = if size.fract() == 0. { serde_json::json!(size as i64) } else { serde_json::json!(size) };
+        self.set_setting(&["buffer_font_size"], size, window, cx);
     }
 
+    /// Editor ▸ Wrap Lines: `soft_wrap` in the settings.
     pub(super) fn toggle_soft_wrap(&mut self, _: &ToggleSoftWrap, window: &mut Window, cx: &mut Context<Self>) {
-        self.soft_wrap = !self.soft_wrap;
+        let wrap = if self.latest_settings(cx).soft_wrap { "none" } else { "editor_width" };
+        self.set_setting(&["soft_wrap"], serde_json::json!(wrap), window, cx);
+    }
+
+    /// Editor ▸ Invisibles: `show_whitespaces` in the settings.
+    pub(super) fn toggle_invisibles(&mut self, _: &ToggleInvisibles, window: &mut Window, cx: &mut Context<Self>) {
+        let show = if self.latest_settings(cx).show_whitespaces { "none" } else { "all" };
+        self.set_setting(&["show_whitespaces"], serde_json::json!(show), window, cx);
+    }
+
+    pub(super) fn apply_soft_wrap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let wrap = self.soft_wrap;
         for pane in &self.panes {
             for item in pane.items.iter().filter_map(super::Item::editor) {
@@ -538,7 +550,7 @@ impl Workspace {
             self.lsp_unavailable(window, cx);
             return;
         };
-        let options = json!({ "tabSize": 4, "insertSpaces": true });
+        let options = self.formatting_options();
         let uri = path_to_uri(&path);
         let request = if selection_only && server.supports("/documentRangeFormattingProvider") {
             let block = line_block(&text, &selection);

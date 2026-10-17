@@ -40,20 +40,22 @@ const SCROLLBACK: usize = 10_000;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spawn {
     pub dir: PathBuf,
-    /// A program and its arguments; `None` is the user's login shell (or
-    /// `ZCODE_TERMINAL_SHELL`, which tests set to a shell without the
-    /// user's configuration).
+    /// A program and its arguments; `None` is the user's shell:
+    /// `ZCODE_TERMINAL_SHELL` (which tests set to a shell without the
+    /// user's configuration), then `shell`, then the login shell.
     pub command: Option<(String, Vec<String>)>,
+    /// The `terminal.shell` setting.
+    pub shell: Option<(String, Vec<String>)>,
 }
 
 impl Spawn {
     pub fn shell(dir: PathBuf) -> Self {
-        Self { dir, command: None }
+        Self { dir, command: None, shell: None }
     }
 
     /// `/bin/sh -c <script>`.
     pub fn script(dir: PathBuf, script: &str) -> Self {
-        Self { dir, command: Some(("/bin/sh".into(), vec!["-c".into(), script.into()])) }
+        Self { dir, command: Some(("/bin/sh".into(), vec!["-c".into(), script.into()])), shell: None }
     }
 
     /// Whether this is the user's shell: typing `exit` in it closes its tab.
@@ -174,7 +176,12 @@ impl Terminal {
         let config = Config { scrolling_history: SCROLLBACK, ..Config::default() };
         let term = Arc::new(FairMutex::new(Term::new(config, &size.term_size(), listener.clone())));
 
-        let shell = spawn.command.clone().or_else(Spawn::shell_override).map(|(program, args)| tty::Shell::new(program, args));
+        let shell = spawn
+            .command
+            .clone()
+            .or_else(Spawn::shell_override)
+            .or_else(|| spawn.shell.clone())
+            .map(|(program, args)| tty::Shell::new(program, args));
         let env = [
             ("TERM", "xterm-256color"),
             ("COLORTERM", "truecolor"),

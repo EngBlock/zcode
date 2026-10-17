@@ -18,7 +18,7 @@ use std::time::{Duration, SystemTime};
 use gpui_kit::component::input::InputEvent;
 use gpui_kit::component::{WindowExt as _, notification::Notification};
 use gpui_kit::*;
-use zcode_editor::{EditorState, RangeDecoration, RangeDecorationStyle, RopeExt as _, TabSize};
+use zcode_editor::{EditorState, RangeDecoration, RangeDecorationStyle, RopeExt as _};
 
 use super::pane::{EditorItem, Item, PaneId, PlistView};
 use super::{PlistEditor, PlistEditorEvent, Target, Workspace, line_anchors};
@@ -149,16 +149,18 @@ impl Workspace {
         }
     }
 
-    pub(super) fn new_editor(soft_wrap: bool, language: &'static str, window: &mut Window, cx: &mut Context<EditorState>) -> EditorState {
-        EditorState::new(window, cx)
+    /// An editor for a file of `language`, as the window's settings say.
+    pub(super) fn new_editor(config: &super::settings::EditorConfig, language: &'static str, window: &mut Window, cx: &mut Context<EditorState>) -> EditorState {
+        let mut state = EditorState::new(window, cx)
             .language(language)
-            .line_number(true)
-            .indent_guides(true)
-            .tab_size(TabSize {
-                tab_size: 4,
-                hard_tabs: false,
-            })
-            .soft_wrap(soft_wrap)
+            .line_number(config.line_numbers)
+            .indent_guides(config.indent_guides)
+            .tab_size(config.tab())
+            .soft_wrap(config.soft_wrap);
+        if config.show_whitespaces {
+            state.set_show_whitespaces(true, window, cx);
+        }
+        state
     }
 
     /// Reads a file into a new buffer, with no pane showing it yet. Tells
@@ -209,12 +211,16 @@ impl Workspace {
         };
         let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
         let language = Self::language_for(path);
-        let read_only = crate::packages::location::is_package_checkout(path) || crate::toolchain::is_in_developer_dir(path);
-        let soft_wrap = self.soft_wrap;
+        // Package sources, the SDK's interfaces, and the files zcode shows
+        // (Open Default Settings) can't be edited.
+        let read_only = crate::packages::location::is_package_checkout(path)
+            || crate::toolchain::is_in_developer_dir(path)
+            || super::settings::is_generated(path);
+        let config = self.editor_config();
         let editor = if headless {
             cx.new(|cx| EditorState::new(window, cx).default_value(text))
         } else {
-            cx.new(|cx| Self::new_editor(soft_wrap, language, window, cx).default_value(text))
+            cx.new(|cx| Self::new_editor(&config, language, window, cx).default_value(text))
         };
         if !headless && let Some(language_id) = lsp::language_id_for(path) {
             self.lsp.update(cx, |store, cx| {
@@ -304,8 +310,8 @@ impl Workspace {
         let editor = if self.views_of(path).is_empty() && !headless {
             shared
         } else {
-            let soft_wrap = self.soft_wrap;
-            let editor = cx.new(|cx| Self::new_editor(soft_wrap, language, window, cx));
+            let config = self.editor_config();
+            let editor = cx.new(|cx| Self::new_editor(&config, language, window, cx));
             EditorState::link(&shared, &editor, window, cx);
             editor
         };
@@ -464,9 +470,17 @@ impl Workspace {
     }
 
     pub fn save_buffer(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let (trim, final_newline) = (self.settings.current.remove_trailing_whitespace_on_save, self.settings.current.ensure_final_newline_on_save);
         let Some(buffer) = self.buffers.get_mut(ix).filter(|b| !b.read_only) else { return };
+        if trim {
+            // In the editor, so ⌘Z brings the spaces back.
+            let ranges = trailing_whitespace(&buffer.editor.read(cx).text().to_string());
+            if !ranges.is_empty() {
+                buffer.editor.update(cx, |state, cx| state.edit(ranges.into_iter().map(|r| (r, "")), window, cx));
+            }
+        }
         let mut text = buffer.editor.read(cx).text().to_string();
-        if !text.is_empty() && !text.ends_with('\n') {
+        if final_newline && !text.is_empty() && !text.ends_with('\n') {
             text.push('\n');
         }
         let format = buffer.plist_format.unwrap_or(crate::plist::Format::Xml);
@@ -503,6 +517,58 @@ impl Workspace {
         if let Some(ix) = self.buffers.iter().position(|b| b.path == path) {
             self.save_buffer(ix, window, cx);
         }
+    }
+
+    /// ⌘S, Save All and `:w`: with `format_on_save`, the language server
+    /// formats the file first (waiting at most a moment for it); otherwise
+    /// as `save_path`. Saves before a build don't format.
+    pub(super) fn save_path_from_user(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let server = if self.settings.current.format_on_save && self.buffer(path).is_some_and(|b| !b.read_only && b.plist_format.is_none()) {
+            self.lsp.update(cx, |lsp, cx| lsp.synced_server(path, cx)).filter(|s| s.supports("/documentFormattingProvider"))
+        } else {
+            None
+        };
+        let Some(server) = server else {
+            self.save_path(path, window, cx);
+            return;
+        };
+        let Some(before) = self.buffer(path).map(|b| b.editor.read(cx).text().to_string()) else { return };
+        let uri = lsp::path_to_uri(path);
+        let request = server.request_raw(
+            "textDocument/formatting",
+            serde_json::json!({ "textDocument": { "uri": uri.as_str() }, "options": self.formatting_options() }),
+        );
+        let path = path.to_path_buf();
+        cx.spawn_in(window, async move |this, cx| {
+            let timeout = cx.background_executor().timer(super::settings::FORMAT_ON_SAVE_TIMEOUT);
+            let result = match futures::future::select(Box::pin(request), Box::pin(timeout)).await {
+                futures::future::Either::Left((result, _)) => result.ok(),
+                futures::future::Either::Right(_) => None,
+            };
+            this.update_in(cx, |this, window, cx| {
+                let unchanged = this.buffer(&path).is_some_and(|b| b.editor.read(cx).text().to_string() == before);
+                let edits: Vec<lsp_types::TextEdit> = result.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+                if unchanged && !edits.is_empty() {
+                    this.apply_file_edits(vec![(path.clone(), edits)], window, cx);
+                }
+                this.save_path(&path, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Save All from the user (`save_path_from_user` for each file).
+    pub(super) fn save_all_from_user(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dirty: Vec<PathBuf> = self.buffers.iter().filter(|b| b.dirty).map(|b| b.path.clone()).collect();
+        for path in dirty {
+            self.save_path_from_user(&path, window, cx);
+        }
+    }
+
+    /// The editor's indentation, for the language server's formatting.
+    pub(super) fn formatting_options(&self) -> serde_json::Value {
+        serde_json::json!({ "tabSize": self.settings.current.tab_size, "insertSpaces": !self.settings.current.hard_tabs })
     }
 
     /// Open As ▸ Source Code (`as_source`) or ▸ Property List for a tab.
@@ -685,4 +751,31 @@ pub(super) fn workspace_edit_files(edit: lsp_types::WorkspaceEdit) -> Vec<(PathB
         }
     }
     per_file
+}
+
+/// The spaces and tabs at the ends of lines, as byte ranges.
+fn trailing_whitespace(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = vec![];
+    let mut start = 0;
+    for line in text.split_inclusive('\n') {
+        let content = line.strip_suffix('\n').unwrap_or(line);
+        let content = content.strip_suffix('\r').unwrap_or(content);
+        let trimmed = content.trim_end_matches([' ', '\t']);
+        if trimmed.len() < content.len() {
+            ranges.push(start + trimmed.len()..start + content.len());
+        }
+        start += line.len();
+    }
+    ranges
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn trailing_whitespace_on_each_line() {
+        let text = "let a = 1  \n\t\nok\nend \t";
+        let ranges = super::trailing_whitespace(text);
+        assert_eq!(ranges, [9..11, 12..13, 20..22]);
+        assert!(super::trailing_whitespace("clean\n").is_empty());
+    }
 }

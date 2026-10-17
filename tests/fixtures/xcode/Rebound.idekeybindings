@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Menu Key Bindings</key>
+	<dict>
+		<key>Key Bindings</key>
+		<array>
+			<dict>
+				<key>Action</key>
+				<string>toggleFindNavigator:</string>
+				<key>Alternate</key>
+				<string>NO</string>
+				<key>CommandID</key>
+				<string>Xcode.IDEKit.CmdDefinition.NavigatorsFind</string>
+				<key>Group</key>
+				<string>Navigators</string>
+				<key>GroupID</key>
+				<string>Xcode.IDEKit.MenuDefinition.Main</string>
+				<key>GroupedAlternate</key>
+				<string>NO</string>
+				<key>Keyboard Shortcut</key>
+				<string>~@4</string>
+				<key>Navigation</key>
+				<string>NO</string>
+				<key>Parent Title</key>
+				<string>Navigators</string>
+				<key>Title</key>
+				<string>Find</string>
+			</dict>
+			<dict>
+				<key>Action</key>
+				<string>toggleIssuesNavigator:</string>
+				<key>Alternate</key>
+				<string>NO</string>
+				<key>CommandID</key>
+				<string>Xcode.IDEKit.CmdDefinition.NavigatorsIssues</string>
+				<key>Keyboard Shortcut</key>
+				<string></string>
+				<key>Title</key>
+				<string>Issues</string>
+			</dict>
+			<dict>
+				<key>Action</key>
+				<string>captureViewHierarchy:</string>
+				<key>Alternate</key>
+				<string>NO</string>
+				<key>Keyboard Shortcut</key>
+				<string>^~@v</string>
+				<key>Title</key>
+				<string>Capture View Hierarchy</string>
+			</dict>
+		</array>
+		<key>Version</key>
+		<integer>3</integer>
+	</dict>
+	<key>Text Key Bindings</key>
+	<dict>
+		<key>Key Bindings</key>
+		<dict>
+			<key>^$K</key>
+			<string>deleteToEndOfParagraph:</string>
+		</dict>
+		<key>Version</key>
+		<integer>3</integer>
+	</dict>
+</dict>
+</plist>

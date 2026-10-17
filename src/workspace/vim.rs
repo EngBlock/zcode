@@ -17,8 +17,12 @@ use crate::actions::{GoBack, GoForward, NextTab, PreviousTab, ReIndent};
 use crate::settings::Settings;
 
 impl Workspace {
-    pub(super) fn toggle_vim_mode(&mut self, cx: &mut Context<Self>) {
-        Settings::update(cx, |settings| settings.vim_mode = !settings.vim_mode);
+    /// Editor ▸ Vim Mode: `vim_mode` in the user's settings.
+    pub(super) fn toggle_vim_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let on = Settings::get(cx).vim_mode;
+        if let Err(err) = crate::settings::set(None, &["vim_mode"], serde_json::json!(!on), cx) {
+            self.notify_error(err, window, cx);
+        }
     }
 
     /// For an editor a tab shows: Vim mode as the setting says, and its
@@ -126,7 +130,7 @@ impl Workspace {
                 }
             }
             VimCommand::Write { all: true, quit } => {
-                self.save_all(window, cx);
+                self.save_all_from_user(window, cx);
                 if *quit {
                     self.close_all_tabs(window, cx);
                 }
@@ -174,7 +178,7 @@ impl Workspace {
             }
             item => {
                 if let Some(path) = item.buffer_path().map(|p| p.to_path_buf()) {
-                    self.save_path(&path, window, cx);
+                    self.save_path_from_user(&path, window, cx);
                 }
             }
         }

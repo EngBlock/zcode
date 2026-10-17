@@ -118,16 +118,9 @@ pub struct Session {
     /// Most recent first. Paths are what the user opened (folder, project...).
     pub recent: Vec<PathBuf>,
     pub projects: HashMap<String, ProjectSession>,
-    pub font_size: Option<f32>,
-    /// Inline blame on the cursor's line, Editor ▸ Authors, and Code
-    /// Review side by side (rather than inline).
-    pub inline_blame: Option<bool>,
-    pub show_authors: Option<bool>,
-    pub side_by_side_comparison: Option<bool>,
-    /// Editor ▸ Inlay Hints.
-    pub inlay_hints: Option<bool>,
-    /// Editor ▸ Vim Mode (`settings.rs`).
-    pub vim_mode: Option<bool>,
+    // The editor toggles that were here (font size, blame, Authors, Code
+    // Review's layout, inlay hints, Vim mode) are settings now:
+    // `settings::migrate_session` moves them into settings.json once.
 }
 
 fn session_path() -> PathBuf {

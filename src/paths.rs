@@ -8,8 +8,23 @@ fn home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
+/// `ZCODE_CONFIG_DIR`: a folder that stands in for both the configuration
+/// folder and the session's, so scripted runs (e2e) never touch the user's.
+fn config_override() -> Option<PathBuf> {
+    std::env::var_os("ZCODE_CONFIG_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from)
+}
+
+/// Settings, key bindings and themes, as Zed keeps them: `~/.config/zcode`.
+pub fn config_dir() -> PathBuf {
+    config_override().unwrap_or_else(|| home().join(".config/zcode"))
+}
+
+/// The session (recent projects, each project's tabs and breakpoints).
 pub fn support_dir() -> PathBuf {
-    home().join("Library/Application Support/zcode")
+    match config_override() {
+        Some(dir) => dir.join("support"),
+        None => home().join("Library/Application Support/zcode"),
+    }
 }
 
 pub fn logs_dir() -> PathBuf {

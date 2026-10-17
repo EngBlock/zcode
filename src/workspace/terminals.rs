@@ -33,8 +33,9 @@ pub(super) struct TerminalsState {
 }
 
 impl Workspace {
-    fn new_terminal_view(&mut self, spawn: Spawn, window: &mut Window, cx: &mut Context<Self>) -> (Entity<TerminalView>, Vec<Subscription>) {
+    fn new_terminal_view(&mut self, mut spawn: Spawn, window: &mut Window, cx: &mut Context<Self>) -> (Entity<TerminalView>, Vec<Subscription>) {
         let font_size = self.font_size;
+        spawn.shell = self.settings.current.terminal_shell.clone();
         let view = cx.new(|cx| TerminalView::new(spawn, font_size, cx));
         let id = view.entity_id();
         let focus = view.read(cx).focus_handle(cx);

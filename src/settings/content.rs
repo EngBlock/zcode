@@ -1,0 +1,440 @@
+//! What a settings file may say (`SettingsContent`, every value optional)
+//! and the settings that result (`Settings`), defaults first, then the
+//! user's file, then the project's. Names and shapes are Zed's where Zed has
+//! the setting (`buffer_font_size`, `soft_wrap`, `inlay_hints.enabled`,
+//! `git.inline_blame.enabled`, `terminal.shell`); `default.json` documents
+//! them.
+
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer};
+use serde_json::Value;
+
+/// The commented defaults, shown by zcode ▸ Open Default Settings.
+pub const DEFAULT_SETTINGS: &str = include_str!("default.json");
+
+/// The settings in effect for a window.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Settings {
+    pub theme: ThemeSelection,
+    /// `None`: the theme's monospace font.
+    pub buffer_font_family: Option<String>,
+    pub buffer_font_size: f32,
+    pub tab_size: u32,
+    pub hard_tabs: bool,
+    pub soft_wrap: bool,
+    pub show_whitespaces: bool,
+    pub line_numbers: bool,
+    pub indent_guides: bool,
+    pub format_on_save: bool,
+    pub remove_trailing_whitespace_on_save: bool,
+    pub ensure_final_newline_on_save: bool,
+    pub inlay_hints: bool,
+    pub vim_mode: bool,
+    pub inline_blame: bool,
+    pub show_authors: bool,
+    pub side_by_side_comparison: bool,
+    /// A program and its arguments; `None` is the login shell.
+    pub terminal_shell: Option<(String, Vec<String>)>,
+}
+
+pub const DEFAULT_FONT_SIZE: f32 = 13.;
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            theme: ThemeSelection::default(),
+            buffer_font_family: None,
+            buffer_font_size: DEFAULT_FONT_SIZE,
+            tab_size: 4,
+            hard_tabs: false,
+            soft_wrap: false,
+            show_whitespaces: false,
+            line_numbers: true,
+            indent_guides: true,
+            format_on_save: false,
+            remove_trailing_whitespace_on_save: false,
+            ensure_final_newline_on_save: true,
+            inlay_hints: false,
+            vim_mode: false,
+            inline_blame: true,
+            show_authors: false,
+            side_by_side_comparison: true,
+            terminal_shell: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// `"theme": "Name"`, or `{ "mode", "light", "dark" }`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ThemeSelection {
+    Static(String),
+    Dynamic { mode: ThemeMode, light: String, dark: String },
+}
+
+pub const DEFAULT_LIGHT_THEME: &str = "Default Light";
+pub const DEFAULT_DARK_THEME: &str = "Default Dark";
+
+impl Default for ThemeSelection {
+    fn default() -> Self {
+        Self::Dynamic { mode: ThemeMode::System, light: DEFAULT_LIGHT_THEME.into(), dark: DEFAULT_DARK_THEME.into() }
+    }
+}
+
+impl ThemeSelection {
+    /// The theme to show when the system's appearance is dark or not.
+    pub fn name(&self, system_dark: bool) -> &str {
+        match self {
+            Self::Static(name) => name,
+            Self::Dynamic { mode, light, dark } => {
+                let dark_mode = match mode {
+                    ThemeMode::System => system_dark,
+                    ThemeMode::Light => false,
+                    ThemeMode::Dark => true,
+                };
+                if dark_mode { dark } else { light }
+            }
+        }
+    }
+
+    /// Every theme it names.
+    pub fn names(&self) -> Vec<&str> {
+        match self {
+            Self::Static(name) => vec![name],
+            Self::Dynamic { light, dark, .. } => vec![light, dark],
+        }
+    }
+}
+
+/// A settings file as written: whatever it leaves out comes from the file
+/// below it.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct SettingsContent {
+    #[serde(deserialize_with = "theme")]
+    pub theme: Option<ThemeSelection>,
+    pub buffer_font_family: Option<String>,
+    #[serde(deserialize_with = "font_size")]
+    pub buffer_font_size: Option<f32>,
+    #[serde(deserialize_with = "tab_size")]
+    pub tab_size: Option<u32>,
+    pub hard_tabs: Option<bool>,
+    #[serde(deserialize_with = "soft_wrap")]
+    pub soft_wrap: Option<bool>,
+    #[serde(deserialize_with = "show_whitespaces")]
+    pub show_whitespaces: Option<bool>,
+    pub gutter: Option<GutterContent>,
+    #[serde(deserialize_with = "enabled")]
+    pub indent_guides: Option<bool>,
+    #[serde(deserialize_with = "on_off")]
+    pub format_on_save: Option<bool>,
+    pub remove_trailing_whitespace_on_save: Option<bool>,
+    pub ensure_final_newline_on_save: Option<bool>,
+    #[serde(deserialize_with = "enabled")]
+    pub inlay_hints: Option<bool>,
+    pub vim_mode: Option<bool>,
+    pub git: Option<GitContent>,
+    pub terminal: Option<TerminalContent>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct GutterContent {
+    pub line_numbers: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct GitContent {
+    #[serde(deserialize_with = "enabled")]
+    pub inline_blame: Option<bool>,
+    pub show_authors: Option<bool>,
+    pub side_by_side_comparison: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct TerminalContent {
+    /// `Some(None)`: "system".
+    #[serde(deserialize_with = "shell")]
+    pub shell: Option<Option<(String, Vec<String>)>>,
+}
+
+/// Every key a settings file may have, with the keys of its objects: what
+/// isn't here is reported as unknown (and otherwise ignored, as in Zed).
+pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
+    ("theme", &["mode", "light", "dark"]),
+    ("buffer_font_family", &[]),
+    ("buffer_font_size", &[]),
+    ("tab_size", &[]),
+    ("hard_tabs", &[]),
+    ("soft_wrap", &[]),
+    ("show_whitespaces", &[]),
+    ("gutter", &["line_numbers"]),
+    ("indent_guides", &["enabled"]),
+    ("format_on_save", &[]),
+    ("remove_trailing_whitespace_on_save", &[]),
+    ("ensure_final_newline_on_save", &[]),
+    ("inlay_hints", &["enabled"]),
+    ("vim_mode", &[]),
+    ("git", &["inline_blame", "show_authors", "side_by_side_comparison"]),
+    ("terminal", &["shell"]),
+];
+
+/// Settings a project's file can't change: they're the app's, not a window's.
+pub const USER_ONLY_KEYS: &[&str] = &["theme", "buffer_font_family", "vim_mode"];
+
+/// What to say about the keys of a settings file zcode doesn't know
+/// (`git.inline_blam`), and those a project's file sets that only the
+/// user's can (`theme`).
+pub fn unknown_keys(value: &Value, project: bool) -> Vec<String> {
+    let Some(object) = value.as_object() else { return vec![] };
+    let mut unknown = vec![];
+    for (key, inner) in object {
+        match KNOWN_KEYS.iter().find(|(known, _)| known == key) {
+            None => unknown.push(format!("unknown setting “{key}”")),
+            Some((_, nested)) => {
+                if let Some(inner) = inner.as_object()
+                    && !nested.is_empty()
+                {
+                    unknown.extend(inner.keys().filter(|k| !nested.contains(&k.as_str())).map(|k| format!("unknown setting “{key}.{k}”")));
+                }
+            }
+        }
+    }
+    if project {
+        unknown.extend(object.keys().filter(|k| USER_ONLY_KEYS.contains(&k.as_str())).map(|k| format!("“{k}” is only read from your own settings file")));
+    }
+    unknown
+}
+
+impl Settings {
+    /// These settings with what `content` says over them; a project's file
+    /// (`project`) leaves the app's own settings alone.
+    pub fn merged(mut self, content: &SettingsContent, project: bool) -> Self {
+        macro_rules! take {
+            ($field:ident) => {
+                if let Some(value) = content.$field.clone() {
+                    self.$field = value;
+                }
+            };
+        }
+        if !project {
+            take!(theme);
+            take!(vim_mode);
+            if let Some(family) = &content.buffer_font_family {
+                self.buffer_font_family = Some(family.clone()).filter(|f| !f.trim().is_empty());
+            }
+        }
+        take!(buffer_font_size);
+        take!(tab_size);
+        take!(hard_tabs);
+        take!(soft_wrap);
+        take!(show_whitespaces);
+        take!(indent_guides);
+        take!(format_on_save);
+        take!(remove_trailing_whitespace_on_save);
+        take!(ensure_final_newline_on_save);
+        take!(inlay_hints);
+        if let Some(line_numbers) = content.gutter.as_ref().and_then(|g| g.line_numbers) {
+            self.line_numbers = line_numbers;
+        }
+        if let Some(git) = &content.git {
+            self.inline_blame = git.inline_blame.unwrap_or(self.inline_blame);
+            self.show_authors = git.show_authors.unwrap_or(self.show_authors);
+            self.side_by_side_comparison = git.side_by_side_comparison.unwrap_or(self.side_by_side_comparison);
+        }
+        if let Some(shell) = content.terminal.as_ref().and_then(|t| t.shell.clone()) {
+            self.terminal_shell = shell;
+        }
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Values with more than one way to write them. Each reads a JSON value and
+// says what it expected otherwise; serde_json adds the line and column.
+
+fn read<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Value, D::Error> {
+    Value::deserialize(deserializer)
+}
+
+/// A value that isn't one a setting takes. (`jsonc` puts these errors at
+/// the value rather than at what follows it.)
+fn expected<E: serde::de::Error>(what: &str, found: &Value) -> E {
+    E::custom(format!("{}{what}, found {found}", super::jsonc::VALUE_ERROR))
+}
+
+fn theme<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<ThemeSelection>, D::Error> {
+    match read(deserializer)? {
+        Value::Null => Ok(None),
+        Value::String(name) => Ok(Some(ThemeSelection::Static(name))),
+        Value::Object(object) => {
+            let name = |key: &str, default: &str| match object.get(key) {
+                None | Some(Value::Null) => Ok(default.to_string()),
+                Some(Value::String(name)) => Ok(name.clone()),
+                Some(other) => Err(expected::<D::Error>(&format!("a theme name for \"{key}\""), other)),
+            };
+            let mode = match object.get("mode") {
+                None | Some(Value::Null) => ThemeMode::System,
+                Some(Value::String(mode)) if mode == "system" => ThemeMode::System,
+                Some(Value::String(mode)) if mode == "light" => ThemeMode::Light,
+                Some(Value::String(mode)) if mode == "dark" => ThemeMode::Dark,
+                Some(other) => return Err(expected(r#""system", "light" or "dark" for "mode""#, other)),
+            };
+            Ok(Some(ThemeSelection::Dynamic { mode, light: name("light", DEFAULT_LIGHT_THEME)?, dark: name("dark", DEFAULT_DARK_THEME)? }))
+        }
+        other => Err(expected(r#"a theme name or { "mode", "light", "dark" }"#, &other)),
+    }
+}
+
+fn font_size<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<f32>, D::Error> {
+    match read(deserializer)? {
+        Value::Null => Ok(None),
+        Value::Number(n) if n.as_f64().is_some_and(|n| (6. ..=72.).contains(&n)) => Ok(n.as_f64().map(|n| n as f32)),
+        other => Err(expected("a size in points from 6 to 72", &other)),
+    }
+}
+
+fn tab_size<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u32>, D::Error> {
+    match read(deserializer)? {
+        Value::Null => Ok(None),
+        Value::Number(n) if n.as_u64().is_some_and(|n| (1..=16).contains(&n)) => Ok(n.as_u64().map(|n| n as u32)),
+        other => Err(expected("a number of columns from 1 to 16", &other)),
+    }
+}
+
+/// A switch written as `true`/`false` or as one of its words.
+fn words<E: serde::de::Error>(value: Value, on: &[&str], off: &[&str]) -> Result<Option<bool>, E> {
+    match value {
+        Value::Null => Ok(None),
+        Value::Bool(on) => Ok(Some(on)),
+        Value::String(word) if on.contains(&word.as_str()) => Ok(Some(true)),
+        Value::String(word) if off.contains(&word.as_str()) => Ok(Some(false)),
+        other => {
+            let all: Vec<String> = off.iter().chain(on).map(|w| format!("\"{w}\"")).collect();
+            Err(expected(&all.join(" or "), &other))
+        }
+    }
+}
+
+fn soft_wrap<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<bool>, D::Error> {
+    // Zed's other modes wrap at the editor's edge here too.
+    words(read(deserializer)?, &["editor_width", "prefer_line", "preferred_line_length", "bounded"], &["none"])
+}
+
+fn show_whitespaces<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<bool>, D::Error> {
+    words(read(deserializer)?, &["all"], &["none"])
+}
+
+fn on_off<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<bool>, D::Error> {
+    words(read(deserializer)?, &["on"], &["off"])
+}
+
+/// `true`, or Zed's `{ "enabled": true }`.
+fn enabled<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<bool>, D::Error> {
+    match read(deserializer)? {
+        Value::Object(object) => match object.get("enabled") {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Bool(on)) => Ok(Some(*on)),
+            Some(other) => Err(expected("true or false for \"enabled\"", other)),
+        },
+        other => {
+            let found = other.clone();
+            words(other, &[], &[]).map_err(|_: D::Error| expected::<D::Error>("{ \"enabled\": true } or false", &found))
+        }
+    }
+}
+
+fn shell<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Option<(String, Vec<String>)>>, D::Error> {
+    let program_and_args = |object: &serde_json::Map<String, Value>| -> Result<(String, Vec<String>), D::Error> {
+        let program = object.get("program").and_then(Value::as_str).ok_or_else(|| D::Error::custom("expected a \"program\" for the shell"))?;
+        let args = match object.get("args") {
+            None | Some(Value::Null) => vec![],
+            Some(Value::Array(args)) => args.iter().map(|a| a.as_str().map(str::to_string).ok_or_else(|| expected::<D::Error>("strings in \"args\"", a))).collect::<Result<_, _>>()?,
+            Some(other) => return Err(expected("a list of strings for \"args\"", other)),
+        };
+        Ok((program.to_string(), args))
+    };
+    match read(deserializer)? {
+        Value::Null => Ok(None),
+        Value::String(word) if word == "system" => Ok(Some(None)),
+        Value::String(program) => Ok(Some(Some((program, vec![])))),
+        // Zed writes `{ "program": … }` and `{ "with_arguments": { "program": …, "args": … } }`.
+        Value::Object(object) => match object.get("with_arguments").and_then(Value::as_object) {
+            Some(inner) => program_and_args(inner).map(|p| Some(Some(p))),
+            None => program_and_args(&object).map(|p| Some(Some(p))),
+        },
+        other => Err(expected(r#""system", a program, or { "program", "args" }"#, &other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::jsonc;
+
+    #[test]
+    fn the_documented_defaults_are_the_defaults() {
+        let content: SettingsContent = jsonc::parse(DEFAULT_SETTINGS).unwrap();
+        assert_eq!(Settings::default().merged(&content, false), Settings::default());
+        let value = jsonc::parse_value(DEFAULT_SETTINGS).unwrap();
+        assert_eq!(unknown_keys(&value, false), Vec::<String>::new());
+        let documented: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        let known: Vec<&str> = KNOWN_KEYS.iter().map(|(key, _)| *key).collect();
+        assert_eq!(documented, known, "every setting is documented, in the same order");
+    }
+
+    #[test]
+    fn values_in_their_other_forms() {
+        let text = r#"{
+            "theme": "Midnight",
+            "soft_wrap": "editor_width",
+            "show_whitespaces": true,
+            "format_on_save": "on",
+            "inlay_hints": true,
+            "git": { "inline_blame": false },
+            "terminal": { "shell": { "with_arguments": { "program": "/bin/zsh", "args": ["-f"] } } },
+        }"#;
+        let settings = Settings::default().merged(&jsonc::parse(text).unwrap(), false);
+        assert_eq!(settings.theme, ThemeSelection::Static("Midnight".into()));
+        assert!(settings.soft_wrap && settings.show_whitespaces && settings.format_on_save && settings.inlay_hints);
+        assert!(!settings.inline_blame);
+        assert_eq!(settings.terminal_shell, Some(("/bin/zsh".into(), vec!["-f".into()])));
+        let system: SettingsContent = jsonc::parse(r#"{ "terminal": { "shell": "system" } }"#).unwrap();
+        assert_eq!(settings.merged(&system, false).terminal_shell, None);
+    }
+
+    #[test]
+    fn a_project_overrides_the_editor_but_not_the_app() {
+        let user: SettingsContent = jsonc::parse(r#"{ "tab_size": 2, "vim_mode": true, "theme": { "mode": "dark" } }"#).unwrap();
+        let project: SettingsContent = jsonc::parse(r#"{ "tab_size": 8, "vim_mode": false, "theme": "Dusk" }"#).unwrap();
+        let settings = Settings::default().merged(&user, false).merged(&project, true);
+        assert_eq!(settings.tab_size, 8);
+        assert!(settings.vim_mode);
+        assert_eq!(settings.theme.name(false), DEFAULT_DARK_THEME);
+        assert_eq!(
+            unknown_keys(&serde_json::json!({ "theme": "Dusk", "tab_szie": 3, "git": { "inline_blam": true } }), true),
+            ["unknown setting “tab_szie”", "unknown setting “git.inline_blam”", "“theme” is only read from your own settings file"]
+        );
+    }
+
+    #[test]
+    fn wrong_values_say_what_was_expected_and_where() {
+        let err = jsonc::parse::<SettingsContent>("{\n  \"tab_size\": 0\n}").unwrap_err();
+        assert_eq!((err.line, err.column), (2, 15), "{err}");
+        assert!(err.message.starts_with("expected a number"), "{err}");
+        assert!(err.message.contains("a number of columns from 1 to 16"), "{err}");
+        let err = jsonc::parse::<SettingsContent>("{ \"soft_wrap\": \"sometimes\" }").unwrap_err();
+        assert!(err.message.contains(r#"expected "none" or "editor_width""#), "{err}");
+        let err = jsonc::parse::<SettingsContent>("{ \"theme\": { \"mode\": \"dim\" } }").unwrap_err();
+        assert!(err.message.contains("\"mode\""), "{err}");
+    }
+}

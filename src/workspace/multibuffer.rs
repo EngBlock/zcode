@@ -388,7 +388,8 @@ impl Workspace {
             return Some(view);
         }
         let language = majority_language(&files);
-        let host = cx.new(|cx| Self::new_editor(false, language, window, cx));
+        let config = super::settings::EditorConfig { soft_wrap: false, ..self.editor_config() };
+        let host = cx.new(|cx| Self::new_editor(&config, language, window, cx));
         let theme = cx.theme();
         let style = HeaderStyle { color: theme.foreground, background: theme.muted.opacity(0.6) };
         let editor = cx.new(|cx| MultiBufferEditor::new(host.clone(), style, window, cx));

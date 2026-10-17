@@ -44,8 +44,12 @@
 //!                              supertypes|subtypes, expand / collapse / open / reroot <row>, close
 //!                              (see `Workspace::hierarchy_command`)
 //!   signature-help             ask for signature help at the active editor's cursor
-//!   inlay-hints on|off         Editor ▸ Inlay Hints (a setting kept in the session)
-//!   vim on|off                 Editor ▸ Vim Mode (a setting for every window); `dump` has `vim`
+//!   inlay-hints on|off         Editor ▸ Inlay Hints (`inlay_hints.enabled` in settings.json)
+//!   vim on|off                 Editor ▸ Vim Mode (`vim_mode`, for every window); `dump` has `vim`
+//!   settings <command>         settings, keymap and theme files: paths, set <a.b.c> <json>, reload,
+//!                              theme <name>, import-theme <path>, import-keys <path>, xcode-themes,
+//!                              xcode-key-sets, open settings|keymap|project|default-settings|default-keymap
+//!                              (see `Workspace::settings_command`); `dump` has `settings`
 //!   git <command>              source control: hunks, the hunk popover, the commit, Push… and Pull…
 //!                              sheets, branches, comparisons (see `Workspace::git_command`)
 //!   multibuffer <command>      multibuffers: find (the Find navigator's results in a tab), issues,
@@ -437,22 +441,25 @@ fn run_command(
         }
         "inlay-hints" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
-            workspace.update(cx, |ws, cx| {
-                if ws.inlay_hints.enabled != (arg == "on") {
-                    ws.toggle_inlay_hints(cx);
-                }
-            });
+            let root = workspace.read(cx).project.root.clone();
+            crate::settings::set(Some(&root), &["inlay_hints", "enabled"], serde_json::json!(arg == "on"), cx)?;
             Ok(String::new())
         }
-        // Editor ▸ Vim Mode, set rather than toggled (e2e runs share the session).
+        // Editor ▸ Vim Mode, set rather than toggled.
         "vim" => {
             let on = match arg {
                 "on" => true,
                 "off" => false,
                 _ => return Err("usage: vim on|off".into()),
             };
-            crate::settings::Settings::update(cx, |settings| settings.vim_mode = on);
+            crate::settings::set(None, &["vim_mode"], serde_json::json!(on), cx)?;
             Ok(String::new())
+        }
+        "settings" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.settings_command(arg, window, cx)))
+                .map_err(|e| e.to_string())?
         }
         "signature-help" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;

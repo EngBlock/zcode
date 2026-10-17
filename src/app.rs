@@ -3,7 +3,6 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;
 
 use crate::actions::{self, About, OpenProject, Quit};
@@ -102,12 +101,9 @@ fn disable_window_animations() {
     }
 }
 
+/// The theme the settings pick for the window's appearance.
 fn sync_theme(window: &mut Window, cx: &mut App) {
-    let mode = match window.appearance() {
-        WindowAppearance::Dark | WindowAppearance::VibrantDark => ThemeMode::Dark,
-        _ => ThemeMode::Light,
-    };
-    Theme::change(mode, Some(window), cx);
+    crate::settings::themes::sync(window, cx);
 }
 
 /// Opens a project window for `path` (or focuses it if already open).
@@ -281,6 +277,9 @@ pub fn run() {
         return;
     }
 
+    // Settings, key bindings and the theme they name are read on a thread
+    // of their own while AppKit starts.
+    crate::settings::preload();
     if std::env::var_os("ZCODE_TRACE_STARTUP").is_some() {
         eprintln!("[startup] main: {:?}", main_started.elapsed());
     }
@@ -309,9 +308,13 @@ pub fn run() {
             mark("gpui_kit::init");
             crate::languages::register();
             cx.set_global(Perf::new(main_started));
+            crate::settings::init(cx);
+            mark("settings");
             actions::bind_keys(cx);
+            crate::settings::keymap::bind_user(cx);
             actions::set_menus(cx);
             mark("keymap + menus");
+            crate::workspace::register_global_settings_actions(cx);
 
             cx.on_action(|_: &Quit, cx| quit(cx));
             cx.on_action(|_: &OpenProject, cx| prompt_open(cx));
@@ -383,6 +386,7 @@ pub fn run() {
                     .ok();
             }
             perf::start_sampler(cx);
+            crate::settings::watch(cx);
             if args.background && single_instance {
                 // Resident and listening; windows open on request. Lay out
                 // and draw one hidden window first so the first real open

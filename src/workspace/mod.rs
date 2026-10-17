@@ -40,6 +40,7 @@ mod project_files;
 mod project_settings;
 mod remote_sheet;
 mod semantic_tokens;
+mod settings;
 mod source_control;
 mod terminals;
 mod vim;
@@ -75,8 +76,7 @@ pub use pane_group::SplitAxis;
 pub use panels::DebugTab;
 pub use plist_editor::{PlistEditor, PlistEditorEvent};
 pub use project_settings::{ProjectSettings, ProjectSettingsEvent};
-
-const DEFAULT_FONT_SIZE: f32 = 13.;
+pub use settings::{is_generated, register_global_settings_actions};
 
 /// A position to reveal after opening a file.
 #[derive(Clone, Debug)]
@@ -162,6 +162,8 @@ pub struct Workspace {
     pub git: source_control::GitState,
     pub font_size: f32,
     pub soft_wrap: bool,
+    /// The settings in effect here: the user's, then the project's.
+    settings: settings::SettingsState,
     memory_label: String,
     modal: Option<Modal>,
     issue_cursor: Option<usize>,
@@ -204,7 +206,8 @@ impl Workspace {
         session.note_recent(&opened_path);
         let saved = session.project(&project.root);
         session.save();
-        crate::settings::Settings::init(&session, cx);
+        crate::settings::open_project(&project.root, cx);
+        let current_settings = crate::settings::Settings::for_project(&project.root, cx);
 
         let mut subscriptions = vec![
             cx.subscribe_in(&lsp, window, Self::on_lsp_event),
@@ -221,13 +224,17 @@ impl Workspace {
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
             let active = window.is_window_active();
             this.build.update(cx, |build, cx| build.set_window_active(active, cx));
+            // The menus' checkmarks follow the window in front.
+            if active {
+                crate::actions::set_menu_settings(this.settings.current.clone(), cx);
+            }
             // A commit or checkout may have happened elsewhere meanwhile.
             if active && this.git.root.is_some() {
                 this.refresh_scm(cx);
             }
         }));
-        // Editor ▸ Vim Mode, toggled in any window.
-        subscriptions.push(cx.observe_global::<crate::settings::Settings>(|this, cx| this.apply_vim_mode(cx)));
+        // A settings, keymap or theme file changed, or a toggle wrote one.
+        subscriptions.push(cx.observe_global_in::<crate::settings::SettingsStore>(window, |this, window, cx| this.settings_changed(window, cx)));
         // Semantic token colors come from the theme, which follows the appearance.
         subscriptions.push(cx.observe_window_appearance(window, |this, _, cx| this.refresh_semantic_tokens(cx)));
         // Only redraw when the displayed memory figure changes.
@@ -294,13 +301,14 @@ impl Workspace {
                 _task: None,
             },
             hierarchy: Default::default(),
-            inlay_hints: inlay_hints::InlayHints::new(session.inlay_hints.unwrap_or(false)),
+            inlay_hints: inlay_hints::InlayHints::new(current_settings.inlay_hints),
             lsp_ready: false,
             outline: vec![],
             outline_path: None,
-            git: source_control::GitState::new(&session),
-            font_size: session.font_size.unwrap_or(DEFAULT_FONT_SIZE),
-            soft_wrap: false,
+            git: source_control::GitState::new(&current_settings),
+            font_size: current_settings.buffer_font_size,
+            soft_wrap: current_settings.soft_wrap,
+            settings: settings::SettingsState::new(current_settings),
             memory_label: String::new(),
             modal: None,
             issue_cursor: None,
@@ -637,12 +645,6 @@ impl Workspace {
         };
         self.session = Session::load();
         self.session.set_project(&self.project.root, state);
-        self.session.font_size = Some(self.font_size);
-        self.session.inline_blame = Some(self.git.inline_blame);
-        self.session.show_authors = Some(self.git.show_authors);
-        self.session.side_by_side_comparison = Some(self.git.side_by_side);
-        self.session.inlay_hints = Some(self.inlay_hints.enabled);
-        crate::settings::Settings::get(cx).write(&mut self.session);
         self.session.save();
     }
 
@@ -830,6 +832,7 @@ impl Workspace {
         state["multibuffer"] = self.multibuffer_summary(cx);
         state["terminals"] = self.terminals_summary(window, cx);
         state["vim"] = self.vim_summary(window, cx);
+        state["settings"] = self.settings_summary(window, cx);
         state["language_features"] = serde_json::json!({
             "server": self.lsp.read(cx).features().summary(),
             "inlay_hints": self.inlay_hints_summary(cx),

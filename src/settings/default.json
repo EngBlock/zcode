@@ -1,0 +1,66 @@
+// zcode's settings and their defaults. Don't edit this file: put the ones
+// you want to change in your own settings file (zcode ▸ Settings…, ⌘,),
+// ~/.config/zcode/settings.json, or a project's .zcode/settings.json. Both
+// are JSON with comments, in Zed's format, and apply as soon as they're
+// saved; a project's file wins over yours, except for the settings marked
+// "yours only".
+{
+  // The theme: a name ("Default Dark", a file's in ~/.config/zcode/themes),
+  // or one for each appearance, following the system's unless "mode" is
+  // "light" or "dark". Yours only.
+  "theme": {
+    "mode": "system",
+    "light": "Default Light",
+    "dark": "Default Dark"
+  },
+  // The editor's font (null: the theme's, Menlo unless it names one).
+  // Yours only.
+  "buffer_font_family": null,
+  // Its size in points (Editor ▸ Font Size: ⌘+, ⌘-, ⌃⌘0 sets it back).
+  "buffer_font_size": 13,
+  // Columns a tab takes, and whether the Tab key types tabs or spaces.
+  "tab_size": 4,
+  "hard_tabs": false,
+  // Editor ▸ Wrap Lines (⌃⇧⌘L): "none", or "editor_width" to wrap long
+  // lines at the editor's edge.
+  "soft_wrap": "none",
+  // Editor ▸ Invisibles: "none", or "all" to show spaces and tabs.
+  "show_whitespaces": "none",
+  "gutter": {
+    // Line numbers beside the text.
+    "line_numbers": true
+  },
+  "indent_guides": {
+    "enabled": true
+  },
+  // Format the file through the language server (as Editor ▸ Format File)
+  // before ⌘S, Save All and :w save it: "on" or "off".
+  "format_on_save": "off",
+  // On save, remove spaces and tabs at the ends of lines, and end the file
+  // with a newline.
+  "remove_trailing_whitespace_on_save": false,
+  "ensure_final_newline_on_save": true,
+  // Editor ▸ Inlay Hints: types and parameter names from the language
+  // server, drawn in the text.
+  "inlay_hints": {
+    "enabled": false
+  },
+  // Editor ▸ Vim Mode. Yours only.
+  "vim_mode": false,
+  "git": {
+    // Editor ▸ Inline Blame: the cursor's line's commit after it.
+    "inline_blame": {
+      "enabled": true
+    },
+    // Editor ▸ Authors (⌃⇧⌘A): each line's author in the gutter.
+    "show_authors": false,
+    // Code Review side by side (Editor ▸ Side by Side Comparison) or
+    // inline (Editor ▸ Inline Comparison).
+    "side_by_side_comparison": true
+  },
+  "terminal": {
+    // "system" (your login shell), a program, or
+    // { "program": "/bin/zsh", "args": ["-l"] }.
+    "shell": "system"
+  }
+}
