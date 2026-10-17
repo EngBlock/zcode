@@ -1,6 +1,7 @@
 //! What Xcode's Edit Scheme sheet (⌘<) edits for the Run and Test actions:
 //! build configuration, launch arguments, environment variables, options
-//! and diagnostics; and what Product ▸ Profile reads from the Profile action.
+//! and diagnostics; and what Product ▸ Profile and Archive read from the
+//! Profile and Archive actions.
 //!
 //! An Xcode scheme keeps them in its `.xcscheme` (shared in
 //! `xcshareddata/xcschemes`, or the user's in `xcuserdata`), which is read
@@ -181,12 +182,32 @@ impl Default for ProfileOptions {
     }
 }
 
+/// The Archive action, read but not edited: what Product ▸ Archive builds
+/// and what happens to the archive.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ArchiveOptions {
+    /// Release unless the scheme says otherwise, as in Xcode.
+    pub configuration: String,
+    /// Reveal Archive in Organizer (on in the schemes Xcode makes).
+    pub reveal_in_organizer: bool,
+    /// Archive Name (`customArchiveName`); empty is the scheme's name.
+    pub name: String,
+}
+
+impl Default for ArchiveOptions {
+    fn default() -> Self {
+        Self { configuration: "Release".into(), reveal_in_organizer: true, name: String::new() }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SchemeOptions {
     pub run: ActionOptions,
     pub test: ActionOptions,
     pub profile: ProfileOptions,
+    pub archive: ArchiveOptions,
     /// Run ▸ Info ▸ Debug executable: whether ⌘R may run under the debugger.
     pub debug_executable: bool,
     /// Run ▸ Options ▸ Working Directory (Mac executables and packages).
@@ -205,6 +226,7 @@ impl Default for SchemeOptions {
             run: ActionOptions::default(),
             test: ActionOptions::default(),
             profile: ProfileOptions::default(),
+            archive: ArchiveOptions::default(),
             debug_executable: true,
             use_custom_working_directory: false,
             custom_working_directory: String::new(),
@@ -594,6 +616,13 @@ pub fn read(text: &str) -> Result<ReadScheme> {
             template: profile.attribute("savedToolIdentifier").unwrap_or("").to_string(),
         };
     }
+    if let Some(archive) = root.child("ArchiveAction") {
+        options.archive = ArchiveOptions {
+            configuration: archive.attribute("buildConfiguration").unwrap_or("Release").to_string(),
+            reveal_in_organizer: flag(archive, "revealArchiveInOrganizer", true),
+            name: archive.attribute("customArchiveName").unwrap_or("").to_string(),
+        };
+    }
     if let Some(test) = root.child("TestAction") {
         options.test = read_action(test);
         options.test_uses_run_arguments = flag(test, "shouldUseLaunchSchemeArgsEnv", false);
@@ -823,6 +852,21 @@ mod tests {
         let mut changed = read(&text).unwrap().options;
         changed.profile.template = "Leaks".into();
         assert_eq!(write(&text, &changed).unwrap(), text);
+    }
+
+    #[test]
+    fn reads_the_archive_action() {
+        let o = read(&sample()).unwrap().options;
+        assert_eq!(o.archive, ArchiveOptions::default(), "Release, revealed in the Organizer, named for the scheme");
+        let text = sample().replace(
+            "buildConfiguration = \"Release\"\n      revealArchiveInOrganizer = \"YES\"",
+            "buildConfiguration = \"AppStore\"\n      customArchiveName = \"Hello Store\"\n      revealArchiveInOrganizer = \"NO\"",
+        );
+        let mut o = read(&text).unwrap().options;
+        assert_eq!(o.archive, ArchiveOptions { configuration: "AppStore".into(), reveal_in_organizer: false, name: "Hello Store".into() });
+        // Read only, as the Profile action.
+        o.archive.configuration = "Release".into();
+        assert_eq!(write(&text, &o).unwrap(), text);
     }
 
     #[test]
