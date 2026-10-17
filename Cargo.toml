@@ -37,6 +37,10 @@ futures = "0.3"
 # already here through `ignore`.
 globset = "0.4"
 ignore = "0.4"
+# Asset catalog thumbnails: raster images (MIT OR Apache-2.0) and SVGs
+# (Apache-2.0 OR MIT), both already built for GPUI's images.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "tiff", "bmp", "webp", "ico"] }
+resvg = { version = "0.46", default-features = false }
 libc = "0.2"
 log = "0.4"
 lsp-types = { version = "0.97", features = ["proposed"] }
@@ -44,6 +48,19 @@ nucleo-matcher = "0.3"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSResponder", "NSGraphics", "NSView"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray"] }
+# Asset catalog thumbnails of PDFs, drawn by Core Graphics (already built
+# for GPUI and AppKit).
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFData"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std",
+    "CGBitmapContext",
+    "CGColorSpace",
+    "CGContext",
+    "CGDataProvider",
+    "CGImage",
+    "CGPDFDocument",
+    "CGPDFPage",
+] }
 parking_lot = "0.12"
 # A window's AppKit view, for its window number (screenshots).
 raw-window-handle = "0.6"
