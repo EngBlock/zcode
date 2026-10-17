@@ -37,6 +37,10 @@ DEBUG_DIR = tempfile.mkdtemp(prefix="zcode-e2e-")
 # user's ~/.config/zcode or their session; every zcode it starts inherits it.
 CONFIG_DIR = tempfile.mkdtemp(prefix="zcode-e2e-config-")
 os.environ["ZCODE_CONFIG_DIR"] = CONFIG_DIR
+# Nothing opens Xcode on the screen: Open in Xcode and Show in Xcode Canvas
+# record their commands here instead (src/xcode_app.rs).
+XCODE_COMMANDS = os.path.join(CONFIG_DIR, "xcode-commands.jsonl")
+os.environ["ZCODE_XCODE_COMMANDS"] = XCODE_COMMANDS
 
 passed, failed = 0, 0
 ONLY = sys.argv[sys.argv.index("--only") + 1].lower().split(",") if "--only" in sys.argv else None
@@ -118,6 +122,7 @@ XCODE_SHORTCUTS = [
     ("cmd-shift-c", "zcode::ActivateConsole", "View ▸ Debug Area ▸ Activate Console"),
     ("ctrl-6", "zcode::ShowDocumentItems", "View ▸ Editor ▸ Document Items"),
     ("ctrl-shift-cmd-enter", "zcode::FocusEditorPane", "View ▸ Editor ▸ Focus Editor Pane"),
+    ("alt-cmd-enter", "zcode::ShowInXcodeCanvas", "Editor ▸ Canvas (zcode: Show in Xcode Canvas)"),
     ("cmd-enter", "zcode::ShowEditorOnly", "Editor ▸ Show Editor Only"),
     ("ctrl-alt-cmd-enter", "zcode::ShowAssistant", "Editor ▸ Assistant"),
     ("cmd-shift-a", "zcode::QuickActions", "View ▸ Show Quick Actions…"),
@@ -1617,6 +1622,151 @@ def asset_catalog_checks(samples):
             z.quit()
 
     check("Asset catalog: 3,000 image sets read off the main thread, only the thumbnails on screen decoded", huge_catalog_stays_responsive)
+
+
+GALLERY_SWIFT = """import SwiftUI
+
+struct Badge: View {
+    var body: some View {
+        Text("Badge")
+    }
+}
+
+#Preview("Light") {
+    Badge()
+}
+
+#if DEBUG
+struct Badge_Previews: PreviewProvider {
+    static var previews: some View {
+        Badge()
+    }
+}
+#endif
+"""
+
+
+def xcode_commands():
+    """The commands zcode would have run to hand work to Xcode."""
+    try:
+        with open(XCODE_COMMANDS) as f:
+            return [json.loads(l) for l in f if l.strip()]
+    except FileNotFoundError:
+        return []
+
+
+def preview_checks(samples):
+    """SwiftUI previews on a copy of HelloZ (synchronized) given a file with
+    a named #Preview and a PreviewProvider: the gutter's marks, following
+    edits; a mark's click and Editor ▸ Show in Xcode Canvas (⌥⌘↩), which
+    save the file and hand it to Xcode. Xcode is never opened: the run's
+    ZCODE_XCODE_COMMANDS records the commands instead (`xed <project>`,
+    System Events waiting for its window, `xed --project … --line …`, then
+    System Events turning on Editor ▸ Canvas)."""
+    project = os.path.realpath(os.path.join(WORK, "Previews", "HelloZ"))
+    shutil.copytree(os.path.join(samples, "HelloZ"), project)
+    app = os.path.join(project, "HelloZ")
+    content, counter, gallery = (os.path.join(app, n) for n in ("ContentView.swift", "Counter.swift", "Gallery.swift"))
+    open(gallery, "w").write(GALLERY_SWIFT)
+    xcodeproj = os.path.join(project, "HelloZ.xcodeproj")
+
+    def previews(z):
+        return z.dump()["previews"]
+
+    def marks(z, count, timeout=30):
+        s = z.wait_for(lambda s: len(s["previews"]["gutter"]) == count, timeout=timeout, interval=0.3)
+        return s["previews"]
+
+    def requested(z, before):
+        """The file's xed and the canvas step, after the project's (checked)."""
+        z.wait_for(lambda s: (s["previews"]["last"] or {}).get("outcome") == "recorded" and len(xcode_commands()) >= before + 4, timeout=15, interval=0.2)
+        open_project, wait, xed, canvas = xcode_commands()[before:]
+        assert open_project == ["/usr/bin/xed", xcodeproj], open_project
+        assert wait[0] == "/usr/bin/osascript" and wait[3:] == ["HelloZ.xcodeproj", "HelloZ"], wait[3:]
+        return xed, canvas
+
+    z = Zcode(project)
+    try:
+        def gutter_marks():
+            z.run(f"open {content}", "wait 300")
+            p = marks(z, 1)
+            preview_line = line_of(content, "#Preview")
+            assert p["file"] == [f"Macro Preview @{preview_line}"], p
+            assert [(m["line"], m["preview"]) for m in p["gutter"]] == [(preview_line, "Preview")], p
+            z.run(f"open {gallery}", "wait 300")
+            p = marks(z, 2)
+            assert p["file"] == [f"Macro Light @{line_of(gallery, '#Preview')}", f"Provider Badge_Previews @{line_of(gallery, 'struct Badge_Previews')}"], p
+            assert [m["preview"] for m in p["gutter"]] == ["Light", "Badge_Previews"], p
+            z.run("screenshot " + os.path.join(WORK, "previews.png"))
+
+        check("Previews: marks in the gutter on #Preview and PreviewProvider", gutter_marks)
+
+        def marks_follow_edits():
+            z.run(f"open {gallery}:1", "wait 300", "keys enter enter", "wait 500")
+            p = marks(z, 2)
+            assert [m["line"] for m in p["gutter"]] == [line_of(gallery, "#Preview") + 2, line_of(gallery, "struct Badge_Previews") + 2], p
+            # A new preview at the end gets a mark of its own.
+            z.run("keys cmd-down enter", "type #Preview(\"Dark\") { Badge() }", "wait 500")
+            p = marks(z, 3)
+            assert p["file"][-1].startswith("Macro Dark @"), p
+            for _ in range(40):
+                if not z.dump()["active"]["dirty"]:
+                    break
+                z.run("keys cmd-z")
+            z.wait_for(lambda s: len(s["previews"]["file"]) == 2 and not s["active"]["dirty"], timeout=10, interval=0.3)
+
+        check("Previews: the marks follow edits (typing stops), a typed #Preview gets one, undo removes it", marks_follow_edits)
+
+        def click_mark():
+            z.run(f"open {gallery}", "wait 300")
+            p = marks(z, 2)
+            before = len(xcode_commands())
+            mark = next(m for m in p["gutter"] if m["preview"] == "Light")
+            z.run(f"click {mark['x']} {mark['y']}")
+            xed, canvas = requested(z, before)
+            assert xed == ["/usr/bin/xed", "--project", xcodeproj, "--line", str(mark["line"]), gallery], xed
+            assert canvas[0] == "/usr/bin/osascript" and "Canvas" in canvas[2], canvas[:2]
+            assert canvas[3:] == ["Gallery.swift", "file://" + gallery], canvas[3:]
+            last = previews(z)["last"]
+            assert last == {"file": gallery, "line": mark["line"], "preview": "Light", "outcome": "recorded"}, last
+
+        check("Previews: clicking a mark opens the project, then the file at that line, in Xcode, and turns on the canvas", click_mark)
+
+        def show_in_canvas_key():
+            provider_line = line_of(gallery, "struct Badge_Previews")
+            inside = line_of(gallery, "static var previews") + 1
+            # An unsaved edit in the provider: saved before Xcode reads the file.
+            z.run(f"open {gallery}:{inside}", "wait 300", "keys cmd-right", "type .padding()", "wait 100")
+            assert z.dump()["active"]["dirty"], "edited"
+            before = len(xcode_commands())
+            z.run("keys alt-cmd-enter")
+            xed, _ = requested(z, before)
+            assert xed[-3:] == ["--line", str(provider_line), gallery], xed
+            assert previews(z)["last"]["preview"] == "Badge_Previews"
+            assert "Badge().padding()" in open(gallery).read() and not z.dump()["active"]["dirty"], "saved first"
+            # Outside a preview: the file at the cursor's line.
+            body = line_of(gallery, 'Text("Badge")')
+            before = len(xcode_commands())
+            z.run(f"open {gallery}:{body}", "wait 300", "keys alt-cmd-enter")
+            xed, _ = requested(z, before)
+            assert xed[-3:] == ["--line", str(body), gallery], xed
+            assert previews(z)["last"]["preview"] is None
+            # A file without previews: nothing goes to Xcode.
+            before = len(xcode_commands())
+            z.run(f"open {counter}", "wait 500", "keys alt-cmd-enter", "wait 500")
+            assert len(xcode_commands()) == before and previews(z)["last"]["line"] == body, xcode_commands()[before:]
+
+        check("Show in Xcode Canvas (⌥⌘↩): the preview at the cursor, else the cursor's line, the file saved first; nothing for a file without previews", show_in_canvas_key)
+
+        def marks_in_the_assistant():
+            z.run(f"open {gallery}", "wait 300", "keys ctrl-cmd-t", "wait 500")
+            p = marks(z, 2)
+            assert [m["preview"] for m in p["gutter"]] == ["Light", "Badge_Previews"], p
+            z.run("keys ctrl-shift-cmd-w", "wait 300")
+
+        check("Previews: marks in a second pane's view of the file", marks_in_the_assistant)
+    finally:
+        z.quit()
 
 
 def plist_rows(z):
@@ -5937,6 +6087,9 @@ def main():
 
     print("Asset catalogs (copies of HelloClassic and HelloZ with tests/fixtures/xcassets):")
     asset_catalog_checks(samples)
+
+    print("SwiftUI previews (a copy of HelloZ; Xcode's commands recorded, never run):")
+    preview_checks(samples)
 
     print("Property lists, Info and Signing & Capabilities (copies of HelloZ and HelloClassic):")
     plist_checks(samples)
