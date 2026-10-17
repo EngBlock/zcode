@@ -308,4 +308,4 @@ Invisibles is Xcode's `toggleInvisibleCharactersShown:`.
 - SwiftUI Previews canvas. This is hard because it needs private preview infrastructure, so consider a "run in simulator with hot reload" alternative.
 - Bookmarks navigator, snippets library, coding-assistant chat.
 
-**Out of scope for zcode:** Interface Builder/storyboards, Core Data/SpriteKit/SceneKit/RealityKit editors, asset-catalog editing beyond basics, Xcode Cloud, StoreKit/GameKit test tooling, and the GPU debugger.
+**Out of scope for zcode:** Interface Builder/storyboards, Core Data/SpriteKit/SceneKit/RealityKit editors, asset-catalog editing beyond the basics (zcode has the editor, image and color sets, drops, renames and colors), Xcode Cloud, StoreKit/GameKit test tooling, and the GPU debugger.

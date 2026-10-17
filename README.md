@@ -23,6 +23,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | Signing & Capabilities for each target: Automatically manage signing, Team (from Xcode's signed-in accounts and the keychain's signing identities, or typed), Bundle Identifier, Signing Certificate (Development, Distribution, Sign to Run Locally, or a keychain identity) and Provisioning Profile (installed profiles that match the team and bundle ID). + Capability adds App Groups, iCloud, Push Notifications, Keychain Sharing, Background Modes, Associated Domains, Sign in with Apple, HealthKit, and on the Mac App Sandbox and Hardened Runtime, each with its options: entitlements go into the target's `.entitlements` file (created, set as `CODE_SIGN_ENTITLEMENTS` and added to the project the first time), Background Modes into its Info.plist, App Sandbox and Hardened Runtime into build settings, as Xcode 15+ keeps them. Builds register them with Apple through `-allowProvisioningUpdates`; zcode never calls the developer portal. Signing errors open this tab. | — |
 | | The target's Info tab: Custom Target Properties, its Info.plist keys and `INFOPLIST_KEY_` build settings together in the property list editor. The first key added to a target with a generated Info.plist creates the file next to its sources and sets `INFOPLIST_FILE` (in a synchronized folder, with the membership exception that keeps it out of the target's resources). | — |
 | **Property lists** | `Info.plist`, `.entitlements`, `.xcprivacy`, `.stringsdict` and any binary or XML `.plist` open in a Key / Type / Value outline: disclosure for dictionaries and arrays, Xcode's names for keys and values ("Bundle display name", "Privacy - Camera Usage Description", "Portrait (bottom home button)") from Xcode's own definitions, Editor ▸ Raw Keys and Values for the raw ones, + and − on each row, Editor ▸ Add Item and Value Type (Array, Dictionary, Boolean, Data, Date, Number, String), key suggestions as you type, menus for Booleans and allowed values, and rows moved with ⌥⌘[ ⌥⌘] or by dragging. Every change edits the file's text in place, so undo, redo, the dirty dot and ⌘S work as in source code, an unmodified file saves byte for byte, and new values are written as Xcode writes them (tabs, the `<!DOCTYPE>` header). Binary plists are saved as binary, keys in their order. Open As ▸ Source Code / Property List (Editor menu, or the navigator's context menu) switches views. | ⌥⌘[ ⌥⌘], ⌘Z |
+| **Asset catalogs** | An `.xcassets` folder is one item in the project navigator, as in Xcode, and opens in Xcode's asset catalog editor as a tab (opening one of its sets' folders, as MCP's `OpenFile` or the control channel can, opens the catalog on that set): the outline of image, app icon, color, data and symbol sets and their folders on the left, the selected set's wells in the middle in rows by device and appearance ("Universal · Dark", "iOS"), each captioned with its scale, size or appearance ("2x", "16pt 1x", "Tinted"), with thumbnails drawn from the files (PNG, JPEG, HEIC, PDF, SVG…) and color swatches from `Contents.json`; a folder shows its sets as tiles. The attributes inspector: name, type, properties (Render As, Preserve Vector Data…), a well's file, pixel size and file size, files no slot names, and for a color its Content (color space), Input Method (floating point, 8-bit, 8-bit hexadecimal) and components. Edits: drop images from Finder into a well (copied into the set and named in `Contents.json`; the file the slot had goes unless another slot keeps it) or onto the outline or a folder (a new image set per name, `name@2x.png` in the 2x well), Delete clears a well; + New Image Set, Color Set, Folder and Import…; − or Delete removes a set; rename in the Name field; type a color's components, change its content or input method. `Contents.json` is written as Xcode writes it, byte for byte. Every edit is undone with ⌘Z (and redone with ⇧⌘Z), removed files included; `project.pbxproj` never changes (Xcode references the catalog as one folder), and new files appear in synchronized folders as they are. | ⌘Z ⇧⌘Z, ⌫ |
 | **Swift packages** | Package Dependencies at the bottom of the project navigator: every resolved package with its version (or branch, or commit), expandable to browse its sources, which open read-only (with a lock on the tab), as do package sources Jump to Definition reaches. | — |
 | | File ▸ Add Package Dependencies…: enter a repository URL or a GitHub `owner/repo`; its versions come from its tags (`git ls-remote`) for the dependency rule (Up to Next Major Version, Up to Next Minor Version, Range of Versions, Exact Version, Branch, Commit). Add Package fetches that version to read its products; then pick the target each product is added to. Add Local… adds a package folder. In an `.xcworkspace` you choose which project gets the package. | — |
 | | File ▸ Packages ▸ Reset Package Caches, Resolve Package Versions, Update to Latest Package Versions; Update Package and Remove Package on a package's context menu. Xcode projects are edited in `project.pbxproj` as Xcode writes it (package references, product dependencies, the targets' Frameworks phase) and resolved with `xcodebuild -resolvePackageDependencies` into the DerivedData folder builds use; Swift packages use `swift package add-dependency`, `add-target-dependency`, `resolve`, `update` and `reset`. Progress shows in the activity view, errors under Package Loading in the Issue navigator, and the index refreshes afterwards so new modules can be imported. | — |
@@ -307,6 +308,18 @@ if zcode is not faster.
   alternating rounds of 12 against `master` (load average ~8): the
   welcome window's first pixels at 237.1, 228.5 and 237.2 ms against
   230.5, 234.6 and 230.1 ms.
+* Asset catalogs cost nothing until one is opened: the catalog is read on
+  a thread of its own (3,000 image sets in ~2.5 s in the e2e check, the
+  window answering throughout), and thumbnails are decoded in the
+  background at most four at a time, only for the wells and tiles on
+  screen (the outline and a folder's tiles are virtual lists), scaled to
+  192 pixels and kept in a cache of at most 64 MB that drops the least
+  recently shown (their textures freed too). Edits run in the background.
+  Cold launch, three alternating rounds of 10 against `master` (load
+  average 10–14): the welcome window's first pixels at 231.3, 224.7 and
+  219.2 ms against 227.4, 229.2 and 223.7 ms. The binary grows by 1.5 MB
+  (the PDF and image decoding zcode now calls; the crates were already
+  linked).
 * Settings cost nothing measurable at startup: the user's settings,
   keymap and the theme they name are read and parsed on a thread of their
   own started at the top of `main()`, and the first window takes what it
@@ -349,7 +362,8 @@ src/
                     conversation, the agent's file reads and writes through buffers, @-mentions);
                     predictive completion (predictions.rs: when to ask, cancelling, the status bar);
                     Profile's template chooser (profile.rs); Archive, the Organizer tab and Distribute App's
-                    sheet (archive.rs, organizer.rs, distribute_sheet.rs)
+                    sheet (archive.rs, organizer.rs, distribute_sheet.rs); the asset catalog editor as a tab
+                    (asset_catalog.rs: outline, wells, inspector, edits and undo; asset_catalogs.rs: opening it)
   lsp/              JSON-RPC client, document sync store, editor provider adapters, what the server offers;
                     inlay hints, semantic tokens and call/type hierarchies converted for the editor
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner (programs started with
@@ -362,6 +376,10 @@ src/
                     Package.swift edits, git queries, resolve/update/reset
   testing/          tests found in source, test plans, test selections per runner, results → tests
   scheme/           Edit Scheme options: .xcscheme read and edited in place, what launches get
+  xcassets/         asset catalogs: sets and folders read from disk, slots laid out as Xcode's editor shows
+                    them (slots.rs), colors and their input methods (color.rs), Contents.json written as
+                    Xcode writes it (json.rs), edits as file operations that undo themselves (edit.rs),
+                    thumbnails decoded off the main thread and cached (thumbnails.rs)
   plist/            property lists: XML with byte ranges, binary, in-place edits, Xcode's key definitions
                     (generated by scripts/plist_definitions.py)
   signing/          teams, identities and provisioning profiles; capabilities and where they live
@@ -503,6 +521,15 @@ archive` and `-exportArchive`, `notarytool`, `stapler`, `ditto`); the
 archive layout, the Archives folder, the method names, Window ▸ Organizer
 and ⌥⇧⌘O are Xcode's, and the `ExportOptions.plist` keys are those
 `xcodebuild -help` documents. No new dependencies.
+The asset catalog editor follows Xcode's (the outline, wells in rows by
+device and appearance, the attributes inspector, Xcode's names for new
+sets); `Contents.json` is read with `serde_json` and written in the format
+`NSJSONSerialization` gives Xcode (pretty-printed, sorted keys), checked
+against Foundation itself. Thumbnails decode with `image` (MIT OR
+Apache-2.0) and `resvg` (Apache-2.0 OR MIT), both already built for GPUI,
+and PDFs with macOS's Core Graphics through `objc2-core-graphics` (Zlib OR
+Apache-2.0 OR MIT, already built for AppKit); other formats through
+macOS's `sips`.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -689,6 +716,17 @@ themes or session. It covers:
   `profiling.time_limit`; the scheme's instrument skipping the chooser and
   Profile… asking anyway; Build For ▸ Profiling. On the fake device
   (installed, recorded there) and, with `--simulator`, on a simulator
+* the asset catalog editor on a copy of HelloClassic given the sets of
+  `tests/fixtures/xcassets` (Contents.json files in Xcode's format) and a
+  copy of HelloZ: the tab, outline, rows and wells, PNG, PDF and SVG
+  thumbnails, app icon wells and a data set; a color component typed into
+  its field and undone to Xcode's bytes; files dropped through the window's
+  own file-drop events (as Finder's drags arrive) into wells and onto the
+  outline; New Image Set and Color Set byte for byte, a rename typed,
+  Delete, every edit undone byte for byte with `project.pbxproj`
+  untouched; the tab after a relaunch; in the synchronized HelloZ, `actool`
+  compiling what zcode wrote; 3,000 sets read off the main thread with only
+  the thumbnails on screen decoded
 * Archive and Distribute App on a copy of HelloClassic, in the run's own
   Archives folder (never `~/Library/Developer/Xcode/Archives`): a real
   `xcodebuild archive` for any Mac (Sign to Run Locally, so it signs on any
@@ -895,8 +933,23 @@ The control channel also takes window screenshots
   things. Checked with scripts/mcp_client.py and the fake ACP agent; not
   run against Claude Code, Codex, Gemini CLI or Cursor here (that would
   change their configuration on this machine).
-* No Interface Builder, asset-catalog editor or SwiftUI canvas; Instruments
-  is Apple's, which Profile records with and opens.
+* No Interface Builder or SwiftUI canvas; Instruments is Apple's, which
+  Profile records with and opens.
+* Asset catalogs: the cheap edits only. Appearances, scales, devices,
+  gamuts and other variations can't be added to a set (edit
+  `Contents.json` with Open Quickly, or Xcode), properties such as Render
+  As, Compression and Preserve Vector Data are shown, not edited, and new
+  sets are image sets, color sets and folders (no app icons, data,
+  symbols, AR, sticker or texture sets, though they're shown). A color is
+  typed, not picked (no color panel), Display P3 and extended-range
+  swatches are drawn as if sRGB, and system colors show their light
+  values. Symbol images show their SVG as drawn (the template sheet, not
+  one weight), data sets their file name, and sets of other kinds their
+  files. Images are dragged in from Finder, not out of zcode or between
+  wells. Undo lives with the tab: closing it (or quitting) forgets it, and
+  removed files wait a day in zcode's cache folder. Dragging from Finder
+  was checked through the window's file-drop events, not a real Finder
+  drag.
 * Profile: a recording couldn't be made on the machine zcode was built on
   (`xctrace record` needs Developer Tools access, `DevToolsSecurity
   -enable`, and failed there with "Error connecting to DTServiceHub"), so
