@@ -250,6 +250,14 @@ impl Workspace {
                 },
                 false,
             ),
+            Phase::Running { .. } if build.recording.is_some() => (
+                match &build.recording {
+                    Some(recording) if recording.stopping => format!("Saving the {} trace…", recording.template),
+                    Some(recording) => format!("Profiling {scheme} with {}", recording.template),
+                    None => String::new(),
+                },
+                true,
+            ),
             Phase::Running { .. } => (
                 format!(
                     "Running {scheme} on {}",
@@ -262,12 +270,15 @@ impl Workspace {
                     "{} {} | {:.1}s",
                     match action {
                         BuildAction::Run => "Finished running",
+                        BuildAction::Profile => "Finished profiling",
                         BuildAction::Test => "Test",
                         BuildAction::Clean => "Clean",
                         BuildAction::Build => "Build",
                     },
                     match (action, success) {
                         (BuildAction::Run, _) => String::new(),
+                        (BuildAction::Profile, true) => String::new(),
+                        (BuildAction::Profile, false) => "with problems".into(),
                         (_, true) => "Succeeded".into(),
                         (_, false) => "Failed".into(),
                     },
@@ -1014,6 +1025,10 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &TestWithOptions, window, cx| {
                 this.edit_scheme(SchemeAction::Test, Some(SchemeAction::Test), window, cx)
             }))
+            .on_action(cx.listener(Self::profile))
+            .on_action(cx.listener(Self::profile_with_options))
+            .on_action(cx.listener(Self::profile_without_building))
+            .on_action(cx.listener(Self::build_for_profiling))
             .on_action(cx.listener(Self::choose_destination))
             .on_action(cx.listener(Self::show_performance))
             .on_action(cx.listener(Self::cut_or_cut_line))

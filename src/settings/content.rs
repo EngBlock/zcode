@@ -44,6 +44,9 @@ pub struct Settings {
     /// Hand agents in the panel zcode's own MCP server (`crate::mcp`).
     pub zcode_mcp_server: bool,
     pub edit_predictions: EditPredictionSettings,
+    /// Product ▸ Profile stops recording after this many seconds (`None`:
+    /// at Stop).
+    pub profiling_time_limit: Option<u32>,
 }
 
 /// Predictive code completion (`crate::predictions`).
@@ -158,6 +161,7 @@ impl Default for Settings {
             always_allow_tool_actions: false,
             zcode_mcp_server: true,
             edit_predictions: EditPredictionSettings::default(),
+            profiling_time_limit: None,
         }
     }
 }
@@ -244,6 +248,14 @@ pub struct SettingsContent {
     pub agent_servers: Option<Vec<(String, crate::acp::agents::AgentServerContent)>>,
     pub agent: Option<AgentContent>,
     pub edit_predictions: Option<EditPredictionsContent>,
+    pub profiling: Option<ProfilingContent>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ProfilingContent {
+    /// Seconds; 0 records until Stop.
+    pub time_limit: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -324,6 +336,7 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("agent_servers", &[]),
     ("agent", &["default_agent", "always_allow_tool_actions", "zcode_mcp_server"]),
     ("edit_predictions", &["provider", "automatic", "debounce_ms", "disabled_globs", "claude"]),
+    ("profiling", &["time_limit"]),
 ];
 
 /// Settings a project's file can't change: they're the app's, not a window's.
@@ -413,6 +426,9 @@ impl Settings {
             self.inline_blame = git.inline_blame.unwrap_or(self.inline_blame);
             self.show_authors = git.show_authors.unwrap_or(self.show_authors);
             self.side_by_side_comparison = git.side_by_side_comparison.unwrap_or(self.side_by_side_comparison);
+        }
+        if let Some(limit) = content.profiling.as_ref().and_then(|p| p.time_limit) {
+            self.profiling_time_limit = (limit > 0).then_some(limit);
         }
         if let Some(shell) = content.terminal.as_ref().and_then(|t| t.shell.clone()) {
             self.terminal_shell = shell;

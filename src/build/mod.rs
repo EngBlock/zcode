@@ -4,6 +4,7 @@ pub mod compiledb;
 pub mod devices;
 pub mod log;
 pub mod process;
+pub mod profile;
 pub mod sim_tests;
 pub mod xcode;
 
@@ -35,6 +36,9 @@ pub enum BuildAction {
     Build,
     Run,
     Test,
+    /// Build with the Profile action's configuration and record under
+    /// Instruments (`profile`).
+    Profile,
     Clean,
 }
 
@@ -43,6 +47,7 @@ impl BuildAction {
         match self {
             Self::Build | Self::Run => "Build",
             Self::Test => "Test",
+            Self::Profile => "Profile",
             Self::Clean => "Clean",
         }
     }
@@ -104,6 +109,8 @@ pub enum BuildEvent {
     LaunchDebugger { program: PathBuf, cwd: PathBuf, args: Vec<String>, env: Vec<(String, String)> },
     /// Options kept in the session (packages, file-less schemes) changed.
     StoredSchemeOptionsChanged,
+    /// Instruments' templates are listed (or couldn't be).
+    TemplatesLoaded,
 }
 
 pub struct BuildController {
@@ -168,6 +175,14 @@ pub struct BuildController {
     /// An action requested before the scheme list finished loading.
     queued: Option<(BuildAction, bool, Option<TestRequest>)>,
     cache_dir: PathBuf,
+    /// What the next or current Profile action records.
+    profile_request: Option<profile::ProfileRequest>,
+    pub recording: Option<profile::Recording>,
+    pub last_profile: Option<profile::Outcome>,
+    pub templates: profile::Templates,
+    /// The template last recorded with, first in the chooser.
+    pub last_template: Option<String>,
+    _templates_task: Option<Task<()>>,
     task: Option<Task<()>>,
     _load_task: Option<Task<()>>,
     _plans_task: Option<Task<()>>,
@@ -226,6 +241,12 @@ impl BuildController {
             pending_events: vec![],
             queued: None,
             cache_dir,
+            profile_request: None,
+            recording: None,
+            last_profile: None,
+            templates: profile::Templates::default(),
+            last_template: None,
+            _templates_task: None,
             task: None,
             _load_task: None,
             _plans_task: None,
@@ -589,6 +610,9 @@ impl BuildController {
     }
 
     pub fn stop(&mut self, cx: &mut Context<Self>) {
+        if self.stop_recording(cx) {
+            return;
+        }
         // devicectl passes the SIGTERM on to the app it runs.
         self.process.terminate();
         self._attach_task = None;
@@ -617,6 +641,7 @@ impl BuildController {
         }
         if self.phase.is_busy() {
             self.task = None;
+            self.recording = None;
             self.phase = Phase::Stopped;
             cx.emit(BuildEvent::PhaseChanged);
             cx.notify();
@@ -628,6 +653,9 @@ impl BuildController {
     /// waited a moment).
     pub fn end_processes(&mut self) {
         self.process.terminate();
+        if let Some(recording) = self.recording.take() {
+            recording.end_app();
+        }
         self.index_process.terminate();
         if let Some(RunTarget::Simulator { udid, bundle_id }) = self.run_target.take() {
             // simctl keeps going after zcode has quit.
@@ -799,6 +827,8 @@ impl BuildController {
             self._index_task = None;
         }
         if self.phase.is_busy() {
+            // A recording ends without saving when something replaces it.
+            self.recording = None;
             self.stop(cx);
         }
         let Some(scheme) = self.scheme.clone() else {
@@ -835,7 +865,12 @@ impl BuildController {
             .active_test_plan()
             .filter(|_| tests.is_some() && self.project.kind.is_xcode())
             .map(|p| p.name.clone());
-        if action == BuildAction::Run {
+        let profile = (action == BuildAction::Profile).then(|| self.profile_request.take().unwrap_or(profile::ProfileRequest {
+            template: None,
+            build: true,
+            time_limit: None,
+        }));
+        if matches!(action, BuildAction::Run | BuildAction::Profile) {
             self.console.clear();
             cx.emit(BuildEvent::ConsoleUpdated);
         }
@@ -852,11 +887,13 @@ impl BuildController {
         // the Run action's.
         let configuration = match action {
             BuildAction::Test => options.test.configuration.clone(),
+            BuildAction::Profile => options.profile.configuration.clone(),
             _ => self.configuration.clone(),
         };
+        // Instruments takes no sanitizers.
         let diagnostics = match action {
             BuildAction::Test => options.test.diagnostics.clone(),
-            BuildAction::Clean => scheme::Diagnostics::default(),
+            BuildAction::Clean | BuildAction::Profile => scheme::Diagnostics { main_thread_checker: false, ..Default::default() },
             _ => options.run.diagnostics.clone(),
         };
         // xcodebuild reads a scheme file's Test action itself; other runners
@@ -867,18 +904,21 @@ impl BuildController {
         let cache_dir = self.cache_dir.clone();
         // Edit Scheme ▸ Run ▸ Debug executable off: never under the debugger.
         let debug = action == BuildAction::Run && std::mem::take(&mut self.debug_run) && options.debug_executable;
+        // Settings depend on the configuration; Run's are cached.
         let cached_settings = self
             .settings
             .get(&(scheme.clone(), destination.id.clone()))
-            .cloned();
+            .cloned()
+            .filter(|_| action == BuildAction::Run);
 
         self.task = Some(cx.spawn(async move |this, cx| {
             let started = Instant::now();
-            let tool_action = if action == BuildAction::Run {
-                BuildAction::Build
-            } else {
-                action
+            let tool_action = match action {
+                BuildAction::Run | BuildAction::Profile => BuildAction::Build,
+                action => action,
             };
+            let records = profile.as_ref().is_some_and(|p| p.template.is_some());
+            let skip_build = profile.as_ref().is_some_and(|p| !p.build);
             // Unit tests on a simulator run in-process (see `sim_tests`):
             // build-for-testing here, then inject each bundle into its host.
             let direct_tests = action == BuildAction::Test
@@ -918,7 +958,7 @@ impl BuildController {
             let track_suites = project.kind.is_xcode() || tests.as_ref().is_some_and(|r| r.serial);
 
             // Resolve run settings concurrently with the build.
-            let settings_task = (action == BuildAction::Run && project.kind.is_xcode()).then(|| {
+            let settings_task = ((action == BuildAction::Run || records) && project.kind.is_xcode()).then(|| {
                 let project = project.clone();
                 let scheme = scheme.clone();
                 let configuration = configuration.clone();
@@ -959,6 +999,25 @@ impl BuildController {
                     .ok();
                     return;
                 }
+            }
+
+            if skip_build {
+                // Profile Without Building: what was built last.
+                if let Some(request) = profile {
+                    this.update(cx, |this, cx| {
+                        this.phase = Phase::Launching;
+                        cx.emit(BuildEvent::PhaseChanged);
+                        cx.notify();
+                    })
+                    .ok();
+                    let template = request.template.unwrap_or_default();
+                    let job = profile::Job {
+                        project, scheme, configuration, destination, options, settings: settings_task, template,
+                        time_limit: request.time_limit, handle, started,
+                    };
+                    profile::record(&this, cx, job).await;
+                }
+                return;
             }
 
             this.update(cx, |this, cx| {
@@ -1038,7 +1097,7 @@ impl BuildController {
                     if stopped {
                         return false;
                     }
-                    if action != BuildAction::Run || !success {
+                    if !(action == BuildAction::Run || records) || !success {
                         this.phase = Phase::Finished {
                             action: tool_action,
                             success,
@@ -1055,6 +1114,15 @@ impl BuildController {
                 })
                 .unwrap_or(false);
             if !continue_to_run {
+                return;
+            }
+            if let Some(request) = profile {
+                let template = request.template.unwrap_or_default();
+                let job = profile::Job {
+                    project, scheme, configuration, destination, options, settings: settings_task, template,
+                    time_limit: request.time_limit, handle, started,
+                };
+                profile::record(&this, cx, job).await;
                 return;
             }
 
@@ -1628,7 +1696,7 @@ pub fn build_command(
             let mut cmd = Command::new("/usr/bin/swift");
             cmd.current_dir(&project.root);
             match action {
-                BuildAction::Build | BuildAction::Run => {
+                BuildAction::Build | BuildAction::Run | BuildAction::Profile => {
                     cmd.args(["build", "-c", &configuration.to_lowercase()]);
                     if !scheme.is_empty() {
                         cmd.args(["--product", scheme]);
@@ -1652,7 +1720,7 @@ pub fn build_command(
             configuration,
             destination,
             match action {
-                BuildAction::Build | BuildAction::Run => "build",
+                BuildAction::Build | BuildAction::Run | BuildAction::Profile => "build",
                 BuildAction::Test => "test",
                 BuildAction::Clean => "clean",
             },
@@ -1717,33 +1785,7 @@ async fn prepare_launch(
                 anyhow::bail!("{} is not a device", destination.name)
             };
             let udid = destination.id.clone();
-            say(format!(
-                "Installing {} on {}…",
-                app.file_name().unwrap_or_default().to_string_lossy(),
-                destination.name
-            ));
-            let installed = smol::unblock({
-                let (udid, app) = (udid.clone(), app.clone());
-                move || devices::install(&udid, &app)
-            })
-            .await
-            .map_err(|err| anyhow::anyhow!("Could not install on {}: {err:#}", destination.name))?;
-
-            // Apps can't launch on a locked device; wait for it, as Xcode does.
-            let mut said = false;
-            while smol::unblock({
-                let udid = udid.clone();
-                move || devices::is_locked(&udid)
-            })
-            .await
-            .unwrap_or(false)
-            {
-                if !said {
-                    say(format!("{} is locked. Unlock it to continue…", destination.name));
-                    said = true;
-                }
-                smol::Timer::after(Duration::from_secs(2)).await;
-            }
+            let installed = install_on_device(destination, &app, &messages).await?;
             let stale_pid = smol::unblock({
                 let (udid, path) = (udid.clone(), installed.path.clone());
                 move || devices::find_process(&udid, &path)
@@ -1790,40 +1832,7 @@ async fn prepare_launch(
                 .ok_or_else(|| anyhow::anyhow!("missing PRODUCT_BUNDLE_IDENTIFIER"))?
                 .to_string();
             let udid = destination.id.clone();
-
-            say(format!("Booting {} ({})…", destination.name, destination.runtime));
-            let mut boot = Command::new("/usr/bin/xcrun");
-            boot.args(["simctl", "boot", &udid]);
-            let (ok, out) = process::run_quiet(boot).await?;
-            if !ok && !out.contains("current state: Booted") {
-                anyhow::bail!("simctl boot failed: {}", out.trim());
-            }
-
-            let simulator_app = crate::toolchain::simulator_app();
-            match &simulator_app {
-                Some(app) => {
-                    let mut open = Command::new("/usr/bin/open");
-                    open.arg("-g").arg("-a").arg(app).args(["--args", "-CurrentDeviceUDID", &udid]);
-                    if let Ok((false, out)) = process::run_quiet(open).await {
-                        say(format!("warning: Could not open {}: {}", app.display(), out.trim()));
-                    }
-                }
-                None => say("warning: No Simulator app found in the active Xcode".to_string()),
-            }
-
-            say(format!("Installing {}…", app.file_name().unwrap_or_default().to_string_lossy()));
-            let mut install = Command::new("/usr/bin/xcrun");
-            install.args(["simctl", "install", &udid]).arg(&app);
-            let (ok, out) = process::run_quiet(install).await?;
-            if !ok {
-                anyhow::bail!("simctl install failed: {}", out.trim());
-            }
-
-            if let Some(app) = &simulator_app {
-                let mut bring_front = Command::new("/usr/bin/open");
-                bring_front.arg("-a").arg(app);
-                process::run_quiet(bring_front).await.ok();
-            }
+            install_on_simulator(destination, &app, &messages).await?;
 
             say(format!("Launching {bundle_id}"));
             let mut command = Command::new("/usr/bin/xcrun");
@@ -1837,6 +1846,88 @@ async fn prepare_launch(
             Ok((command, Some(RunTarget::Simulator { udid, bundle_id })))
         }
     }
+}
+
+/// Boots the simulator, opens Simulator.app on it and installs `app`.
+async fn install_on_simulator(destination: &Destination, app: &Path, messages: &channel::Sender<String>) -> anyhow::Result<()> {
+    let say = |m: String| {
+        messages.try_send(m).ok();
+    };
+    let udid = destination.id.as_str();
+    say(format!("Booting {} ({})…", destination.name, destination.runtime));
+    let mut boot = Command::new("/usr/bin/xcrun");
+    boot.args(["simctl", "boot", udid]);
+    let (ok, out) = process::run_quiet(boot).await?;
+    if !ok && !out.contains("current state: Booted") {
+        anyhow::bail!("simctl boot failed: {}", out.trim());
+    }
+
+    let simulator_app = crate::toolchain::simulator_app();
+    match &simulator_app {
+        Some(app) => {
+            let mut open = Command::new("/usr/bin/open");
+            open.arg("-g").arg("-a").arg(app).args(["--args", "-CurrentDeviceUDID", udid]);
+            if let Ok((false, out)) = process::run_quiet(open).await {
+                say(format!("warning: Could not open {}: {}", app.display(), out.trim()));
+            }
+        }
+        None => say("warning: No Simulator app found in the active Xcode".to_string()),
+    }
+
+    say(format!("Installing {}…", app.file_name().unwrap_or_default().to_string_lossy()));
+    let mut install = Command::new("/usr/bin/xcrun");
+    install.args(["simctl", "install", udid]).arg(app);
+    let (ok, out) = process::run_quiet(install).await?;
+    if !ok {
+        anyhow::bail!("simctl install failed: {}", out.trim());
+    }
+
+    if let Some(app) = &simulator_app {
+        let mut bring_front = Command::new("/usr/bin/open");
+        bring_front.arg("-a").arg(app);
+        process::run_quiet(bring_front).await.ok();
+    }
+    Ok(())
+}
+
+/// Installs `app` on the device, then waits while it's locked: apps can't
+/// launch on a locked device (Xcode waits too).
+async fn install_on_device(
+    destination: &Destination,
+    app: &Path,
+    messages: &channel::Sender<String>,
+) -> anyhow::Result<devices::Installed> {
+    let say = |m: String| {
+        messages.try_send(m).ok();
+    };
+    let udid = destination.id.clone();
+    say(format!(
+        "Installing {} on {}…",
+        app.file_name().unwrap_or_default().to_string_lossy(),
+        destination.name
+    ));
+    let installed = smol::unblock({
+        let (udid, app) = (udid.clone(), app.to_path_buf());
+        move || devices::install(&udid, &app)
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!("Could not install on {}: {err:#}", destination.name))?;
+
+    let mut said = false;
+    while smol::unblock({
+        let udid = udid.clone();
+        move || devices::is_locked(&udid)
+    })
+    .await
+    .unwrap_or(false)
+    {
+        if !said {
+            say(format!("{} is locked. Unlock it to continue…", destination.name));
+            said = true;
+        }
+        smol::Timer::after(Duration::from_secs(2)).await;
+    }
+    Ok(installed)
 }
 
 #[cfg(test)]

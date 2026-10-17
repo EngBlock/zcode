@@ -39,6 +39,7 @@ mod panes;
 mod pickers;
 mod plist_editor;
 mod predictions;
+mod profile;
 mod project_files;
 mod project_settings;
 mod remote_sheet;
@@ -164,6 +165,9 @@ pub struct Workspace {
     pub inlay_hints: inlay_hints::InlayHints,
     /// Predictive code completion: requests, recent edits, the indicator.
     predictions: predictions::Predictions,
+    /// Product ▸ Profile is waiting for Instruments' templates to show its
+    /// chooser (whether it then builds).
+    profile_chooser: Option<bool>,
     /// Whether the language server was ready last time it said anything,
     /// so its features are asked for again once it is (again).
     lsp_ready: bool,
@@ -316,6 +320,7 @@ impl Workspace {
             hierarchy: Default::default(),
             inlay_hints: inlay_hints::InlayHints::new(current_settings.inlay_hints),
             predictions: predictions::Predictions::new(&current_settings.edit_predictions),
+            profile_chooser: None,
             lsp_ready: false,
             outline: vec![],
             outline_path: None,
@@ -854,6 +859,7 @@ impl Workspace {
         // The running program: the app lldb-dap launched or attached to on
         // this Mac, else what Run started (the app, simctl or devicectl).
         state["run_pid"] = self.debugger.read(cx).local_debuggee_pid().or(build.run_pid()).into();
+        state["profile"] = self.profile_summary(cx);
         state["breakpoints"] = self.breakpoints_summary(cx);
         state["bookmarks"] = self.bookmarks_summary(cx);
         state["packages"] = self.packages_summary(cx);

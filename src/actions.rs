@@ -170,6 +170,10 @@ gpui_kit::actions!(
         EditScheme,
         RunWithOptions,
         TestWithOptions,
+        Profile,
+        ProfileWithOptions,
+        ProfileWithoutBuilding,
+        BuildForProfiling,
         ChooseDestination,
         RefreshDestinations,
         // Debug
@@ -384,6 +388,10 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("cmd-shift-,", EditScheme, None),
         KeyBinding::new("cmd-alt-r", RunWithOptions, None),
         KeyBinding::new("cmd-alt-u", TestWithOptions, None),
+        KeyBinding::new("cmd-i", Profile, None),
+        KeyBinding::new("cmd-alt-i", ProfileWithOptions, None),
+        KeyBinding::new("ctrl-cmd-i", ProfileWithoutBuilding, None),
+        KeyBinding::new("cmd-shift-i", BuildForProfiling, None),
         KeyBinding::new("ctrl-shift-0", ChooseDestination, None),
         // Debug
         KeyBinding::new("cmd-k", ClearConsole, None),
@@ -648,12 +656,17 @@ pub fn commands() -> Vec<Command> {
         // Xcode's ⌥-alternates of Run and Test: the scheme editor, then run.
         cmd!("Product", "Run…", RunWithOptions),
         cmd!("Product", "Test…", TestWithOptions),
+        cmd!("Product", "Profile", Profile),
+        // Xcode's opens the scheme's Profile action; zcode's asks for a template.
+        cmd!("Product", "Profile…", ProfileWithOptions),
         cmd!("Product", "Stop", Stop),
         cmd!("Product", "-", Quit),
         // Xcode's Product ▸ Perform Action.
         cmd!("Product", "Test Selected Items", TestSelectedItems),
         cmd!("Product", "Test Again", TestAgain),
         cmd!("Product", "Re-run Failed Tests", RerunFailedTests),
+        cmd!("Product", "Profile Without Building", ProfileWithoutBuilding),
+        cmd!("Product ▸ Build For", "Profiling", BuildForProfiling),
         cmd!("Product", "-", Quit),
         cmd!("Product", "Clean Build Folder", Clean),
         cmd!("Product", "Clear Test Results", ClearTestResults),

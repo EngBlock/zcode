@@ -119,5 +119,10 @@
       // for the model's default.
       "effort": "low"
     }
+  },
+  // Product ▸ Profile (⌘I): recording under Instruments with xctrace.
+  "profiling": {
+    // Stop recording after this many seconds; 0 records until Stop (⌘.).
+    "time_limit": 0
   }
 }

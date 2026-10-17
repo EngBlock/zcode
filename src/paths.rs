@@ -40,6 +40,15 @@ pub fn cache_dir() -> PathBuf {
     home().join("Library/Caches/zcode")
 }
 
+/// Recordings Product ▸ Profile makes (Instruments opens them from here),
+/// in the run's own folder when `ZCODE_CONFIG_DIR` stands in.
+pub fn traces_dir() -> PathBuf {
+    match config_override() {
+        Some(dir) => dir.join("traces"),
+        None => cache_dir().join("Traces"),
+    }
+}
+
 /// Per-project cache directory (compilation database, build logs, ...).
 pub fn project_cache_dir(root: &Path) -> PathBuf {
     use std::hash::{Hash as _, Hasher as _};

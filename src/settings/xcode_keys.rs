@@ -119,6 +119,8 @@ const MENU_COMMANDS: &[(&str, bool, &str)] = &[
     ("runActiveRunContext:", true, "zcode::RunWithOptions"),
     ("testActiveRunContext:", false, "zcode::Test"),
     ("testActiveRunContext:", true, "zcode::TestWithOptions"),
+    ("profileActiveRunContext:", false, "zcode::Profile"),
+    ("profileActiveRunContext:", true, "zcode::ProfileWithOptions"),
     ("testSelectedItems:", false, "zcode::TestSelectedItems"),
     ("testAgain:", false, "zcode::TestAgain"),
     ("clearTestResults:", false, "zcode::ClearTestResults"),

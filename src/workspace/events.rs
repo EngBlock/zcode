@@ -83,6 +83,7 @@ impl Workspace {
                 });
             }
             BuildEvent::TestsChanged => {}
+            BuildEvent::TemplatesLoaded => self.show_template_chooser(window, cx),
             BuildEvent::StoredSchemeOptionsChanged => self.save_session(cx),
             BuildEvent::ConfigurationChanged => {
                 // A package's test targets arrive with its schemes.
