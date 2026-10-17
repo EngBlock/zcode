@@ -21,6 +21,9 @@ are relative to the session's folder):
     slow                     streams for ~10 s; stops early on session/cancel
     echo                     answers with the prompt's content blocks as JSON
     mode                     reports the current mode
+    mcp <tool> [<json>]      calls a tool of the MCP server named "zcode" that
+                             session/new handed it (started once per session,
+                             with scripts/mcp_client.py), then says the result
     crash                    exits with a message on stderr
 
 Environment: FAKE_ACP_LOG=<file> appends every message it receives and
@@ -123,7 +126,7 @@ def handle(message):
             send({"id": rid, "error": {"code": -32000, "message": "Authentication required"}})
             return
         session = f"fake-session-{len(state['sessions']) + 1}"
-        state["sessions"][session] = {"cwd": params["cwd"], "mode": "default"}
+        state["sessions"][session] = {"cwd": params["cwd"], "mode": "default", "mcp": params.get("mcpServers") or []}
         send({"id": rid, "result": {"sessionId": session, "modes": {"currentModeId": "default", "availableModes": [
             {"id": "default", "name": "Always Ask"}, {"id": "plan", "name": "Plan Mode"}]}}})
         update(session, {"sessionUpdate": "available_commands_update", "availableCommands": [
@@ -274,12 +277,42 @@ def run(session, cwd, word, rest, blocks):
         say(session, "```json\n" + json.dumps(shown) + "\n```")
     elif word == "mode":
         say(session, f"mode: {state['sessions'][session]['mode']}")
+    elif word == "mcp":
+        tool, _, arguments = rest.partition(" ")
+        call_mcp(session, cwd, tool, json.loads(arguments) if arguments.strip() else {})
     elif word == "crash":
         sys.stderr.write("fake agent: something went wrong\n")
         sys.stderr.flush()
         os._exit(3)
     else:
         say(session, f"I don't know how to {word!r}.")
+
+
+def call_mcp(session, cwd, tool, arguments):
+    """Calls `tool` on the session's "zcode" MCP server, as a tool call of
+    the agent's own (as Claude Code reports its MCP tools)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from mcp_client import McpClient
+    info = state["sessions"][session]
+    if "mcp_client" not in info:
+        server = next((s for s in info["mcp"] if s.get("name") == "zcode"), None)
+        if server is None:
+            say(session, "no zcode MCP server")
+            return
+        env = dict(os.environ, **{e["name"]: e["value"] for e in server.get("env", [])})
+        client = McpClient([server["command"], *server.get("args", [])], env=env, cwd=cwd)
+        client.initialize()
+        info["mcp_client"] = client
+    client = info["mcp_client"]
+    call_id = f"mcp-{state['turn']}"
+    update(session, {"sessionUpdate": "tool_call", "toolCallId": call_id, "title": f"mcp__zcode__{tool}", "kind": "other",
+                     "status": "in_progress", "rawInput": arguments})
+    result = client.call(tool, arguments)
+    text = next((b["text"] for b in result.get("content", []) if b["type"] == "text"), "")
+    status = "failed" if result.get("isError") else "completed"
+    update(session, {"sessionUpdate": "tool_call_update", "toolCallId": call_id, "status": status,
+                     "content": [{"type": "content", "content": {"type": "text", "text": text[:2000]}}]})
+    say(session, f"mcp {tool} {'error' if result.get('isError') else 'ok'}: {text[:2000]}")
 
 
 def main():
