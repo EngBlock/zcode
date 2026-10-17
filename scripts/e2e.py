@@ -139,6 +139,7 @@ XCODE_SHORTCUTS = [
     ("cmd-alt-i", "zcode::ProfileWithOptions", "Product ▸ Profile…"),
     ("ctrl-cmd-i", "zcode::ProfileWithoutBuilding", "Product ▸ Perform Action ▸ Profile Without Building"),
     ("cmd-shift-i", "zcode::BuildForProfiling", "Product ▸ Build For ▸ Profiling"),
+    ("alt-shift-cmd-o", "zcode::ShowOrganizer", "Window ▸ Organizer"),
     ("ctrl-shift-0", "zcode::ChooseDestination", "Product ▸ Destination ▸ Choose Destination"),
     ("ctrl-cmd-y", "zcode::DebugContinue", "Debug ▸ Pause / Continue"),
     ("f6", "zcode::StepOver", "Debug ▸ Step Over"),
@@ -966,6 +967,290 @@ def profile_checks(samples, sim):
             assert "success: true" in s["phase"] and simulator.opened() == [s["profile"]["last"]["trace"]], s["profile"]
 
         check("Profile on a simulator: installs the Release build and records it there", profile_on_simulator)
+    finally:
+        z.quit()
+
+
+class fake_distribute:
+    """scripts/fake_distribute.py's state for one zcode: the exports,
+    uploads, submissions and staples it pretended."""
+
+    def __init__(self, name):
+        self.state = os.path.join(WORK, f"fake-distribute-{name}")
+        os.makedirs(self.state, exist_ok=True)
+        fake = os.path.join(ROOT, "scripts", "fake_distribute.py")
+        self.env = {"ZCODE_EXPORT_ARCHIVE": fake, "ZCODE_NOTARYTOOL": fake, "ZCODE_STAPLER": fake, "FAKE_DISTRIBUTE_DIR": self.state}
+
+    def calls(self, tool):
+        try:
+            with open(os.path.join(self.state, "calls.jsonl")) as f:
+                return [c for c in map(json.loads, f) if c["tool"] == tool]
+        except FileNotFoundError:
+            return []
+
+    def stapled(self):
+        try:
+            with open(os.path.join(self.state, "stapled.txt")) as f:
+                return f.read().splitlines()
+        except FileNotFoundError:
+            return []
+
+
+def xcode_archive(folder, name, team, created):
+    """An iOS app's archive as Xcode leaves it in its Archives folder: an
+    XML Info.plist, and a binary one in the app."""
+    path = os.path.join(folder, f"{name}.xcarchive")
+    app = os.path.join(path, "Products", "Applications", f"{name}.app")
+    os.makedirs(app)
+    with open(os.path.join(app, "Info.plist"), "wb") as f:
+        plistlib.dump({"CFBundleIdentifier": f"dev.zcode.{name}", "DTPlatformName": "iphoneos"}, f, fmt=plistlib.FMT_BINARY)
+    with open(os.path.join(path, "Info.plist"), "wb") as f:
+        plistlib.dump({
+            "ApplicationProperties": {
+                "ApplicationPath": f"Applications/{name}.app", "Architectures": ["arm64"], "CFBundleIdentifier": f"dev.zcode.{name}",
+                "CFBundleShortVersionString": "2.0", "CFBundleVersion": "12", "SigningIdentity": "Apple Development: E2E (TEAM)", "Team": team,
+            },
+            "ArchiveVersion": 2, "CreationDate": created, "Name": name, "SchemeName": name, "Comment": "From Xcode",
+        }, f)
+    return path
+
+
+def archive_checks(samples):
+    """Product ▸ Archive and the Organizer on a copy of HelloClassic, into the
+    run's own Archives folder (ZCODE_CONFIG_DIR's, never
+    ~/Library/Developer/Xcode/Archives): a real `xcodebuild archive` with
+    Sign to Run Locally, the Organizer on it and on an archive Xcode left,
+    a real Copy App export, a real Developer ID export refused for want of a
+    team; HelloZ's signing error. Then App Store Connect and TestFlight
+    uploads, notarization (accepted, rejected, no credentials) and a failed
+    upload through scripts/fake_distribute.py, which pretends: nothing is
+    uploaded or sent to Apple. ArchiveProject over MCP; Delete Archive."""
+    import datetime
+    project = os.path.join(WORK, "Archive", "HelloClassic")
+    shutil.copytree(os.path.join(samples, "HelloClassic"), project)
+    archives_dir = os.path.join(CONFIG_DIR, "archives")
+    exports = os.path.join(WORK, "Archive", "exports")
+    archived = {}
+
+    def organizer(s):
+        return s["archives"]["organizer"] or {}
+
+    def shown(s):
+        return any(p["active"] == "Organizer" for p in s["panes"]["list"])
+
+    def distribution(z, *commands, timeout=300):
+        z.run("organizer distribute", "wait 300")
+        assert z.dump()["archives"]["sheet"], "the sheet is open"
+        before = z.dump()["reports"]
+        z.run(*[f"distribute {c}" for c in commands], "distribute confirm")
+        s = z.wait_for(lambda s: finished(s) and s["reports"] > before, timeout=timeout, interval=0.5)
+        assert not s["modal_open"], "the sheet closed"
+        return s
+
+    z = Zcode(project)
+    try:
+        def archive_a_mac_app():
+            # Once the scheme's platforms are known (macOS only).
+            z.wait_for(lambda s: s["scheme_options"] and (s["destination"] or "").startswith("My Mac"), timeout=60)
+            z.run("action zcode::Archive")
+            s = z.wait_for(finished, timeout=600, interval=0.5)
+            assert s["phase"].startswith("Finished { action: Archive, success: true"), (s["phase"], s["issues"])
+            assert s["destination"].startswith("My Mac"), "the run destination stays"
+            last = s["archives"]["last_archive"]["archive"]
+            path = last["path"]
+            archived["path"] = path
+            day = datetime.date.today().isoformat()
+            assert path.startswith(os.path.join(archives_dir, day) + "/") and os.path.basename(path).startswith("HelloClassic "), path
+            assert os.path.isdir(os.path.join(path, "Products", "Applications", "HelloClassic.app")), path
+            assert last["app"]["platform"] == "macOS" and last["app"]["bundle_id"] == "dev.zcode.HelloClassic" and last["app"]["team"] == "", last
+            log = open(s["last_log"]).read()
+            assert " archive " in log and "-configuration Release" in log and "generic/platform=macOS" in log, log[:600]
+            assert "-allowProvisioningUpdates" in log and f'-archivePath "{path}"' in log, log[:600]
+            assert s["last_report"] == {"action": "Archive", "scheme": "HelloClassic", "destination": "Any Mac (Apple Silicon, Intel)", "success": True}, s["last_report"]
+            # The Organizer opens on it.
+            s = z.wait_for(lambda s: organizer(s).get("loaded") and organizer(s).get("selected") == path, timeout=30, interval=0.3)
+            assert shown(s) and organizer(s)["group"] == "HelloClassic · macOS", organizer(s)
+            assert not os.path.exists(os.path.expanduser("~/Library/Developer/Xcode/Archives/" + day + "/" + os.path.basename(path))), "not Xcode's folder"
+
+        def organizer_lists_xcodes_archives():
+            folder = os.path.join(archives_dir, "2026-01-02")
+            xcode_archive(folder, "HelloPhone", "ABCDE12345", datetime.datetime(2026, 1, 2, 9, 30))
+            z.run("organizer refresh", "wait 500")
+            o = organizer(z.dump())
+            assert [g["name"] for g in o["groups"]] == ["HelloClassic · macOS", "HelloPhone · iOS"], o["groups"]
+            assert o["selected"] == archived["path"], "the selection stays"
+            z.run("organizer select HelloPhone")
+            o = organizer(z.dump())
+            phone = o["listed"][0]
+            assert o["group"] == "HelloPhone · iOS" and phone["app"]["version"] == "2.0" and phone["app"]["team"] == "ABCDE12345", phone
+            assert phone["comment"] == "From Xcode" and phone["kind"] == "iOS App", phone
+            z.run("organizer distribute", "wait 300")
+            sheet = z.dump()["archives"]["sheet"]
+            assert sheet["methods"] == ["app-store-connect", "testflight-internal", "release-testing", "enterprise", "debugging"], sheet
+            assert sheet["method"] == "app-store-connect" and sheet["upload"] and sheet["team"] == "ABCDE12345", sheet
+            z.run("distribute method release-testing")
+            options = plistlib.loads(z.dump()["archives"]["sheet"]["export_options"].encode())
+            assert options == {"destination": "export", "method": "release-testing", "stripSwiftSymbols": True, "teamID": "ABCDE12345", "thinning": "<none>"}, options
+            z.run("distribute cancel", "wait 200")
+            assert not z.dump()["modal_open"]
+            z.run(f"organizer select {archived['path']}")
+
+        def copy_app():
+            folder = os.path.join(exports, "Copy")
+            z.run("organizer distribute", "wait 300")
+            sheet = z.dump()["archives"]["sheet"]
+            assert sheet["methods"] == ["app-store-connect", "testflight-internal", "developer-id", "copy-app", "debugging"], sheet
+            assert sheet["folder"].startswith(os.path.join(CONFIG_DIR, "exports", "HelloClassic ")), sheet["folder"]
+            z.run("distribute cancel", "wait 200")
+            s = distribution(z, "method copy-app", f"folder {folder}")
+            assert s["phase"].startswith("Finished { action: Distribute, success: true"), (s["phase"], s["issues"])
+            d = s["archives"]["last_distribution"]
+            app = os.path.join(folder, "HelloClassic.app")
+            assert d["method"] == "copy-app" and not d["uploaded"] and d["products"] == [app] and d["error"] is None, d
+            subprocess.run(["codesign", "--verify", app], check=True)
+            log = open(s["last_log"]).read()
+            assert "-exportArchive" in log and "** EXPORT SUCCEEDED **" in log, log[-600:]
+            assert s["last_report"] == {"action": "Distribute", "scheme": "HelloClassic", "destination": "Copy App", "success": True}, s["last_report"]
+
+        def developer_id_needs_a_team():
+            s = distribution(z, "method developer-id", "notarize off", f"folder {os.path.join(exports, 'DeveloperID')}")
+            assert "success: false" in s["phase"], s["phase"]
+            errors = [i for i in s["issues"] if i.startswith("Error")]
+            assert any("No Team Found in Archive. Choose the team and signing in the target’s Signing & Capabilities tab" in i for i in errors), errors
+            assert s["archives"]["last_distribution"]["error"], s["archives"]["last_distribution"]
+
+        def organizer_shortcut():
+            z.run("open " + os.path.join(project, "HelloClassic", "Model", "Greeter.swift"), "wait 200")
+            assert not shown(z.dump())
+            z.run("keys cmd-alt-shift-o", "wait 300")
+            assert shown(z.dump())
+
+        check("Archive: a Release archive of the Mac app for any Mac, in the Archives folder, revealed in the Organizer", archive_a_mac_app)
+        check("Organizer: archives Xcode left too, grouped by app; Distribute App's methods and export options per platform", organizer_lists_xcodes_archives)
+        check("Distribute App: Copy App exports the app with xcodebuild -exportArchive; a Distribute report", copy_app)
+        check("Distribute App: Developer ID without a team fails, pointing at Signing & Capabilities", developer_id_needs_a_team)
+        check("Window ▸ Organizer (⌥⇧⌘O) shows the Organizer", organizer_shortcut)
+    finally:
+        z.quit()
+
+    signing = os.path.join(WORK, "Archive", "HelloZ")
+    shutil.copytree(os.path.join(samples, "HelloZ"), signing)
+    z = Zcode(signing)
+    try:
+        def signing_error():
+            z.wait_for(lambda s: s["scheme_options"] and s["destinations"] > 0, timeout=60)
+            z.run("action zcode::Archive")
+            s = z.wait_for(finished, timeout=600, interval=0.5)
+            assert s["phase"].startswith("Finished { action: Archive, success: false"), s["phase"]
+            assert any("requires a development team. Choose the team in the target’s Signing & Capabilities tab" in i for i in s["issues"]), s["issues"]
+            assert "generic/platform=iOS" in open(s["last_log"]).read()
+            last = s["archives"]["last_archive"]
+            assert last["archive"] is None and "development team" in last["error"], last
+            assert not any(d.startswith("HelloZ ") for _, dirs, _ in os.walk(archives_dir) for d in dirs), "no archive"
+
+        check("Archive: an iOS app without a team fails with where to choose one (Signing & Capabilities)", signing_error)
+    finally:
+        z.quit()
+
+    fake = fake_distribute("organizer")
+    z = Zcode(project, fake.env)
+    try:
+        def app_store_upload():
+            z.run("organizer open")
+            z.wait_for(lambda s: organizer(s).get("loaded"), timeout=30, interval=0.3)
+            z.run(f"organizer select {archived['path']}")
+            s = distribution(z, "symbols off")
+            assert "success: true" in s["phase"], (s["phase"], s["issues"])
+            call = fake.calls("xcodebuild")[-1]
+            assert call["options"] == {"destination": "upload", "manageAppVersionAndBuildNumber": True, "method": "app-store-connect", "uploadSymbols": False}, call
+            assert "-allowProvisioningUpdates" in call["args"] and call["args"][call["args"].index("-archivePath") + 1] == archived["path"], call
+            d = s["archives"]["last_distribution"]
+            assert d["uploaded"] and d["products"] == [] and d["error"] is None, d
+            assert d["export_path"].startswith(os.path.expanduser("~/Library/Caches/zcode/projects/")) and "/Uploads/HelloClassic " in d["export_path"], d
+            assert s["last_report"]["destination"] == "App Store Connect" and s["last_report"]["success"], s["last_report"]
+
+        def testflight_export():
+            folder = os.path.join(exports, "TestFlight")
+            s = distribution(z, "method testflight-internal", "upload off", f"folder {folder}")
+            assert "success: true" in s["phase"], (s["phase"], s["issues"])
+            options = fake.calls("xcodebuild")[-1]["options"]
+            assert options["destination"] == "export" and options["testFlightInternalTestingOnly"] is True, options
+            assert fake.calls("xcodebuild")[-1]["args"][fake.calls("xcodebuild")[-1]["args"].index("-exportPath") + 1] == folder
+            assert not s["archives"]["last_distribution"]["uploaded"]
+
+        def notarized():
+            folder = os.path.join(exports, "Notarized")
+            s = distribution(z, "method developer-id", "notarize on", "profile zcode-e2e", f"folder {folder}")
+            assert "success: true" in s["phase"], (s["phase"], s["issues"])
+            app = os.path.join(folder, "HelloClassic.app")
+            submit = fake.calls("notarytool")[-1]
+            assert submit["args"][:1] == ["submit"] and submit["args"][submit["args"].index("--keychain-profile") + 1] == "zcode-e2e", submit
+            assert "--wait" in submit["args"] and "HelloClassic.app/Contents/MacOS/HelloClassic" in submit["zip"], submit
+            assert not os.path.exists(submit["args"][1]), "the zip is removed"
+            assert fake.stapled() == [app], fake.stapled()
+            d = s["archives"]["last_distribution"]
+            assert d["stapled"] and d["notarization"]["status"] == "Accepted" and d["products"] == [app], d
+            settings = json.loads(re_strip_comments(open(os.path.join(CONFIG_DIR, "settings.json")).read()))
+            assert settings["distribution"]["notary_keychain_profile"] == "zcode-e2e", settings
+            # The sheet offers it next time.
+            z.run("organizer distribute", "wait 300")
+            assert z.dump()["archives"]["sheet"]["profile"] == "zcode-e2e"
+            z.run("distribute cancel", "wait 200")
+
+        def notarization_refused():
+            s = distribution(z, "method developer-id", "profile rejected", f"folder {os.path.join(exports, 'Rejected')}")
+            assert "success: false" in s["phase"], s["phase"]
+            assert any("The binary is not signed with a valid Developer ID certificate." in i for i in s["issues"]), s["issues"]
+            d = s["archives"]["last_distribution"]
+            assert d["notarization"]["status"] == "Invalid" and not d["stapled"] and "didn’t accept HelloClassic.app" in d["error"], d
+            assert fake.calls("notarytool")[-1]["args"][:2] == ["log", "2efe2717-52ef-43a5-96dc-0797e4ca1041"]
+            s = distribution(z, "method developer-id", "profile missing", f"folder {os.path.join(exports, 'Missing')}")
+            assert "xcrun notarytool store-credentials missing" in s["archives"]["last_distribution"]["error"], s["archives"]["last_distribution"]
+
+        def failed_upload():
+            open(os.path.join(fake.state, "fail_upload"), "w").close()
+            try:
+                s = distribution(z, "method app-store-connect")
+            finally:
+                os.remove(os.path.join(fake.state, "fail_upload"))
+            assert "success: false" in s["phase"] and s["archives"]["last_distribution"]["error"] == "The upload failed (see the build log)"
+            assert any("The bundle version must be higher" in i for i in s["issues"]), s["issues"]
+
+        def archive_project_over_mcp():
+            from mcp_client import McpClient
+            client = McpClient([BINARY, "mcp"], env=dict(os.environ, ZCODE_CONFIG_DIR=CONFIG_DIR), cwd=project)
+            try:
+                client.initialize()
+                names = [t["name"] for t in client.request("tools/list")["tools"]]
+                assert "ArchiveProject" in names, names
+                r = client.call("ArchiveProject", timeout=600)["structuredContent"]
+                assert r["success"] and r["status"] == "succeeded", r
+                path = r["archive"]["path"]
+                assert path.startswith(archives_dir) and path != archived["path"] and os.path.isdir(path), r
+                assert r["archive"]["app"]["bundle_id"] == "dev.zcode.HelloClassic" and r["errors"] == [], r
+            finally:
+                client.close()
+            calls = len(fake.calls("xcodebuild"))
+            z.wait_for(lambda s: organizer(s).get("selected") == path, timeout=30, interval=0.3)
+            assert len(fake.calls("xcodebuild")) == calls, "archiving never exports"
+            archived["second"] = path
+
+        def delete_archive():
+            path = archived["second"]
+            z.run(f"organizer select {path}", "organizer delete")
+            o = organizer(z.dump())
+            assert not os.path.exists(path) and o["selected"] == archived["path"], o
+            trashed = os.path.expanduser(os.path.join("~/.Trash", os.path.basename(path)))
+            assert os.path.isdir(trashed), "in the Trash"
+            shutil.rmtree(trashed)
+
+        check("Distribute App: App Store Connect uploads (destination upload, its options) — faked, nothing sent", app_store_upload)
+        check("Distribute App: TestFlight Internal Only exported instead of uploaded", testflight_export)
+        check("Distribute App: Developer ID notarized with a keychain profile and stapled (faked notarytool); the profile kept", notarized)
+        check("Distribute App: a rejected notarization shows Apple's log; missing credentials say how to store them", notarization_refused)
+        check("Distribute App: a refused upload fails with App Store Connect's message", failed_upload)
+        check("MCP: ArchiveProject archives (never exports or uploads) and the Organizer shows it", archive_project_over_mcp)
+        check("Organizer: Delete Archive moves it to the Trash", delete_archive)
     finally:
         z.quit()
 
@@ -3885,7 +4170,8 @@ def agent_checks(samples):
 
 MCP_TOOLS = ["XcodeListSchemes", "XcodeSwitchScheme", "XcodeListRunDestinations", "XcodeSwitchRunDestination", "BuildProject",
              "RunProject", "StopProject", "RunAllTests", "RunSomeTests", "GetTestList", "XcodeListNavigatorIssues", "GetBuildLog",
-             "GetConsoleOutput", "XcodeGetCurrentFile", "OpenFile", "EvaluateInDebugger", "TakeScreenshot", "ProfileProject"]
+             "GetConsoleOutput", "XcodeGetCurrentFile", "OpenFile", "EvaluateInDebugger", "TakeScreenshot", "ProfileProject",
+             "ArchiveProject"]
 MCP_READ_ONLY = {"XcodeListSchemes", "XcodeListRunDestinations", "GetTestList", "XcodeListNavigatorIssues", "GetBuildLog",
                  "GetConsoleOutput", "XcodeGetCurrentFile", "TakeScreenshot"}
 
@@ -5298,6 +5584,9 @@ def main():
 
     print("Profile (copies of HelloClassic and, with --simulator, HelloZ; scripts/fake_xctrace.py):")
     profile_checks(samples, sim)
+
+    print("Archive and Distribute App (copies of HelloClassic and HelloZ; uploads and notarization through scripts/fake_distribute.py):")
+    archive_checks(samples)
 
     print("Property lists, Info and Signing & Capabilities (copies of HelloZ and HelloClassic):")
     plist_checks(samples)
