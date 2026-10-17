@@ -328,7 +328,8 @@ impl Workspace {
     /// is Open Terminal at Location, `type <n> <text>` types into terminal
     /// `n` (`\n` is Return), `focus <n>`, `close <n>`, `select-all <n>`,
     /// `copy <n>` (⌘C), `clear <n>` (⌘K), `scroll <n> <lines>`,
-    /// `link <n> <row> <column>` (⌘-click a cell), `clipboard` (its text).
+    /// `link <n> <row> <column>` (⌘-click a cell; logs whether it was a
+    /// link), `clipboard` (its text).
     pub fn terminal_command(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<String, String> {
         let (verb, rest) = command.split_once(' ').unwrap_or((command, ""));
         let views = self.terminal_views();
@@ -388,9 +389,8 @@ impl Workspace {
                 let view = nth(words.next())?;
                 let numbers: Vec<usize> = words.filter_map(|w| w.parse().ok()).collect();
                 let [row, column] = numbers[..] else { return Err("usage: terminal link <n> <row> <column>".into()) };
-                if !view.update(cx, |view, cx| view.open_link_at_cell(row, column, cx)) {
-                    return Err(format!("no link at row {row}, column {column}"));
-                }
+                let opened = view.update(cx, |view, cx| view.open_link_at_cell(row, column, cx));
+                return Ok(serde_json::json!({ "opened": opened }).to_string());
             }
             "clipboard" => return Ok(cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default()),
             _ => return Err(format!("unknown terminal command “{verb}”")),

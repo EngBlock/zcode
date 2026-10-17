@@ -8,7 +8,8 @@
 //!   keys <keystroke> ...       simulate keystrokes, e.g. `keys cmd-shift-o`
 //!   type <text>                type text into the focused input
 //!   mouse <x> <y> / click <x> <y>  move / click at window coordinates (points)
-//!   double-click <x> <y> / right-click <x> <y>
+//!   double-click <x> <y> / right-click <x> <y> / cmd-click <x> <y>
+//!   wheel <x> <y> <lines>      turn the scroll wheel over a point (up is positive)
 //!   drag <x1> <y1> <x2> <y2>   press at one point, move to the other and release (drag and drop)
 //!   open <path>[:line]         open a file in the frontmost workspace
 //!   wait <ms>                  pause
@@ -190,24 +191,25 @@ fn run_command(
             }
             Ok(String::new())
         }
-        "mouse" | "click" | "double-click" | "right-click" => {
+        "mouse" | "click" | "double-click" | "right-click" | "cmd-click" => {
             let mut parts = arg.split_whitespace().filter_map(|p| p.parse::<f32>().ok());
             let (Some(x), Some(y)) = (parts.next(), parts.next()) else {
                 return Err("usage: mouse <x> <y> (window points)".into());
             };
             let position = point(px(x), px(y));
+            let modifiers = if cmd == "cmd-click" { Modifiers::command() } else { Modifiers::default() };
             window
                 .update(cx, |_, window, cx| {
                     window.dispatch_event(
                         PlatformInput::MouseMove(MouseMoveEvent {
                             position,
                             pressed_button: None,
-                            modifiers: Modifiers::default(),
+                            modifiers,
                         }),
                         cx,
                     );
                     let (button, clicks) = match cmd {
-                        "click" => (MouseButton::Left, 1),
+                        "click" | "cmd-click" => (MouseButton::Left, 1),
                         "double-click" => (MouseButton::Left, 2),
                         "right-click" => (MouseButton::Right, 1),
                         _ => (MouseButton::Left, 0),
@@ -217,7 +219,7 @@ fn run_command(
                             PlatformInput::MouseDown(MouseDownEvent {
                                 button,
                                 position,
-                                modifiers: Modifiers::default(),
+                                modifiers,
                                 click_count,
                                 first_mouse: false,
                             }),
@@ -227,12 +229,37 @@ fn run_command(
                             PlatformInput::MouseUp(MouseUpEvent {
                                 button,
                                 position,
-                                modifiers: Modifiers::default(),
+                                modifiers,
                                 click_count,
                             }),
                             cx,
                         );
                     }
+                })
+                .map_err(|e| e.to_string())?;
+            Ok(String::new())
+        }
+        "wheel" => {
+            let numbers: Vec<f32> = arg.split_whitespace().filter_map(|p| p.parse().ok()).collect();
+            let [x, y, lines] = numbers[..] else {
+                return Err("usage: wheel <x> <y> <lines> (window points; up is positive)".into());
+            };
+            let position = point(px(x), px(y));
+            window
+                .update(cx, |_, window, cx| {
+                    window.dispatch_event(
+                        PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers: Modifiers::default() }),
+                        cx,
+                    );
+                    window.dispatch_event(
+                        PlatformInput::ScrollWheel(ScrollWheelEvent {
+                            position,
+                            delta: ScrollDelta::Lines(point(0., lines)),
+                            modifiers: Modifiers::default(),
+                            touch_phase: TouchPhase::Moved,
+                        }),
+                        cx,
+                    );
                 })
                 .map_err(|e| e.to_string())?;
             Ok(String::new())

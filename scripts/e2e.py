@@ -2751,6 +2751,277 @@ def multibuffer_checks(samples):
         z.quit()
 
 
+def terminal_checks(samples):
+    """The integrated terminal on a copy of ZKit, with `zsh -f` as the shell
+    (ZCODE_TERMINAL_SHELL) so the user's configuration can't change what it
+    prints: the shell in the project's folder, keys, selection and ⌘C,
+    scrollback, links, resizing, several terminals, a flood of output
+    while typing elsewhere, processes ended with their tab or window, and
+    terminals reopened from the session."""
+    project = os.path.realpath(os.path.join(WORK, "TermKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    env = {"ZCODE_TERMINAL_SHELL": "/bin/zsh -f"}
+    z = Zcode(project, env)
+
+    def terms(s=None):
+        return (s or z.dump())["terminals"]["list"]
+
+    def panel(s=None):
+        return [t for t in terms(s) if t["location"] == "panel"]
+
+    def index_of(t, s=None):
+        return terms(s).index(t)
+
+    def wait_line(n, predicate, timeout=30):
+        try:
+            return z.wait_for(lambda s: len(terms(s)) > n and any(predicate(l) for l in terms(s)[n].get("lines") or []),
+                              timeout=timeout, interval=0.3)
+        except TimeoutError:
+            t = terms()
+            raise AssertionError(f"terminal {n} of {len(t)}: {t[n]['lines'] if len(t) > n else None}") from None
+
+    def run_in(n, command, marker):
+        z.run(f"terminal type {n} {command}\\n")
+        return wait_line(n, lambda l: l.strip() == marker)
+
+    def row_of(n, predicate, s=None):
+        lines = terms(s)[n]["lines"]
+        return next(i for i, l in enumerate(lines) if predicate(l))
+
+    def cell(t, row, column):
+        l = t["layout"]
+        return l["x"] + (column + 0.5) * l["cell_width"], l["y"] + (row + 0.5) * l["cell_height"]
+
+    def shells():
+        """zcode's children that run a shell (zcode starts others: git, swift)."""
+        out = subprocess.run(["pgrep", "-P", str(z.proc.pid)], capture_output=True, text=True).stdout
+        names = {int(p): subprocess.run(["ps", "-o", "comm=", "-p", p], capture_output=True, text=True).stdout.strip() for p in out.split()}
+        return [pid for pid, name in names.items() if os.path.basename(name).lstrip("-") in ("zsh", "sh", "bash", "login")]
+
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    def not_loaded_at_startup():
+        s = z.dump()
+        assert terms(s) == [] and not s["terminals"]["tab_shown"], s["terminals"]
+        assert shells() == [], f"no shells at startup: {shells()}"
+
+    def shell_in_the_project():
+        z.run("keys ctrl-cmd-`", "wait 300")
+        s = z.wait_for(lambda s: panel(s) and panel(s)[0]["state"] == "running", timeout=20, interval=0.3)
+        t = panel(s)[0]
+        assert t["shown"] and t["focused"] and s["show_debug_area"], t
+        assert t["current_dir"] == project and t["process"] == "zsh", t
+        assert t["pty"] == {"columns": t["layout"]["columns"], "rows": t["layout"]["rows"]}, t
+        s = run_in(0, "echo $((6*7)) $TERM $TERM_PROGRAM; echo marker-1", "marker-1")
+        assert "42 xterm-256color zcode" in terms(s)[0]["lines"], terms(s)[0]["lines"]
+        # Typed through the real key path, Return included.
+        z.run("type echo typed-$((1+1))", "keys enter")
+        wait_line(0, lambda l: l == "typed-2")
+
+    def keys_go_to_the_shell():
+        # ⌃C interrupts what's running.
+        z.run("terminal type 0 sleep 30\\n")
+        z.wait_for(lambda s: terms(s)[0]["process"] == "sleep", timeout=10, interval=0.3)
+        z.run("keys ctrl-c")
+        z.wait_for(lambda s: terms(s)[0]["process"] == "zsh", timeout=10, interval=0.3)
+        # ⌃\ (zcode's Next Change) and ⌃6 reach the shell as bytes 28 and 30.
+        read_key = 'stty -isig; read -k1 k; stty isig; echo "<$((#k))>"'
+        for keys, code in (("ctrl-\\", 28), ("ctrl-6", 30)):
+            z.run(f"terminal type 0 {read_key}\\n", "wait 400", f"keys {keys}")
+            # The tty echoes the control character before the shell prints it.
+            wait_line(0, lambda l: l.endswith(f"<{code}>"))
+        # ↑ is the shell's history.
+        z.run("keys up", "wait 300")
+        t = terms()[0]
+        assert t["lines"][t["cursor"][0]].endswith(read_key), t["lines"]
+        z.run("keys ctrl-u")
+        # ⌘ keys keep zcode's meaning: ⌘K clears the terminal (Clear Console).
+        run_in(0, "seq 1 100; echo marker-2", "marker-2")
+        z.run("keys cmd-k", "wait 300")
+        t = terms()[0]
+        assert t["history"] == 0 and t["cursor"][0] == 0 and "marker-2" not in t["lines"], (t["history"], t["cursor"], t["lines"][:3])
+
+    def selection_and_copy():
+        s = run_in(0, "clear; echo select-me-12345 tail; echo marker-3", "marker-3")
+        t = terms(s)[0]
+        row = row_of(0, lambda l: l.startswith("select-me"), s)
+        x1, y = cell(t, row, 0)
+        x2, _ = cell(t, row, 14)
+        z.run(f"drag {x1 - t['layout']['cell_width'] / 2 + 1} {y} {x2 + t['layout']['cell_width'] / 2 - 1} {y}", "wait 200")
+        assert terms()[0]["selection"] == "select-me-12345", terms()[0]["selection"]
+        z.run("keys cmd-c")
+        clip = subprocess.run(["pbpaste"], capture_output=True, text=True).stdout
+        assert clip == "select-me-12345", clip
+        # Double-click takes a word; typing ends the selection.
+        xw, _ = cell(t, row, 17)
+        z.run(f"double-click {xw} {y}", "wait 200")
+        assert terms()[0]["selection"] == "tail", terms()[0]["selection"]
+        z.run("type x", "keys backspace", "wait 200")
+        assert terms()[0]["selection"] is None
+        # ⌘V pastes (the shell gets it as a bracketed paste).
+        z.run("keys cmd-v", "wait 300")
+        assert terms()[0]["lines"][terms()[0]["cursor"][0]].endswith("select-me-12345"), terms()[0]["lines"]
+        z.run("keys ctrl-u")
+
+    def scrollback():
+        run_in(0, "seq 1 500; echo marker-4", "marker-4")
+        t = terms()[0]
+        assert t["history"] > 400 and t["display_offset"] == 0, (t["history"], t["display_offset"])
+        x, y = cell(t, 2, 10)
+        z.run(f"wheel {x} {y} 200", "wait 200")
+        t = terms()[0]
+        assert t["display_offset"] == 200 and "marker-4" not in t["lines"], t["display_offset"]
+        z.run("terminal scroll 0 -50", "wait 200")
+        assert terms()[0]["display_offset"] == 150, terms()[0]["display_offset"]
+        # Typing comes back to the bottom.
+        z.run("type x", "wait 200")
+        assert terms()[0]["display_offset"] == 0
+        z.run("keys backspace")
+
+    def links_open_in_the_editor():
+        s = run_in(0, "clear; echo 'error at Sources/ZKit/Greeter.swift:3:5: something'; echo marker-5", "marker-5")
+        t = terms(s)[0]
+        row = row_of(0, lambda l: l.startswith("error at"), s)
+        x, y = cell(t, row, 20)
+        z.run(f"cmd-click {x} {y}", "wait 500")
+        a = z.dump()["active"]
+        assert a["path"] == greeter and a["line"] == 3 and a["column"] == 5, (a["path"], a["line"], a["column"])
+        # A missing file isn't a link.
+        s = run_in(0, "echo Sources/Gone.swift:3; echo marker-6", "marker-6")
+        row = row_of(0, lambda l: l.startswith("Sources/Gone"), s)
+        assert json.loads(z.run(f"terminal link 0 {row} 3")[-1]) == {"opened": False}, "a missing file isn't a link"
+
+    def resizing():
+        z.run("terminal focus 0", "wait 200")
+        before = terms()[0]["pty"]
+        z.run("keys cmd-+", "keys cmd-+", "wait 400")
+        after = terms()[0]["pty"]
+        assert after["columns"] < before["columns"], (before, after)
+        s = run_in(0, "stty size; echo marker-7", "marker-7")
+        assert f"{after['rows']} {after['columns']}" in terms(s)[0]["lines"], (after, terms(s)[0]["lines"])
+        z.run("keys ctrl-cmd-0", "wait 400")
+        assert terms()[0]["pty"] == before, (before, terms()[0]["pty"])
+
+    def several_terminals():
+        # View ▸ New Terminal: a second one in the debug area, shown.
+        z.run("action zcode::NewTerminal", "wait 300")
+        s = z.wait_for(lambda s: len(panel(s)) == 2 and panel(s)[1]["state"] == "running", timeout=20, interval=0.3)
+        assert panel(s)[1]["shown"] and not panel(s)[0]["shown"] and s["terminals"]["panel_active"] == 1
+        run_in(1, "echo second; echo marker-8", "marker-8")
+        # File ▸ New ▸ Terminal Tab: one in the editor pane.
+        z.run(f"open {greeter}", "wait 300", "action zcode::NewTerminalTab", "wait 300")
+        s = z.wait_for(lambda s: len(terms(s)) == 3 and terms(s)[2]["state"] == "running", timeout=20, interval=0.3)
+        t = terms(s)[2]
+        assert t["location"] == "pane 0 tab 1" and t["focused"] and t["current_dir"] == project, t
+        assert s["panes"]["list"][0]["tabs"] == ["Greeter.swift", "zsh"], s["panes"]["list"][0]["tabs"]
+        run_in(2, "echo in-a-tab; echo marker-9", "marker-9")
+        # The title follows what's running.
+        z.run("terminal type 2 sleep 30\\n")
+        z.wait_for(lambda s: s["panes"]["list"][0]["tabs"][1] == "sleep", timeout=10, interval=0.3)
+        z.run("keys ctrl-c")
+        # File ▸ Open Terminal at Location: in the item's folder.
+        z.run(f"terminal at {greeter}", "wait 300")
+        s = z.wait_for(lambda s: len(panel(s)) == 3 and panel(s)[2]["state"] == "running", timeout=20, interval=0.3)
+        assert panel(s)[2]["current_dir"] == os.path.dirname(greeter), panel(s)[2]
+
+    def flood_keeps_typing_fast():
+        z.run(f"open {greeter}", "wait 300", "keys cmd-down", "keys enter")
+        quiet = json.loads(z.run("type-latency abcdefghijklmnopqrstuvwxyz")[-1])
+        z.run("terminal panel -- yes | head -n 3000000; echo flood-done; sleep 60", "wait 200", "pane focus 0")
+        start = time.time()
+        n = len(terms()) - 2  # the new panel terminal, before the pane's tab
+        flood = json.loads(z.run("type-latency abcdefghijklmnopqrstuvwxyz")[-1])
+        assert terms()[n]["process"] in ("yes", "head", "sh", "bash"), terms()[n]["process"]
+        wait_line(n, lambda l: l == "flood-done", timeout=120)
+        took = time.time() - start
+        print(f"    keystroke → frame in the editor: quiet {quiet['median_ms']:.1f} ms median, "
+              f"while `yes` floods a terminal {flood['median_ms']:.1f} ms (p95 {flood['p95_ms']:.1f}); 3M lines shown in {took:.1f} s")
+        assert flood["median_ms"] < 16 and flood["p95_ms"] < 33, flood
+        for _ in range(30):
+            if not z.dump()["active"]["dirty"]:
+                break
+            z.run("keys cmd-z")
+        z.run(f"terminal close {n}", "wait 300")
+
+    def closing_ends_processes():
+        # A pane's terminal: ⌘W closes the tab and its processes.
+        tab = next(i for i, t in enumerate(terms()) if t["location"].startswith("pane "))
+        s = run_in(tab, "sleep 300 & echo pid=$!; echo marker-10", "marker-10")
+        pid = int(next(l for l in terms(s)[tab]["lines"] if l.startswith("pid="))[4:])
+        assert alive(pid)
+        z.run(f"terminal focus {tab}", "wait 200")
+        assert terms()[tab]["focused"], terms()[tab]
+        z.run("keys cmd-w", "wait 500")
+        s = z.dump()
+        assert all(not t["location"].startswith("pane ") for t in terms(s)) and s["panes"]["list"][0]["tabs"] == ["Greeter.swift"], \
+            (s["panes"]["list"][0]["tabs"], [(t["location"], t["focused"], t["state"]) for t in terms(s)])
+        deadline = time.time() + 5
+        while alive(pid) and time.time() < deadline:
+            time.sleep(0.1)
+        assert not alive(pid), "the tab's background job is gone"
+        # The debug area's: ⌘W while it has focus.
+        last = len(panel()) - 1
+        z.run(f"terminal focus {last}", "wait 200", "keys cmd-w", "wait 300")
+        assert len(panel()) == last, len(panel())
+        # `exit` closes the user's shell's tab.
+        z.run("terminal type 1 exit\\n")
+        z.wait_for(lambda s: len(panel(s)) == 1, timeout=10, interval=0.3)
+        # A command's terminal stays when it ends, saying how.
+        z.run("terminal panel -- echo bye; exit 3")
+        s = z.wait_for(lambda s: panel(s)[-1]["state"] == "ended", timeout=10, interval=0.3)
+        assert panel(s)[-1]["exit"] == 3 and "[Process exited with code 3]" in panel(s)[-1]["lines"], panel(s)[-1]
+        assert panel(s)[-1]["title"].endswith("(ended)"), panel(s)[-1]["title"]
+        z.run(f"terminal close {len(panel(s)) - 1}")
+
+    def reopened_from_the_session():
+        nonlocal z
+        # The debug area's terminal cd'd into Sources, and a tab in Tests.
+        run_in(0, "cd Sources; echo marker-11", "marker-11")
+        z.run("action zcode::NewTerminalTab", "wait 300")
+        tab = len(terms()) - 1
+        z.wait_for(lambda s: terms(s)[tab]["state"] == "running", timeout=20, interval=0.3)
+        run_in(tab, "cd ../TermKit/Tests; sleep 300 & echo pid=$!; echo marker-12", "marker-12")
+        pid = int(next(l for l in terms()[tab]["lines"] if l.startswith("pid="))[4:])
+        assert shells(), "shells run"
+        z.quit()
+        deadline = time.time() + 5
+        while alive(pid) and time.time() < deadline:
+            time.sleep(0.1)
+        assert not alive(pid), "quitting ends the terminals' processes"
+        z = Zcode(project, env)
+        s = z.wait_for(lambda s: len(terms(s)) == 2, timeout=20, interval=0.3)
+        p, t = terms(s)
+        assert p["location"] == "panel" and p["dir"] == os.path.join(project, "Sources"), p
+        assert t["location"] == "pane 0 tab 1" and t["dir"] == os.path.join(project, "Tests"), t
+        # Fresh shells there, started when shown (the tab is; the debug
+        # area's Terminal tab was too).
+        s = z.wait_for(lambda s: all(x["state"] == "running" for x in terms(s)), timeout=20, interval=0.3)
+        assert all(x["current_dir"] == x["dir"] and x["history"] == 0 for x in terms(s)), terms(s)
+        assert not any("marker-12" in l for l in terms(s)[1]["lines"]), "a new shell, not the old output"
+        z.run("terminal close 1", "terminal close 0", "wait 300")
+
+    try:
+        check("Terminal: nothing starts until one is opened", not_loaded_at_startup)
+        check("Terminal: ⌃⌘` opens a shell in the project's folder in the debug area, at the grid's size", shell_in_the_project)
+        check("Terminal: ⌃C, ⌃\\ and ⌃6 go to the shell, ↑ is its history; ⌘K clears", keys_go_to_the_shell)
+        check("Terminal: drag to select, ⌘C copies, double-click a word, ⌘V pastes", selection_and_copy)
+        check("Terminal: scrollback through the wheel; typing comes back to the bottom", scrollback)
+        check("Terminal: ⌘-click on file:line:column opens the editor there; missing files aren't links", links_open_in_the_editor)
+        check("Terminal: a bigger font gives the shell fewer columns (SIGWINCH, stty size)", resizing)
+        check("Terminal: several in the debug area, one in an editor tab, Open Terminal at Location", several_terminals)
+        check("Terminal: `yes` flooding a terminal doesn't slow typing in an editor pane", flood_keeps_typing_fast)
+        check("Terminal: ⌘W and `exit` close a terminal and end its processes; a command's says how it ended", closing_ends_processes)
+        check("Terminal: quitting ends the shells; a relaunch reopens fresh ones in the same folders", reopened_from_the_session)
+    finally:
+        z.quit()
+
+
 def tally_repo():
     """The Tally fixture package as a bare git repository with release tags."""
     out = subprocess.run(["sh", os.path.join(ROOT, "tests", "fixtures", "packages", "make_repo.sh"), os.path.join(WORK, "repos")],
@@ -3163,6 +3434,9 @@ def main():
 
     print("Multibuffers (a copy of samples/ZKit in a new repository, with 400 notes):")
     multibuffer_checks(samples)
+
+    print("Integrated terminal (a copy of samples/ZKit, `zsh -f`):")
+    terminal_checks(samples)
 
     print("Package dependencies (offline, a local repository of the Tally fixture):")
     package_dependency_checks(samples)
