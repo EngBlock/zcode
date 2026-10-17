@@ -304,14 +304,14 @@ impl Workspace {
             })
             .collect();
         let total: usize = self.find.results.iter().map(|f| f.matches.len()).sum();
-        let summary = format!("{} in {} files · ⌥↩ opens the file at the cursor, ⇧↩ shows more lines", plural(total, "result"), self.find.results.len());
+        let summary = format!("{} in {} · ⌥↩ opens the file at the cursor, ⇧↩ shows more lines", plural(total, "result"), plural(self.find.results.len(), "file"));
         self.open_multibuffer(kind, files, summary, window, cx)
     }
 
     /// Every issue with the lines around it in a tab, its message under it.
     pub fn show_issues_in_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<Entity<MultiBufferView>> {
         let (files, count) = self.issue_places(cx);
-        let summary = format!("{} in {} files", plural(count, "issue"), files.len());
+        let summary = format!("{} in {}", plural(count, "issue"), plural(files.len(), "file"));
         self.open_multibuffer(MultiBufferKind::Issues, files, summary, window, cx)
     }
 
@@ -632,11 +632,15 @@ impl Workspace {
                 let view = view.read(cx);
                 let source = view.source_of(path)?;
                 let source_view = editor.read(cx).source_editor(source)?;
-                let start = source_view.read(cx).text().line_start_offset(*line as usize);
+                let text = source_view.read(cx).text();
+                let start = text.line_start_offset(*line as usize);
                 let row = host_text.offset_to_point(editor.read(cx).host_position(source, start)?).row as u32;
                 let (glyph, color) = if *severity == Severity::Error { ("⛔", error) } else { ("⚠", warning) };
+                // Under the line's text, at its indentation.
+                let line_text = text.slice_line(*line as usize).to_string();
+                let indent = &line_text[..line_text.len() - line_text.trim_start().len()];
                 let first = message.lines().next().unwrap_or_default();
-                Some(Block::new(row, [format!("    {glyph} {first}")]).color(color))
+                Some(Block::new(row, [format!("{indent}{glyph} {first}")]).color(color))
             })
             .collect();
         host.update(cx, |host, cx| host.set_blocks(MESSAGES, blocks, cx));
@@ -765,7 +769,7 @@ impl Workspace {
             host.transact(window, cx, |host, window, cx| host.edit(edits, window, cx));
         });
         view.update(cx, |view, cx| {
-            view.summary = format!("Replaced {} in {files} files · unsaved: ⌘S saves them, ⌘Z undoes it", plural(count, "result"));
+            view.summary = format!("Replaced {} in {} · unsaved: ⌘S saves them, ⌘Z undoes it", plural(count, "result"), plural(files, "file"));
             cx.notify();
         });
     }
@@ -792,6 +796,7 @@ impl Workspace {
         if shown.is_empty() {
             return;
         }
+        shown.sort_by(|a, b| a.0.cmp(&b.0));
         let files: Vec<FilePlaces> = shown
             .iter()
             .map(|(path, edits)| FilePlaces {
@@ -800,7 +805,7 @@ impl Workspace {
             })
             .collect();
         let count: usize = shown.iter().map(|(_, edits)| edits.len()).sum();
-        let summary = format!("{} in {} files · unsaved: ⌘S saves them, ⌘Z undoes the rename", plural(count, "change"), shown.len());
+        let summary = format!("{} in {} · unsaved: ⌘S saves them, ⌘Z undoes the rename", plural(count, "change"), plural(shown.len(), "file"));
         let Some(view) = self.open_multibuffer(MultiBufferKind::Rename { from, to }, files, summary, window, cx) else { return };
         while view.read(cx).has_pending() {
             self.load_multibuffer_page(&view, window, cx);
