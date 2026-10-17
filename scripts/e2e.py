@@ -1120,10 +1120,10 @@ def archive_checks(samples):
             assert s["archives"]["last_distribution"]["error"], s["archives"]["last_distribution"]
 
         def organizer_shortcut():
-            z.run("open " + os.path.join(project, "HelloClassic", "Model", "Greeter.swift"), "wait 200")
-            assert not shown(z.dump())
-            z.run("keys cmd-alt-shift-o", "wait 300")
-            assert shown(z.dump())
+            z.run("open " + os.path.join(project, "HelloClassic", "Model", "Greeter.swift"))
+            z.wait_for(lambda s: not shown(s), timeout=10, interval=0.3)
+            z.run("keys cmd-alt-shift-o")
+            z.wait_for(shown, timeout=10, interval=0.3)
 
         check("Archive: a Release archive of the Mac app for any Mac, in the Archives folder, revealed in the Organizer", archive_a_mac_app)
         check("Organizer: archives Xcode left too, grouped by app; Distribute App's methods and export options per platform", organizer_lists_xcodes_archives)
