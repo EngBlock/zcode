@@ -134,7 +134,7 @@ impl Workspace {
                             .ghost()
                             .small()
                             .selected(self.show_navigator)
-                            .tooltip("Show/Hide Navigator (⌘0)")
+                            .tooltip("Show/Hide Navigator")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.show_navigator = !this.show_navigator;
                                 cx.notify();
@@ -197,6 +197,15 @@ impl Workspace {
                             .selected(self.show_inspector)
                             .tooltip("Show/Hide Inspector")
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_inspector(cx))),
+                    )
+                    .child(
+                        Button::new("toggle-agent")
+                            .icon(IconName::Bot)
+                            .ghost()
+                            .small()
+                            .selected(self.agent.shown)
+                            .tooltip("Show Coding Assistant (⌘0)")
+                            .on_click(cx.listener(|this, _, window, cx| this.toggle_agent_panel(window, cx))),
                     ),
             )
     }
@@ -852,6 +861,10 @@ impl Render for Workspace {
         } else {
             div().into_any_element()
         };
+        let agent_panel = match (&self.agent.panel, self.agent.shown) {
+            (Some(panel), true) => panel.clone().into_any_element(),
+            _ => div().into_any_element(),
+        };
         let main = h_resizable("navigator-editor")
             .child(
                 resizable_panel()
@@ -867,6 +880,13 @@ impl Render for Workspace {
                     .size_range(px(200.)..px(480.))
                     .visible(self.show_inspector)
                     .child(inspector),
+            )
+            .child(
+                resizable_panel()
+                    .size(px(380.))
+                    .size_range(px(280.)..px(900.))
+                    .visible(self.agent.shown && self.agent.panel.is_some())
+                    .child(agent_panel),
             );
 
         v_flex()
@@ -1050,6 +1070,8 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &ShowReportNavigator, window, cx| {
                 this.show_navigator_tab(NavigatorTab::Reports, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &ShowCodingAssistant, window, cx| this.toggle_agent_panel(window, cx)))
+            .on_action(cx.listener(|this, _: &NewConversation, window, cx| this.new_conversation(window, cx)))
             .on_action(cx.listener(|this, _: &ToggleNavigator, _, cx| {
                 this.show_navigator = !this.show_navigator;
                 cx.notify();

@@ -3,6 +3,7 @@
 
 mod add_files;
 mod add_package;
+mod agent;
 mod blame;
 mod bookmark_dialog;
 mod bookmarks;
@@ -139,6 +140,8 @@ pub struct Workspace {
     console: console::Console,
     /// The debug area's terminals.
     terminals: terminals::TerminalsState,
+    /// The agent panel (⌘0), made when first shown.
+    agent: agent::AgentState,
     pub show_inspector: bool,
     /// What the File inspector shows when it isn't the active file (a
     /// folder picked in the navigator).
@@ -280,6 +283,7 @@ impl Workspace {
             bookmarks_ui: Default::default(),
             console: Default::default(),
             terminals: Default::default(),
+            agent: Default::default(),
             show_inspector: saved.show_inspector.unwrap_or(false),
             inspected: None,
             inspector_info: None,
@@ -350,6 +354,7 @@ impl Workspace {
         });
         this.bookmarks.restore(saved.bookmarks.clone());
         this.restore_panel_terminals(&saved.terminals, window, cx);
+        this.restore_agent_panel(saved.agent_panel.clone(), saved.show_agent_panel, window, cx);
 
         mark("state");
         this.rescan(cx);
@@ -642,6 +647,11 @@ impl Workspace {
             bookmarks: self.bookmarks.entries.clone(),
             terminals: self.panel_terminal_dirs(cx),
             terminal_tab: self.debug_tab == DebugTab::Terminal,
+            show_agent_panel: self.agent.shown,
+            agent_panel: match &self.agent.panel {
+                Some(panel) => Some(panel.read(cx).session_state()),
+                None => self.agent.restored.clone(),
+            },
         };
         self.session = Session::load();
         self.session.set_project(&self.project.root, state);
@@ -702,11 +712,19 @@ impl Workspace {
             self.apply_breakpoint_edit(&editor, cx);
         }
         self.bookmarks_ui.dialog = None;
+        // The mention picker goes back to the message being written.
+        let back_to_agent = std::mem::take(&mut self.agent.mention_open).then(|| self.agent.panel.clone()).flatten();
         // The commit message waits for the next Commit….
         if let Some(sheet) = self.git.commit_sheet.take().and_then(|s| s.upgrade()) {
             self.git.commit_draft = sheet.read(cx).draft(cx);
         }
         if self.modal.take().is_some() {
+            if let Some(panel) = back_to_agent {
+                let composer = panel.read(cx).composer.clone();
+                composer.update(cx, |state, cx| state.focus(window, cx));
+                cx.notify();
+                return;
+            }
             match self.active_editor() {
                 Some(editor) => editor.update(cx, |state, cx| state.focus(window, cx)),
                 None => self.focus_handle.focus(window, cx),
@@ -833,6 +851,7 @@ impl Workspace {
         state["terminals"] = self.terminals_summary(window, cx);
         state["vim"] = self.vim_summary(window, cx);
         state["settings"] = self.settings_summary(window, cx);
+        state["agent"] = self.agent_summary(window, cx);
         state["language_features"] = serde_json::json!({
             "server": self.lsp.read(cx).features().summary(),
             "inlay_hints": self.inlay_hints_summary(cx),

@@ -59,6 +59,10 @@
 //!                              Location), type / focus / close / select-all / copy / clear <n>, scroll <n>
 //!                              <lines>, link <n> <row> <column> (⌘-click), clipboard
 //!                              (see `Workspace::terminal_command`)
+//!   agent <command>            the agent panel (⌘0): show, hide, type <text>, send [<text>], mention <path>[:<a>-<b>],
+//!                              mentions (the picker), allow|reject [always], cancel, new, agent <id>, follow on|off,
+//!                              mode <id>, auth <method>, review / reject-file / keep [<path>], expand <entry>
+//!                              (see `Workspace::agent_command`); `dump` has `agent`
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -478,6 +482,12 @@ fn run_command(
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.terminal_command(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+        }
+        "agent" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.agent_command(arg, window, cx)))
                 .map_err(|e| e.to_string())?
         }
         "multibuffer" => {

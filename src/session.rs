@@ -42,6 +42,21 @@ pub struct ProjectSession {
     pub terminals: Vec<PathBuf>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub terminal_tab: bool,
+    /// The agent panel was shown; its agent and Follow (the conversation
+    /// itself isn't kept).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub show_agent_panel: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_panel: Option<AgentPanelState>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentPanelState {
+    /// The agent's id in `agent_servers`.
+    pub agent: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub follow: bool,
 }
 
 /// The editor area as saved: a pane, or panes side by side or stacked.

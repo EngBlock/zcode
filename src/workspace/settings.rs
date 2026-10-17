@@ -129,6 +129,9 @@ impl Workspace {
             self.soft_wrap = new.soft_wrap;
             self.apply_soft_wrap(window, cx);
         }
+        if (&new.agent_servers, &new.default_agent, new.always_allow_tool_actions) != (&old.agent_servers, &old.default_agent, old.always_allow_tool_actions) {
+            self.agent_settings_changed(cx);
+        }
         if new.inlay_hints != self.inlay_hints.enabled {
             self.set_inlay_hints(new.inlay_hints, cx);
         }
