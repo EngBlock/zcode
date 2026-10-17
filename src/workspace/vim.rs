@@ -69,7 +69,7 @@ impl Workspace {
                     let diff = diff.view.read(cx);
                     vec![diff.current.clone(), diff.base.clone()]
                 }
-                Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) => vec![],
+                Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) => vec![],
             })
             .collect()
     }
@@ -84,7 +84,7 @@ impl Workspace {
                     let diff = diff.view.read(cx);
                     diff.current.entity_id() == editor || diff.base.entity_id() == editor
                 }
-                Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) => false,
+                Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) => false,
             })?;
             Some((pane.id, ix))
         })
@@ -100,7 +100,7 @@ impl Workspace {
                 let base_focused = diff.base.read(cx).focus_handle(cx).is_focused(window);
                 if base_focused { diff.base.clone() } else { diff.current.clone() }
             }
-            Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) => return None,
+            Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) => return None,
         };
         editor.read(cx).vim_status()
     }

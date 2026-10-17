@@ -150,7 +150,7 @@ fn caption(kind: SetKind, entry: &Value, any_appearance: bool) -> String {
         }
         SetKind::Color => look.unwrap_or_else(|| "Any Appearance".into()),
         SetKind::Data | SetKind::Symbol | SetKind::Other => {
-            look.or_else(|| str_field(entry, "filename").map(str::to_string)).unwrap_or_else(|| idiom_title(str_field(entry, "idiom").unwrap_or("universal")))
+            look.unwrap_or_else(|| idiom_title(str_field(entry, "idiom").unwrap_or("universal")))
         }
     }
 }

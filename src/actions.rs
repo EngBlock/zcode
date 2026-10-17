@@ -222,6 +222,7 @@ const PICKER_INPUT: &str = "Picker > Input";
 /// The property list outline, and the key or value being typed in it.
 const PLIST: &str = "PlistEditor";
 const PLIST_INPUT: &str = "PlistEditor > Input";
+const ASSET_CATALOG: &str = "AssetCatalog";
 /// A multibuffer's editor (Find results, issues, references, a rename).
 const MULTIBUFFER: &str = "Input && multibuffer";
 /// A terminal (`src/terminal/view.rs`).
@@ -451,6 +452,13 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("up", PickerSelectPrevious, Some(PLIST_INPUT)),
         KeyBinding::new("enter", PickerConfirm, Some(PLIST_INPUT)),
         KeyBinding::new("escape", PickerDismiss, Some(PLIST_INPUT)),
+        // The asset catalog editor: its edits' undo, the outline's rows.
+        KeyBinding::new("cmd-z", Undo, Some(ASSET_CATALOG)),
+        KeyBinding::new("cmd-shift-z", Redo, Some(ASSET_CATALOG)),
+        KeyBinding::new("down", PickerSelectNext, Some(ASSET_CATALOG)),
+        KeyBinding::new("up", PickerSelectPrevious, Some(ASSET_CATALOG)),
+        KeyBinding::new("backspace", DeletePlistItem, Some(ASSET_CATALOG)),
+        KeyBinding::new("delete", DeletePlistItem, Some(ASSET_CATALOG)),
         // In a terminal, ⌘C ⌘V ⌘A act on it; plain and ⌃ keys go to the
         // shell, so zcode's ⌃ and function-key commands step aside there.
         KeyBinding::new("cmd-c", CopyOrCopyLine, Some(TERMINAL)),

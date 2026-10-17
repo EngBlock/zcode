@@ -162,7 +162,7 @@ impl Workspace {
                         let diff = diff.view.read(cx);
                         editors.extend([diff.current.clone(), diff.base.clone()]);
                     }
-                    Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) => {}
+                    Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) => {}
                 }
             }
         }

@@ -11,6 +11,7 @@
 //!   double-click <x> <y> / right-click <x> <y> / cmd-click <x> <y>
 //!   wheel <x> <y> <lines>      turn the scroll wheel over a point (up is positive)
 //!   drag <x1> <y1> <x2> <y2>   press at one point, move to the other and release (drag and drop)
+//!   file-drop <x> <y> <path>[;<path>…]  files dragged in from Finder and dropped at a point
 //!   open <path>[:line]         open a file in the frontmost workspace
 //!   wait <ms>                  pause
 //!   rename <path> -> <name>    rename a file or folder (a name containing `/` moves it)
@@ -71,6 +72,12 @@
 //!   distribute <command>       the Distribute App sheet: method <id>, upload / symbols / versions / strip /
 //!                              notarize on|off, profile <name>, folder <path>, confirm, cancel
 //!                              (see `DistributeSheet::command`)
+//!   assets <command>           the asset catalog shown: select <asset>, slot <slot>, expand <folder>,
+//!                              new image|color|folder, remove, rename <name>, drop <slot> <file> (a file
+//!                              dropped into a well), import <file>[;<file>…] (dropped on the outline),
+//!                              clear <slot>, color [<slot>] <component> <value>, space <slot> <space>,
+//!                              method <slot> float|8-bit|hex, undo, redo, reload
+//!                              (see `AssetCatalogView::command`); `dump` has `asset_catalog`
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -109,6 +116,7 @@ pub fn start(cx: &mut App, workspaces: impl Fn(&mut App) -> Vec<Entity<Workspace
                         Ok(String::new())
                     }
                     "type-latency" => type_latency(&arg, cx).await,
+                    "file-drop" => file_drop(&arg, cx).await,
                     "hover" => match cx.update(|cx| start_hover(&workspaces, cx)) {
                         Ok(task) => task.await.map_err(|e| format!("{e:#}")).map(|hover| hover_text(hover.as_ref())),
                         Err(err) => Err(err),
@@ -162,6 +170,38 @@ async fn type_latency(text: &str, cx: &mut AsyncApp) -> Result<String, String> {
     samples.sort_by(f64::total_cmp);
     let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
     Ok(serde_json::json!({ "keys": samples.len(), "median_ms": at(0.5), "p95_ms": at(0.95), "max_ms": at(1.0) }).to_string())
+}
+
+/// Files dragged in from Finder and dropped at a point, as the platform
+/// reports them: entering and moving, then (a frame later, as a real drag
+/// spans many) moving and dropping, each its own update.
+async fn file_drop(arg: &str, cx: &mut AsyncApp) -> Result<String, String> {
+    let mut parts = arg.splitn(3, ' ');
+    let (Some(x), Some(y), Some(paths)) = (parts.next().and_then(|v| v.parse().ok()), parts.next().and_then(|v| v.parse().ok()), parts.next())
+    else {
+        return Err("usage: file-drop <x> <y> <path>[;<path>…]".into());
+    };
+    let position = point(px(x), px(y));
+    let paths = ExternalPaths(paths.split(';').map(|p| PathBuf::from(p.trim())).collect());
+    let window = cx.update(|cx| front_window(cx)).ok_or("no window")?;
+    let events = [
+        vec![FileDropEvent::Entered { position, paths }, FileDropEvent::Pending { position }],
+        vec![FileDropEvent::Pending { position }],
+        vec![FileDropEvent::Pending { position }, FileDropEvent::Submit { position }],
+    ];
+    for (ix, batch) in events.into_iter().enumerate() {
+        if ix > 0 {
+            cx.background_executor().timer(Duration::from_millis(20)).await;
+        }
+        window
+            .update(cx, |_, window, cx| {
+                for event in batch {
+                    window.dispatch_event(PlatformInput::FileDrop(event), cx);
+                }
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(String::new())
 }
 
 fn front_window(cx: &App) -> Option<AnyWindowHandle> {
@@ -490,6 +530,12 @@ fn run_command(
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.terminal_command(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+        }
+        "assets" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.assets_command(arg, window, cx)))
                 .map_err(|e| e.to_string())?
         }
         "organizer" | "distribute" => {

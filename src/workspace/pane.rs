@@ -1,8 +1,8 @@
 //! Panes: tabs of items in the editor area. An item is a file's editor (or
 //! its property list editor), a file's comparison with `HEAD` (Code
 //! Review), a multibuffer (excerpts of many files: find results, issues,
-//! references, a rename), a terminal, the project settings or the
-//! Organizer; the
+//! references, a rename), a terminal, the project settings, the
+//! Organizer or an asset catalog; the
 //! workspace keeps its panes in a split tree (`pane_group.rs`) and one of
 //! them focused.
 //!
@@ -18,6 +18,7 @@ use zcode_editor::{EditorState, RangeDecorationCollection};
 use super::diff_view::{DiffBase, DiffView};
 use crate::terminal::TerminalView;
 use super::multibuffer::MultiBufferView;
+use super::asset_catalog::AssetCatalogView;
 use super::organizer::Organizer;
 use super::{PlistEditor, ProjectSettings};
 
@@ -98,19 +99,33 @@ pub enum Item {
     ProjectSettings(Entity<ProjectSettings>),
     /// Window ▸ Organizer.
     Organizer(Entity<Organizer>),
+    /// An `.xcassets` folder.
+    AssetCatalog(AssetCatalogItem),
+}
+
+/// An asset catalog in a tab.
+pub struct AssetCatalogItem {
+    /// The `.xcassets` folder.
+    pub path: PathBuf,
+    pub view: Entity<AssetCatalogView>,
+    pub(super) _subscriptions: Vec<Subscription>,
 }
 
 impl Item {
     pub fn editor(&self) -> Option<&EditorItem> {
         match self {
             Item::Editor(item) => Some(item),
-            Item::Diff(_) | Item::MultiBuffer(_) | Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) => None,
+            Item::Diff(_) | Item::MultiBuffer(_) | Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) => None,
         }
     }
 
-    /// The file a file tab shows (not a comparison's: that tab isn't the file's).
+    /// The file a file tab shows (not a comparison's: that tab isn't the
+    /// file's), or the asset catalog's folder.
     pub fn path(&self) -> Option<&Path> {
-        self.editor().map(|item| item.path.as_path())
+        match self {
+            Item::AssetCatalog(item) => Some(&item.path),
+            item => item.editor().map(|item| item.path.as_path()),
+        }
     }
 
     /// The file whose buffer the tab edits: a file tab's or a comparison's.
@@ -118,7 +133,7 @@ impl Item {
         match self {
             Item::Editor(item) => Some(&item.path),
             Item::Diff(diff) => Some(&diff.path),
-            Item::MultiBuffer(_) | Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) => None,
+            Item::MultiBuffer(_) | Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) => None,
         }
     }
 
@@ -131,6 +146,7 @@ impl Item {
             Item::Terminal(item) => item.view.entity_id(),
             Item::ProjectSettings(settings) => settings.entity_id(),
             Item::Organizer(organizer) => organizer.entity_id(),
+            Item::AssetCatalog(item) => item.view.entity_id(),
         }
     }
 
@@ -142,6 +158,7 @@ impl Item {
             Item::Terminal(item) => item.view.read(cx).title(),
             Item::ProjectSettings(_) => "Project Settings".into(),
             Item::Organizer(_) => "Organizer".into(),
+            Item::AssetCatalog(item) => file_title(&item.path),
         }
     }
 
@@ -157,6 +174,7 @@ impl Item {
             Item::Terminal(item) => item.view.read(cx).focus_handle(cx),
             Item::ProjectSettings(settings) => settings.read(cx).focus_handle(cx),
             Item::Organizer(organizer) => organizer.read(cx).focus_handle(cx),
+            Item::AssetCatalog(item) => item.view.read(cx).focus_handle(cx),
         }
     }
 }

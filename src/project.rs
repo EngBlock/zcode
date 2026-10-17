@@ -208,7 +208,10 @@ pub fn build_tree(root: &Path, files: &[PathBuf]) -> Vec<TreeItem> {
     let expand_top = files.len() < 400;
     fn to_items(dir: Dir, path: &Path, depth: usize, expand_top: bool) -> Vec<TreeItem> {
         let mut items = Vec::new();
-        let mut dirs: Vec<_> = dir.dirs.into_iter().collect();
+        // An asset catalog is one item, as in Xcode: it opens in its editor.
+        let (catalogs, mut dirs): (Vec<_>, Vec<_>) = dir.dirs.into_iter().partition(|(name, _)| name.ends_with(".xcassets"));
+        let mut files = dir.files;
+        files.extend(catalogs.into_iter().map(|(name, _)| name));
         dirs.sort_by_key(|(name, _)| name.to_lowercase());
         for (name, child) in dirs {
             let child_path = path.join(&name);
@@ -219,7 +222,6 @@ pub fn build_tree(root: &Path, files: &[PathBuf]) -> Vec<TreeItem> {
                     .children(children),
             );
         }
-        let mut files = dir.files;
         files.sort_by_key(|name| name.to_lowercase());
         for name in files {
             let child_path = path.join(&name);
@@ -246,5 +248,20 @@ mod tests {
         assert_eq!(items[0].label.as_ref(), "Sources");
         assert_eq!(items[1].label.as_ref(), "a.md");
         assert_eq!(items[2].label.as_ref(), "b.swift");
+    }
+
+    #[test]
+    fn asset_catalogs_are_one_item() {
+        let files = vec![
+            PathBuf::from("App/Assets.xcassets/Contents.json"),
+            PathBuf::from("App/Assets.xcassets/Logo.imageset/logo.png"),
+            PathBuf::from("App/Assets.xcassets/Logo.imageset/Contents.json"),
+            PathBuf::from("App/App.swift"),
+        ];
+        let items = build_tree(Path::new("/p"), &files);
+        let app = &items[0];
+        let children: Vec<(&str, bool)> = app.children.iter().map(|c| (c.label.as_ref(), c.is_folder())).collect();
+        assert_eq!(children, [("App.swift", false), ("Assets.xcassets", false)]);
+        assert_eq!(app.children[1].id.as_ref(), "/p/App/Assets.xcassets");
     }
 }

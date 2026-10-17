@@ -5,6 +5,8 @@ mod add_files;
 mod add_package;
 mod agent;
 mod archive;
+mod asset_catalog;
+mod asset_catalogs;
 mod blame;
 mod bookmark_dialog;
 mod bookmarks;
@@ -873,6 +875,7 @@ impl Workspace {
         state["run_pid"] = self.debugger.read(cx).local_debuggee_pid().or(build.run_pid()).into();
         state["profile"] = self.profile_summary(cx);
         state["archives"] = self.archives_summary(cx);
+        state["asset_catalog"] = self.asset_catalog_summary(cx);
         state["breakpoints"] = self.breakpoints_summary(cx);
         state["bookmarks"] = self.bookmarks_summary(cx);
         state["packages"] = self.packages_summary(cx);

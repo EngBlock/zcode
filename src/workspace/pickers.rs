@@ -249,6 +249,7 @@ pub fn file_icon(path: &Path) -> IconName {
         "md" | "txt" => IconName::FileText,
         "png" | "jpg" | "jpeg" | "pdf" | "svg" => IconName::FileImage,
         "storyboard" | "xib" => IconName::LayoutTemplate,
+        "xcassets" => IconName::Images,
         _ => IconName::File,
     }
 }

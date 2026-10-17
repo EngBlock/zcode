@@ -94,6 +94,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let path = path.canonicalize().unwrap_or(path);
+        // An asset catalog, or a set in one, opens the catalog's tab.
+        if let Some((catalog, selected)) = crate::xcassets::locate(&path) {
+            self.open_asset_catalog_in(pane, catalog, selected, window, cx);
+            return;
+        }
         if record_history {
             self.push_history(pane, cx);
         }
@@ -128,6 +133,9 @@ impl Workspace {
     fn add_item(&mut self, pane: PaneId, path: &Path, window: &mut Window, cx: &mut Context<Self>) -> Option<(usize, bool)> {
         if let Some(ix) = self.pane(pane)?.position_of(path) {
             return Some((ix, false));
+        }
+        if crate::xcassets::is_catalog(path) {
+            return Some((self.add_asset_catalog_item(pane, path, None, window, cx)?, true));
         }
         if self.buffer(path).is_none() && !self.open_buffer(path, window, cx) {
             return None;
@@ -176,12 +184,21 @@ impl Workspace {
         let focus = p.items[ix].focus_handle(cx);
         let settings = match &p.items[ix] {
             Item::ProjectSettings(settings) => Some(settings.clone()),
-            Item::Editor(_) | Item::Diff(_) | Item::MultiBuffer(_) | Item::Terminal(_) | Item::Organizer(_) => None,
+            Item::Editor(_) | Item::Diff(_) | Item::MultiBuffer(_) | Item::Terminal(_) | Item::Organizer(_) | Item::AssetCatalog(_) => None,
         };
         self.active_pane = pane;
         self.inspected = None;
         if let Some(settings) = settings {
             settings.update(cx, |s, cx| s.reload_if_changed(window, cx));
+        }
+        // A catalog shown again is read again (Finder, git or Xcode may
+        // have changed it).
+        if let Some(Item::AssetCatalog(item)) = self.pane(pane).and_then(|p| p.items.get(ix)) {
+            item.view.update(cx, |view, cx| {
+                if view.catalog.is_some() && !view.busy {
+                    view.reload(window, cx);
+                }
+            });
         }
         focus.focus(window, cx);
         self.activated(window, cx);
@@ -222,7 +239,9 @@ impl Workspace {
     }
 
     pub(super) fn reveal_active_in_tree(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.active_item().map(|item| item.path.to_string_lossy().to_string()) else {
+        // A file's tab, or an asset catalog's.
+        let shown = self.pane(self.active_pane).and_then(Pane::active_item).and_then(Item::path);
+        let Some(path) = shown.map(|path| path.to_string_lossy().to_string()) else {
             return;
         };
         let id: SharedString = path.into();
@@ -360,6 +379,7 @@ impl Workspace {
                     self.organizer = None;
                     self.organizer_subscriptions.clear();
                 }
+                Item::AssetCatalog(_) => {}
             }
         }
     }
@@ -749,7 +769,7 @@ impl Workspace {
                 let pane = self.pane(*id);
                 PaneLayout::Pane(PaneState {
                     files: pane.map(|p| p.items.iter().filter_map(Item::path).map(Path::to_path_buf).collect()).unwrap_or_default(),
-                    active: pane.and_then(Pane::active_editor_item).map(|item| item.path.clone()),
+                    active: pane.and_then(Pane::active_item).and_then(Item::path).map(Path::to_path_buf),
                     focused: *id == self.active_pane,
                     assistant_of: pane.and_then(|p| p.assistant).and_then(|a| order.iter().position(|p| *p == a.of)),
                     counterparts: pane.and_then(|p| p.assistant).is_some_and(|a| a.mode == AssistantMode::Counterparts),

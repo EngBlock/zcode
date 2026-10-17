@@ -76,7 +76,7 @@ impl Workspace {
         match self.pane(self.active_pane)?.active_item()? {
             Item::Editor(item) => item.shown_plist().is_none().then(|| item.editor.clone()),
             Item::MultiBuffer(item) => Some(item.host.clone()),
-            Item::Diff(_) | Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) => None,
+            Item::Diff(_) | Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) => None,
         }
     }
 
