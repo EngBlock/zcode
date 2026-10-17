@@ -29,7 +29,9 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// Reports an edit this editor just applied to its text, and applies it
     /// to the views linked to it.
     pub(crate) fn buffer_edited(&mut self, range: &Range<usize>, new_text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(crate::BufferEdit { range: range.clone(), new_text: new_text.to_string() });
+        if !self.quiet_edits {
+            cx.emit(crate::BufferEdit { range: range.clone(), new_text: new_text.to_string() });
+        }
         if self.applying_linked_edit || self.linked_views.is_empty() {
             return;
         }
@@ -65,7 +67,28 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 }
 
-fn map_offset(offset: usize, range: &Range<usize>, new_len: usize) -> usize {
+impl EditorState {
+    /// Applies an edit made for this editor rather than by its user (a
+    /// multibuffer's excerpt following its file): like [`Self::edit`], but
+    /// the cursors stay where they were in the text, as a linked view's do.
+    pub(crate) fn edit_keeping_selections(&mut self, range: Range<usize>, new_text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let selections: Vec<CursorSelection> = self.selections.iter().copied().collect();
+        self.edit([(range.clone(), new_text.to_string())], window, cx);
+        let len = self.text.len();
+        let moved = selections
+            .into_iter()
+            .map(|mut selection| {
+                selection.start = map_offset(selection.start, &range, new_text.len()).min(len);
+                selection.end = map_offset(selection.end, &range, new_text.len()).min(len);
+                selection
+            })
+            .collect();
+        self.selections.replace_all(moved);
+        self.selections.merge_overlapping();
+    }
+}
+
+pub(crate) fn map_offset(offset: usize, range: &Range<usize>, new_len: usize) -> usize {
     if offset <= range.start {
         offset
     } else if offset >= range.end {

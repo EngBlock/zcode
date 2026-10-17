@@ -94,6 +94,7 @@ mod linked;
 mod modal;
 mod viewport;
 pub mod multibuffer;
+mod multibuffer_editor;
 #[cfg(test)]
 mod test_support;
 mod ui;
@@ -127,6 +128,7 @@ pub use highlights::HighlightPriority;
 pub use history::{HistoryRequest, TransactionId};
 pub use modal::{CursorShape, KeystrokeInterceptor};
 pub use viewport::ViewportChanged;
+pub use multibuffer_editor::{EXPAND_LINES, HeaderStyle, MultiBufferEditor, MultiBufferEvent};
 pub use decorations::{
     RangeDecoration, RangeDecorationCollection, RangeDecorationStyle, TextDecoration,
     TextDecorationCollection,

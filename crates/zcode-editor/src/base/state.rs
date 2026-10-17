@@ -197,6 +197,9 @@ pub struct InputBaseState<M: InputModeKind> {
     /// Undo and redo are asked for (`HistoryRequest`) instead of replayed:
     /// a multibuffer keeps the history of the files its excerpts edit.
     pub(crate) external_history: bool,
+    /// Set while a multibuffer applies its own edit to its editor, so the
+    /// edit isn't reported back to it as a `BufferEdit`.
+    pub(crate) quiet_edits: bool,
     pub(super) inline_tokens: Option<Box<super::inline_tokens::InlineTokenStore>>,
     pub(super) pending_token: Option<super::InlineToken>,
     pub(super) replaying_history: bool,
@@ -615,6 +618,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             linked_views: Vec::new(),
             applying_linked_edit: false,
             external_history: false,
+            quiet_edits: false,
             inline_tokens: None,
             pending_token: None,
             replaying_history: false,
