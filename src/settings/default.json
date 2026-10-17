@@ -80,5 +80,44 @@
     // Give agents zcode's MCP server: build, run, test, issues, the build
     // log, the editor, the debugger and screenshots (`zcode mcp`).
     "zcode_mcp_server": true
+  },
+  // Predictive code completion (Editor ▸ Show Predictive Completion,
+  // ⌃⌥Space): code predicted at the cursor in gray; Tab accepts it, Escape
+  // or ⌥] dismisses it. Off until you choose a provider. Yours only; a
+  // project's file can only turn it off ("provider": "none").
+  "edit_predictions": {
+    // "none", "claude" (the Claude API, which sends the code around the
+    // cursor and your recent edits to Anthropic), or "lsp" (the language
+    // server's textDocument/inlineCompletion, when it has one).
+    "provider": "none",
+    // Predict when typing pauses; false: only when asked (⌃⌥Space).
+    "automatic": true,
+    // How long typing pauses before zcode asks, in milliseconds.
+    "debounce_ms": 300,
+    // Files never sent for a prediction.
+    "disabled_globs": [
+      "**/.env*",
+      "**/*.pem",
+      "**/*.key",
+      "**/*.cert",
+      "**/*.crt",
+      "**/secrets.yml",
+      "**/*.p12",
+      "**/*.mobileprovision"
+    ],
+    "claude": {
+      // A fast model: predictions want answers in a few hundred
+      // milliseconds.
+      "model": "claude-haiku-5-5",
+      // null: ANTHROPIC_API_KEY, from zcode's environment or your login
+      // shell's. A key written here is stored in this file as it stands.
+      "api_key": null,
+      "api_url": "https://api.anthropic.com",
+      // The longest prediction, in tokens.
+      "max_tokens": 256,
+      // How much the model thinks first: "low", "medium", "high", or null
+      // for the model's default.
+      "effort": "low"
+    }
   }
 }

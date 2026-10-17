@@ -2,8 +2,8 @@
 //! and the settings that result (`Settings`), defaults first, then the
 //! user's file, then the project's. Names and shapes are Zed's where Zed has
 //! the setting (`buffer_font_size`, `soft_wrap`, `inlay_hints.enabled`,
-//! `git.inline_blame.enabled`, `terminal.shell`); `default.json` documents
-//! them.
+//! `git.inline_blame.enabled`, `terminal.shell`, `edit_predictions`);
+//! `default.json` documents them.
 
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
@@ -43,6 +43,91 @@ pub struct Settings {
     pub always_allow_tool_actions: bool,
     /// Hand agents in the panel zcode's own MCP server (`crate::mcp`).
     pub zcode_mcp_server: bool,
+    pub edit_predictions: EditPredictionSettings,
+}
+
+/// Predictive code completion (`crate::predictions`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditPredictionSettings {
+    pub provider: PredictionProvider,
+    /// Ask while typing pauses; otherwise only on Show Predictive Completion.
+    pub automatic: bool,
+    pub debounce_ms: u64,
+    /// Files never sent to a provider.
+    pub disabled_globs: Vec<String>,
+    pub claude: ClaudeSettings,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PredictionProvider {
+    #[default]
+    None,
+    /// The Claude API (`crate::predictions::claude`).
+    Claude,
+    /// The language server's `textDocument/inlineCompletion`.
+    Lsp,
+}
+
+impl PredictionProvider {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Claude => "claude",
+            Self::Lsp => "lsp",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClaudeSettings {
+    pub model: String,
+    /// `None`: `ANTHROPIC_API_KEY` from the environment or the login shell.
+    pub api_key: Option<Secret>,
+    pub api_url: String,
+    pub max_tokens: u32,
+    /// `output_config.effort`; `None` leaves it to the model.
+    pub effort: Option<String>,
+}
+
+/// A value that never shows up in logs or `{:?}`.
+#[derive(Clone, PartialEq, Eq, Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(…)")
+    }
+}
+
+impl Default for EditPredictionSettings {
+    fn default() -> Self {
+        Self {
+            provider: PredictionProvider::None,
+            automatic: true,
+            debounce_ms: 300,
+            disabled_globs: ["**/.env*", "**/*.pem", "**/*.key", "**/*.cert", "**/*.crt", "**/secrets.yml", "**/*.p12", "**/*.mobileprovision"]
+                .map(String::from)
+                .to_vec(),
+            claude: ClaudeSettings {
+                model: "claude-haiku-5-5".into(),
+                api_key: None,
+                api_url: "https://api.anthropic.com".into(),
+                max_tokens: 256,
+                effort: Some("low".into()),
+            },
+        }
+    }
 }
 
 pub const DEFAULT_FONT_SIZE: f32 = 13.;
@@ -72,6 +157,7 @@ impl Default for Settings {
             default_agent: "claude".into(),
             always_allow_tool_actions: false,
             zcode_mcp_server: true,
+            edit_predictions: EditPredictionSettings::default(),
         }
     }
 }
@@ -157,6 +243,7 @@ pub struct SettingsContent {
     #[serde(deserialize_with = "agent_servers")]
     pub agent_servers: Option<Vec<(String, crate::acp::agents::AgentServerContent)>>,
     pub agent: Option<AgentContent>,
+    pub edit_predictions: Option<EditPredictionsContent>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -190,6 +277,30 @@ pub struct AgentContent {
     pub zcode_mcp_server: Option<bool>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct EditPredictionsContent {
+    #[serde(deserialize_with = "provider")]
+    pub provider: Option<PredictionProvider>,
+    pub automatic: Option<bool>,
+    #[serde(deserialize_with = "debounce")]
+    pub debounce_ms: Option<u64>,
+    pub disabled_globs: Option<Vec<String>>,
+    pub claude: Option<ClaudeContent>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ClaudeContent {
+    pub model: Option<String>,
+    pub api_key: Option<Secret>,
+    pub api_url: Option<String>,
+    pub max_tokens: Option<u32>,
+    /// `Some(None)`: `null`, the model's own default.
+    #[serde(deserialize_with = "effort")]
+    pub effort: Option<Option<String>>,
+}
+
 /// Every key a settings file may have, with the keys of its objects: what
 /// isn't here is reported as unknown (and otherwise ignored, as in Zed).
 pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
@@ -212,11 +323,14 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     // Any name: Zed's built-ins (claude, codex, gemini) or an agent of yours.
     ("agent_servers", &[]),
     ("agent", &["default_agent", "always_allow_tool_actions", "zcode_mcp_server"]),
+    ("edit_predictions", &["provider", "automatic", "debounce_ms", "disabled_globs", "claude"]),
 ];
 
 /// Settings a project's file can't change: they're the app's, not a window's.
 /// A project's file can't name programs to run or skip the permission
-/// prompts either: a cloned repository could carry it.
+/// prompts either: a cloned repository could carry it. Nor can it choose
+/// where code is sent for predictions (or with whose key); it can only turn
+/// them off (`"edit_predictions": { "provider": "none" }`).
 pub const USER_ONLY_KEYS: &[&str] = &["theme", "buffer_font_family", "vim_mode", "agent_servers", "agent"];
 
 /// What to say about the keys of a settings file zcode doesn't know
@@ -239,6 +353,14 @@ pub fn unknown_keys(value: &Value, project: bool) -> Vec<String> {
     }
     if project {
         unknown.extend(object.keys().filter(|k| USER_ONLY_KEYS.contains(&k.as_str())).map(|k| format!("“{k}” is only read from your own settings file")));
+        if let Some(predictions) = object.get("edit_predictions").and_then(Value::as_object) {
+            unknown.extend(
+                predictions
+                    .iter()
+                    .filter(|(key, value)| !(key.as_str() == "provider" && value.as_str() == Some("none")))
+                    .map(|(key, _)| format!("“edit_predictions.{key}” is only read from your own settings file (a project can only set \"provider\": \"none\")")),
+            );
+        }
     }
     unknown
 }
@@ -268,6 +390,11 @@ impl Settings {
             if let Some(family) = &content.buffer_font_family {
                 self.buffer_font_family = Some(family.clone()).filter(|f| !f.trim().is_empty());
             }
+            if let Some(predictions) = &content.edit_predictions {
+                self.edit_predictions.merge(predictions);
+            }
+        } else if content.edit_predictions.as_ref().and_then(|p| p.provider) == Some(PredictionProvider::None) {
+            self.edit_predictions.provider = PredictionProvider::None;
         }
         take!(buffer_font_size);
         take!(tab_size);
@@ -291,6 +418,33 @@ impl Settings {
             self.terminal_shell = shell;
         }
         self
+    }
+}
+
+impl EditPredictionSettings {
+    fn merge(&mut self, content: &EditPredictionsContent) {
+        self.provider = content.provider.unwrap_or(self.provider);
+        self.automatic = content.automatic.unwrap_or(self.automatic);
+        self.debounce_ms = content.debounce_ms.unwrap_or(self.debounce_ms);
+        if let Some(globs) = &content.disabled_globs {
+            self.disabled_globs = globs.clone();
+        }
+        if let Some(claude) = &content.claude {
+            let mine = &mut self.claude;
+            if let Some(model) = claude.model.clone().filter(|m| !m.trim().is_empty()) {
+                mine.model = model;
+            }
+            if let Some(key) = claude.api_key.clone().filter(|k| !k.expose().trim().is_empty()) {
+                mine.api_key = Some(key);
+            }
+            if let Some(url) = claude.api_url.clone().filter(|u| !u.trim().is_empty()) {
+                mine.api_url = url;
+            }
+            mine.max_tokens = claude.max_tokens.unwrap_or(mine.max_tokens);
+            if let Some(effort) = claude.effort.clone() {
+                mine.effort = effort;
+            }
+        }
     }
 }
 
@@ -409,6 +563,32 @@ fn agent_servers<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Ve
     }
 }
 
+fn provider<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<PredictionProvider>, D::Error> {
+    match read(deserializer)? {
+        Value::Null => Ok(None),
+        Value::String(name) if name == "none" => Ok(Some(PredictionProvider::None)),
+        Value::String(name) if name == "claude" => Ok(Some(PredictionProvider::Claude)),
+        Value::String(name) if name == "lsp" => Ok(Some(PredictionProvider::Lsp)),
+        other => Err(expected(r#""none", "claude" or "lsp""#, &other)),
+    }
+}
+
+fn debounce<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
+    match read(deserializer)? {
+        Value::Null => Ok(None),
+        Value::Number(n) if n.as_u64().is_some_and(|n| n <= 5000) => Ok(n.as_u64()),
+        other => Err(expected("a number of milliseconds from 0 to 5000", &other)),
+    }
+}
+
+fn effort<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Option<String>>, D::Error> {
+    match read(deserializer)? {
+        Value::Null => Ok(Some(None)),
+        Value::String(level) if ["low", "medium", "high", "xhigh", "max"].contains(&level.as_str()) => Ok(Some(Some(level))),
+        other => Err(expected(r#""low", "medium", "high", "xhigh", "max" or null"#, &other)),
+    }
+}
+
 fn shell<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Option<(String, Vec<String>)>>, D::Error> {
     let program_and_args = |object: &serde_json::Map<String, Value>| -> Result<(String, Vec<String>), D::Error> {
         let program = object.get("program").and_then(Value::as_str).ok_or_else(|| D::Error::custom("expected a \"program\" for the shell"))?;
@@ -507,6 +687,38 @@ mod tests {
         );
         let err = jsonc::parse::<SettingsContent>(r#"{ "agent_servers": { "Mine": { "command": 3 } } }"#).unwrap_err();
         assert!(err.message.contains(r#"{ "command", "args", "env" } for "Mine""#), "{err}");
+    }
+
+    #[test]
+    fn edit_predictions_from_the_users_file_and_off_from_a_projects() {
+        let user: SettingsContent = jsonc::parse(
+            r#"{ "edit_predictions": { "provider": "claude", "debounce_ms": 150,
+                 "claude": { "model": "claude-sonnet-5-5", "api_key": "sk-ant-test", "effort": null } } }"#,
+        )
+        .unwrap();
+        let settings = Settings::default().merged(&user, false);
+        let predictions = &settings.edit_predictions;
+        assert_eq!((predictions.provider, predictions.debounce_ms, predictions.automatic), (PredictionProvider::Claude, 150, true));
+        assert_eq!(predictions.claude.model, "claude-sonnet-5-5");
+        assert_eq!(predictions.claude.api_key.as_ref().map(Secret::expose), Some("sk-ant-test"));
+        assert_eq!(predictions.claude.effort, None);
+        assert_eq!(predictions.claude.api_url, "https://api.anthropic.com");
+        assert!(!format!("{settings:?}").contains("sk-ant-test"), "the key stays out of Debug");
+
+        // A project can't point predictions elsewhere, only turn them off.
+        let evil: SettingsContent =
+            jsonc::parse(r#"{ "edit_predictions": { "provider": "claude", "claude": { "api_url": "https://evil.example" } } }"#).unwrap();
+        let kept = settings.clone().merged(&evil, true);
+        assert_eq!(kept.edit_predictions, settings.edit_predictions);
+        let off: SettingsContent = jsonc::parse(r#"{ "edit_predictions": { "provider": "none" } }"#).unwrap();
+        assert_eq!(settings.clone().merged(&off, true).edit_predictions.provider, PredictionProvider::None);
+        assert_eq!(unknown_keys(&serde_json::json!({ "edit_predictions": { "provider": "none" } }), true), Vec::<String>::new());
+        let warnings = unknown_keys(&serde_json::json!({ "edit_predictions": { "provider": "claude", "claude": {} } }), true);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("edit_predictions.provider"), "{warnings:?}");
+
+        let err = jsonc::parse::<SettingsContent>(r#"{ "edit_predictions": { "provider": "copilot" } }"#).unwrap_err();
+        assert!(err.message.contains(r#""none", "claude" or "lsp""#), "{err}");
     }
 
     #[test]

@@ -25,7 +25,10 @@ use std::time::{Duration, SystemTime};
 use gpui_kit::{App, BorrowAppContext as _, Global};
 use serde_json::Value;
 
-pub use content::{DEFAULT_FONT_SIZE, Settings, SettingsContent, ThemeMode, ThemeSelection};
+pub use content::{
+    ClaudeSettings, DEFAULT_FONT_SIZE, EditPredictionSettings, PredictionProvider, Secret, Settings, SettingsContent, ThemeMode,
+    ThemeSelection,
+};
 
 pub fn settings_path() -> PathBuf {
     crate::paths::config_dir().join("settings.json")

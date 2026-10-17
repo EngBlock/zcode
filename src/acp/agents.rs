@@ -134,15 +134,19 @@ pub fn login_path() -> &'static str {
         if std::env::var_os("ZCODE_AGENT_NO_LOGIN_SHELL").is_some() {
             return fallback();
         }
-        login_shell_path(Duration::from_secs(5)).unwrap_or_else(fallback)
+        login_shell_var("PATH", Duration::from_secs(5)).unwrap_or_else(fallback)
     })
 }
 
-fn login_shell_path(timeout: Duration) -> Option<String> {
-    const MARKER: &str = "__ZCODE_PATH__";
+/// Environment variable `name` as the user's login shell sets it (an app
+/// started from the Dock doesn't get the shell's environment). Only its
+/// name is on the command line; the value comes back through a pipe.
+/// Blocking.
+pub fn login_shell_var(name: &str, timeout: Duration) -> Option<String> {
+    const MARKER: &str = "__ZCODE_VAR__";
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
     let mut child = std::process::Command::new(shell)
-        .args(["-l", "-i", "-c", &format!("printf '{MARKER}%s{MARKER}' \"$PATH\"")])
+        .args(["-l", "-i", "-c", &format!("printf '{MARKER}%s{MARKER}' \"${name}\"")])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
