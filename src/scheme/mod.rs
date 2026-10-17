@@ -1,6 +1,6 @@
 //! What Xcode's Edit Scheme sheet (⌘<) edits for the Run and Test actions:
 //! build configuration, launch arguments, environment variables, options
-//! and diagnostics.
+//! and diagnostics; and what Product ▸ Profile reads from the Profile action.
 //!
 //! An Xcode scheme keeps them in its `.xcscheme` (shared in
 //! `xcshareddata/xcschemes`, or the user's in `xcuserdata`), which is read
@@ -152,11 +152,41 @@ impl Default for ActionOptions {
     }
 }
 
+/// The Profile action, read but not edited: what Product ▸ Profile builds
+/// and records.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfileOptions {
+    /// Release unless the scheme says otherwise, as in Xcode.
+    pub configuration: String,
+    /// Arguments ▸ Use the Run action's arguments and environment variables
+    /// (on in the schemes Xcode makes).
+    pub uses_run_arguments: bool,
+    pub arguments: Vec<Argument>,
+    pub environment: Vec<Variable>,
+    /// Info ▸ Instrument (`savedToolIdentifier`): a template's name or
+    /// path; empty is Ask on Launch.
+    pub template: String,
+}
+
+impl Default for ProfileOptions {
+    fn default() -> Self {
+        Self {
+            configuration: "Release".into(),
+            uses_run_arguments: true,
+            arguments: vec![],
+            environment: vec![],
+            template: String::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SchemeOptions {
     pub run: ActionOptions,
     pub test: ActionOptions,
+    pub profile: ProfileOptions,
     /// Run ▸ Info ▸ Debug executable: whether ⌘R may run under the debugger.
     pub debug_executable: bool,
     /// Run ▸ Options ▸ Working Directory (Mac executables and packages).
@@ -174,6 +204,7 @@ impl Default for SchemeOptions {
         Self {
             run: ActionOptions::default(),
             test: ActionOptions::default(),
+            profile: ProfileOptions::default(),
             debug_executable: true,
             use_custom_working_directory: false,
             custom_working_directory: String::new(),
@@ -241,6 +272,20 @@ impl SchemeOptions {
             let expanded = settings.map_or(directory.to_string(), |s| expand_macros(directory, s));
             launch.working_directory = Some(PathBuf::from(expanded));
         }
+        launch
+    }
+
+    /// What Product ▸ Profile launches the product with: the Profile
+    /// action's arguments and environment, or the Run action's (without its
+    /// diagnostics, which Instruments doesn't take either), and the Run
+    /// action's working directory.
+    pub fn profile_launch(&self, settings: Option<&HashMap<String, String>>) -> Launch {
+        let mut launch = if self.profile.uses_run_arguments {
+            launch_lists(&self.run.arguments, &self.run.environment, settings)
+        } else {
+            launch_lists(&self.profile.arguments, &self.profile.environment, settings)
+        };
+        launch.working_directory = self.run_launch(settings).working_directory;
         launch
     }
 
@@ -539,6 +584,16 @@ pub fn read(text: &str) -> Result<ReadScheme> {
             .or_else(|| launch.child("PathRunnable")?.attribute("FilePath"))
             .map(str::to_string);
     }
+    if let Some(profile) = root.child("ProfileAction") {
+        let action = read_action(profile);
+        options.profile = ProfileOptions {
+            configuration: profile.attribute("buildConfiguration").unwrap_or("Release").to_string(),
+            uses_run_arguments: flag(profile, "shouldUseLaunchSchemeArgsEnv", true),
+            arguments: action.arguments,
+            environment: action.environment,
+            template: profile.attribute("savedToolIdentifier").unwrap_or("").to_string(),
+        };
+    }
     if let Some(test) = root.child("TestAction") {
         options.test = read_action(test);
         options.test_uses_run_arguments = flag(test, "shouldUseLaunchSchemeArgsEnv", false);
@@ -737,6 +792,37 @@ mod tests {
         assert!(o.debug_executable && o.test_uses_run_arguments && o.run.diagnostics.main_thread_checker);
         assert!(o.run.arguments.is_empty() && o.run.environment.is_empty());
         assert!(!o.use_custom_working_directory && !o.ignore_persistent_state);
+    }
+
+    #[test]
+    fn reads_the_profile_action() {
+        let o = read(&sample()).unwrap().options;
+        assert_eq!(o.profile, ProfileOptions::default(), "Release, the Run action's arguments, Ask on Launch");
+        let text = sample().replace(
+            "savedToolIdentifier = \"\"",
+            "savedToolIdentifier = \"Time Profiler\"",
+        );
+        let text = text.replacen("buildConfiguration = \"Release\"\n      shouldUseLaunchSchemeArgsEnv = \"YES\"", "buildConfiguration = \"Profiling\"\n      shouldUseLaunchSchemeArgsEnv = \"NO\"", 1);
+        let text = text.replacen(
+            "</BuildableProductRunnable>\n   </ProfileAction>",
+            "</BuildableProductRunnable>\n      <CommandLineArguments>\n         <CommandLineArgument\n            argument = \"-profiling YES\"\n            isEnabled = \"YES\">\n         </CommandLineArgument>\n      </CommandLineArguments>\n   </ProfileAction>",
+            1,
+        );
+        let mut o = read(&text).unwrap().options;
+        assert_eq!(o.profile.configuration, "Profiling");
+        assert_eq!(o.profile.template, "Time Profiler");
+        assert!(!o.profile.uses_run_arguments);
+        o.run.arguments = vec![Argument { value: "-run".into(), enabled: true }];
+        o.run.diagnostics.zombie_objects = true;
+        assert_eq!(o.profile_launch(None).arguments, ["-profiling", "YES"]);
+        o.profile.uses_run_arguments = true;
+        let launch = o.profile_launch(None);
+        assert_eq!(launch.arguments, ["-run"]);
+        assert!(launch.environment.is_empty(), "no diagnostics under Instruments: {launch:?}");
+        // Read only: saving leaves the Profile action as it is.
+        let mut changed = read(&text).unwrap().options;
+        changed.profile.template = "Leaks".into();
+        assert_eq!(write(&text, &changed).unwrap(), text);
     }
 
     #[test]
