@@ -29,11 +29,12 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | **Editor panes** | File ▸ New ▸ Editor Pane on Right / Below splits the focused pane, showing its file at the same place; panes split further side by side or stacked and are resized by dragging. Each pane has its own tabs, jump bar and Go Back / Go Forward history. A file shown in several panes is one document: an edit, undo or redo in one pane shows in the others at once, each pane keeps its own cursor and scroll position, and breakpoints, bookmarks, test diamonds, issues, the execution mark and the property list outline appear in every pane. Close Editor Pane, Close Other Editor Panes, Close Other Tabs; closing a pane's last tab closes the pane. Move Focus to Next / Previous Editor Pane, or click; Focus Editor Pane shows the focused pane alone. The layout, tabs, sizes and focus are restored with the session. | ⌃⌘T ⌃⌥⌘T, ⌃⇧⌘W ⌃⌥⇧⌘W ⌥⌘W, ⌃\` ⌃⇧\`, ⌃⇧⌘↩ |
 | | The assistant (Editor ▸ Assistant) opens beside the focused editor in Counterparts mode, following it with the `.h` / `.m` (`.c`, `.cpp`, `.mm`) counterpart of its file, or in Manual mode with what was opened in it. ⌥-click in the project navigator, ⌥-Return (or ⌥-click) in Open Quickly, Jump to Definition and Jump to Next Counterpart with ⌥ open in the assistant (or the next pane, or a new assistant). Show Editor Only closes it. | ⌃⌥⌘↩, ⌘↩, ⌃⌥⌘J, ⌃⌥⌘↑ |
 | **Terminal** (from Zed) | Terminals in the debug area's Terminal tab, beside the console (several at once, each with its tab and + for another), and in editor panes (File ▸ New ▸ Terminal Tab): the login shell on a pseudo-terminal, started in the project's folder. File ▸ Open Terminal at Location (also on the navigator's context menu) opens one in the selected item's folder. The editor's font and size, the 16 ANSI colors from the theme (so light and dark both read), 256 and 24-bit color, bold, italic, underlines; 10,000 lines of scrollback (the wheel, ⇧PageUp/PageDown); drag to select (double-click a word, triple-click a line, ⇧-click to extend), ⌘C, ⌘V (bracketed when the program asks), ⌘A; ⌘K clears it. ⌘-click a `file:line:column` (compiler errors, `grep -n`, test failures) to open the editor there, a URL to open the browser, or a link a program marks (OSC 8). Programs that ask get the mouse (`vim`, `htop`), and full-screen ones get the wheel as arrows. Plain and ⌃ keys go to the shell (⌃C, ⌃\\, ⌃6 included), ⌘ keys stay zcode's (⌘W closes the terminal). A tab is named after what's running in it. Closing a terminal, its tab or the window ends its processes; the session reopens terminals as fresh shells in the folder each was in. | ⌃⌘\`, ⌘K, ⌘W |
+| **Coding assistant** (ACP, from Zed) | View ▸ Show Coding Assistant (⌘0, as in Xcode 27) opens the agent panel beside the inspector: a conversation with Claude Code, Codex or Gemini CLI (their Agent Client Protocol adapters, run with `npx`) or any agent you add to `agent_servers` in `settings.json`. Answers and thinking stream in as Markdown; tool calls show what they read and run, their output and their diffs; an agent that asks permission waits for Allow, Always Allow or Reject. Agents read files through zcode, so they see unsaved edits; what they write lands in the file's buffer as one undoable edit and is saved (⌘Z in any pane takes it back), and a change an agent makes on disk itself is taken into the buffer the same way. The files a conversation changed are listed with their lines added and removed: Review compares one with what it was before (as Code Review does with `HEAD`), Reject puts it back, Keep stops listing it. `@` (or the @ button) mentions a file or a symbol from sourcekit-lsp, sent with its text from the buffer. Follow Agent opens the files the agent reads and changes at the line, leaving the keyboard in the panel. The agent's plan, its modes (Always Ask, Plan…), Stop, signing in, and File ▸ New ▸ Conversation (⌃⌘H). Nothing loads until the panel is opened, and no agent starts until a message is sent. Show/Hide Navigator, which had ⌘0, has no key now, as in Xcode 27 (`keymap.json` can give it one). | ⌘0, ⌃⌘H, Return, ⇧Return |
 | **Editing** | Rope-based editor with tree-sitter highlighting (Swift, C/ObjC, C++, JSON, YAML, Markdown…), multiple cursors, folding, indent guides and find/replace. | ⌘F, ⌥⌘F |
 | **Multibuffers** (from Zed) | One editor showing excerpts of many files, edited in place: Find ▸ Show Find Results in Editor (or the Find navigator's button) for Find in Workspace's results or Find Selected Symbol's references, Navigate ▸ Show Issues in Editor (or the Issue navigator's button) for every issue with its lines around it and its message under it, and a rename's changes. Each file has a header with its name and folder; the gutter shows each line's number in its file, its change bars and breakpoints (click one to toggle it), and the excerpts show the file's diagnostics. Typing in an excerpt edits the file itself (unsaved, as in its tab, which shows the change at once, and the other way around); ⌘S saves the files the tab changed, and one ⌘Z undoes one edit across every file it touched, in step with each file's own undo. Click a header or a line number, or ⌥↩, to open the file there; ⇧↩ or a header's ↕ shows three more lines around an excerpt. Find ▸ Find and Replace in Workspace adds a Replace field whose Replace All edits the results this way. A search over thousands of files opens a page of files at a time as the tab scrolls. | ⌥⇧⌘F, ⌥↩, ⇧↩ |
 | | Comment selection, duplicate, move line, select next occurrence, soft wrap and font size. | ⌘/, ⌘D, ⌥⌘[ ⌥⌘], ⌥⌘E, ⌃⇧⌘L, ⌘+ ⌘- ⌃⌘0 |
 | | Xcode-style `<#placeholder#>` snippets from completions, with Tab or ⌃/ jumping to the next placeholder. | Tab, ⌃/, ⌃⇧/ |
-| **Settings** (from Zed) | zcode ▸ Settings… opens `~/.config/zcode/settings.json`: JSON with comments in Zed's format, applied the moment it's saved, in every window. `theme` (a name, or one for light and one for dark appearance), `buffer_font_family`, `buffer_font_size`, `tab_size`, `hard_tabs`, `soft_wrap`, `show_whitespaces`, `gutter.line_numbers`, `indent_guides`, `format_on_save` (through sourcekit-lsp, on ⌘S, Save All and `:w`), `remove_trailing_whitespace_on_save`, `ensure_final_newline_on_save`, `inlay_hints`, `vim_mode`, `git.inline_blame`, `git.show_authors`, `git.side_by_side_comparison` and `terminal.shell`; zcode ▸ Open Default Settings lists them with their defaults (read-only). A project's `.zcode/settings.json` (zcode ▸ Open Project Settings File) wins over yours for its window, except the theme, font family and Vim mode. The Editor menu's toggles (Authors, Inline Blame, Inlay Hints, Vim Mode, Wrap Lines, Invisibles, Side by Side / Inline Comparison) and ⌘+ ⌘- ⌃⌘0 write the file, keeping its comments, and show checkmarks. A mistake (a missing comma, `"tab_size": "four"`, an unknown setting) is shown with its line and column, and the settings it gave last stay until it's fixed. The toggles zcode kept in its session before move into the file once. | ⌘, |
+| **Settings** (from Zed) | zcode ▸ Settings… opens `~/.config/zcode/settings.json`: JSON with comments in Zed's format, applied the moment it's saved, in every window. `theme` (a name, or one for light and one for dark appearance), `buffer_font_family`, `buffer_font_size`, `tab_size`, `hard_tabs`, `soft_wrap`, `show_whitespaces`, `gutter.line_numbers`, `indent_guides`, `format_on_save` (through sourcekit-lsp, on ⌘S, Save All and `:w`), `remove_trailing_whitespace_on_save`, `ensure_final_newline_on_save`, `inlay_hints`, `vim_mode`, `git.inline_blame`, `git.show_authors`, `git.side_by_side_comparison`, `terminal.shell`, `agent_servers` and `agent` (the agent panel's agents, which one a conversation starts with, and `always_allow_tool_actions`); zcode ▸ Open Default Settings lists them with their defaults (read-only). A project's `.zcode/settings.json` (zcode ▸ Open Project Settings File) wins over yours for its window, except the theme, font family, Vim mode and the agent settings (a cloned project can't name programs to run). The Editor menu's toggles (Authors, Inline Blame, Inlay Hints, Vim Mode, Wrap Lines, Invisibles, Side by Side / Inline Comparison) and ⌘+ ⌘- ⌃⌘0 write the file, keeping its comments, and show checkmarks. A mistake (a missing comma, `"tab_size": "four"`, an unknown setting) is shown with its line and column, and the settings it gave last stay until it's fixed. The toggles zcode kept in its session before move into the file once. | ⌘, |
 | | zcode ▸ Key Bindings… opens `keymap.json`: blocks of bindings with an optional `context` (`Editor`, `Editor && vim_mode == normal`, `multibuffer`, `Terminal`, `Navigator && navigator == find`, `PlistEditor`, `Picker`, `Workspace`, …), over zcode's; an action by name (`zcode::Build` or `Build`, `[name, arguments]`), `null` to free a key, `["zed::Unbind", action]` to take a key off one action; multi-key sequences (`ctrl-x ctrl-s`). Bindings for a Vim mode come before Vim's own keys. Bindings that can't be made are reported; the rest apply. zcode ▸ Open Default Key Bindings lists zcode's. | — |
 | | Themes are JSON files in `~/.config/zcode/themes`: gpui-component's format (the window's colors, the editor's and its syntax colors, a monospace font) or Zed's theme files. zcode ▸ Select Theme… lists them with Default Light and Default Dark. zcode ▸ Import Xcode Theme… converts one of Xcode's `.xccolortheme` themes (yours from `~/Library/Developer/Xcode/UserData/FontAndColorThemes`, or one Xcode ships) into a theme file and shows it: the editor's background, text, current line, selection, insertion point, invisibles, syntax colors with their bold and italic, and the font when it's installed. zcode ▸ Import Xcode Key Bindings… turns a set from `~/Library/Developer/Xcode/UserData/KeyBindings` into blocks of `keymap.json`: each command zcode has gets its shortcut, and loses zcode's default ones as in Xcode, and text editing bindings go to the editor; importing again replaces them. Xcode's files are only read. | — |
 | **Vim mode** | Editor ▸ Vim Mode (off by default; `vim_mode` in the settings, for every window) in every editor tab: files in every pane, both sides of Code Review and multibuffers. Normal, insert, replace, visual, visual line and visual block modes, with the mode in the status bar (`-- INSERT --`, then any keys of a command not finished yet). Motions (`h j k l w W b B e E ge 0 ^ $ g_ \| gg G { } f F t T ; , % H M L + - _`, marks), counts, and the operators `d c y > < = g~ gu gU` over motions and text objects (`iw aw iW aW ip ap i" a" i' a' i( a( i[ a[ i{ a{ i< a< it at`, and the backtick quotes); `x X s S C D Y p P gp gP J gJ r R ~ o O i a I A gi gI ⌃A ⌃X`; registers (`"a`–`"z`, `"A`–`"Z` to append, `"0`–`"9`, `"-`, `"_`, `"+` `"*`, `".` `"/` `":`), the unnamed one being the system clipboard (as in Zed); `.` repeats the last change with what its insert typed (completions and closed brackets included); `u` and `⌃R`, an insert undoing in one step with the change that started it; `/ ? n N * #` with Vim's patterns and the matches highlighted; `m` with `'` and the backtick to go to marks; scrolling (`⌃D ⌃U ⌃F ⌃B ⌃E ⌃Y zz zt zb`) and folds (`zo zc za zR zM`); visual block `I`, `A` and `c` typing on every row at once. `:` commands: `:w`, `:wa`, `:q`, `:q!`, `:wq`, `:x`, `:qa`, `ZZ`, `ZQ` (`:q` closes the tab, as in Zed, and refuses unsaved changes without `!`; in a multibuffer `:w` saves the files the tab changed), `:s` with ranges (`%`, `.`, `$`, numbers, marks, `'<,'>`, `+N`) and the `g`, `i`, `I`, `n` flags, `:<line>`, `:d`, `:y`, `:j`, `:>`, `:<`, `:noh`, `:undo`, `:redo`, with ↑/↓ history. Every cursor of a multi-cursor editor moves and operates; a selection made with the mouse, ⌘D or a placeholder is visual mode. Escape closes completion, signature help and Find before it leaves insert mode. `gd` jumps to the definition, `gt` / `gT` switch tabs, `⌃O` / Tab go back and forward, `=` re-indents through sourcekit-lsp. zcode's own ⌃ shortcuts (⌃6, ⌃I, ⌃/, ⌃\`…) and every ⌘ key keep working; terminals, property list outlines and text fields aren't affected. | Editor ▸ Vim Mode |
@@ -171,6 +172,15 @@ if zcode is not faster.
   pixels at 247.0 ms against 248.4 ms (median of 24), and ZKit with two
   Swift tabs restored at 226.3 ms against 224.5 ms to the first frame
   (median of 20), 225.9 ms with Vim mode on.
+* The agent panel costs nothing until it's opened: no ACP code runs at
+  startup, and a session that had it open shows it after the first frame
+  without starting an agent; the agent starts (its command found on the
+  login shell's `PATH`, read off the main thread once) when the first
+  message is sent. Its process and the reading of what it sends are on
+  threads of their own; each update re-lays out only the rows it changed
+  in a virtual list. Cold launch, alternating runs against `master`: the
+  welcome window's first pixels at 242.5 ms against 249.9 ms (median of 9).
+  The binary grows by 1.9 MB (the protocol's types).
 * Settings cost nothing measurable at startup: the user's settings,
   keymap and the theme they name are read and parsed on a thread of their
   own started at the top of `main()`, and the first window takes what it
@@ -209,7 +219,8 @@ src/
                     as tabs of excerpts, with headless buffers for the files no pane shows); terminals
                     in the debug area and as pane tabs; Vim mode in every editor tab (`:w`, `:q`, the
                     status bar's mode); the settings applied to the window's editors, terminals and git
-                    views, Settings… and the theme and import pickers
+                    views, Settings… and the theme and import pickers; the agent panel (agent/: the
+                    conversation, the agent's file reads and writes through buffers, @-mentions)
   lsp/              JSON-RPC client, document sync store, editor provider adapters, what the server offers;
                     inlay hints, semantic tokens and call/type hierarchies converted for the editor
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner, log/issue/test
@@ -221,6 +232,9 @@ src/
   plist/            property lists: XML with byte ranges, binary, in-place edits, Xcode's key definitions
                     (generated by scripts/plist_definitions.py)
   signing/          teams, identities and provisioning profiles; capabilities and where they live
+  acp/              the Agent Client Protocol's client side: JSON-RPC to an agent on stdio (its requests
+                    to zcode included), the agents and how to start them, a conversation built from
+                    session updates
   debugger/         DAP client, debugger model, breakpoints and their options, data tips (lldb-dap)
   terminal/         the integrated terminal: a PTY and its grid (alacritty_terminal), keystrokes and
                     mouse reports as bytes, links, theme colors, the view and how its grid is painted
@@ -248,6 +262,7 @@ vendor/
   gpui-component/   gpui-component 0.7.3 plus small patches (ZCODE-PATCH.md)
 scripts/
   e2e.py            end-to-end UI tests
+  fake_acp_agent.py a scripted ACP agent for the agent panel's tests (no network or account)
   appkit_floor.swift  minimal native AppKit app, the cold-launch reference
 ```
 
@@ -299,6 +314,16 @@ files load too. The Xcode importers read Xcode's own files
 (`.xccolortheme` and `.idekeybindings` property lists, old-style ones
 included), and map its commands to zcode's by the action selectors in
 Xcode's command definitions; Settings… is Xcode's command and shortcut.
+The agent panel speaks the Agent Client Protocol (agentclientprotocol.com,
+Apache-2.0) with the message types of its `agent-client-protocol-schema`
+crate (Apache-2.0), which brings `serde_with` (MIT OR Apache-2.0),
+`schemars`, `derive_more` and `strum` (MIT); the transport, the
+conversation, the panel and what agents do to buffers are zcode's own. The
+panel's behavior (streaming, tool calls with diffs, permission prompts,
+Follow, @-mentions, Review / Reject / Keep) follows Zed's public
+documentation of its agent panel (Zed's code is GPL; none of it was read);
+⌘0 and File ▸ New ▸ Conversation (⌃⌘H) are Xcode 27's, whose Coding
+Assistant also runs Claude Code, Codex and ACP agents.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -431,6 +456,22 @@ themes or session. It covers:
   again in place) and your own sets read; the default files read-only; the
   session's old toggles moved into `settings.json` once; and
   `~/.config/zcode` left as it was
+* the agent panel on a copy of ZKit, with `scripts/fake_acp_agent.py` as
+  the agent (it streams, asks permission, and reads and writes files
+  through zcode, as its prompts direct): nothing loaded at startup and no
+  agent until a message is sent; ⌘0; an answer streamed; what zcode tells
+  the agent it can do; a permission prompt, then a write into the open
+  buffer (the agent having read its unsaved edit), saved, undone by one
+  ⌘Z; Reject; a created file and a closed file the agent changed on disk
+  itself in buffers ⌘Z undoes; Review against the file before the agent,
+  Reject putting it back or trashing a created file; a write outside the
+  project refused; `@` opening the mention picker and mentions sent with
+  the buffer's text (and a range's lines); Follow keeping the keyboard in
+  the panel; the plan, modes, Stop (a waiting permission request
+  cancelled); a crash explained and the next message starting another
+  agent; signing in, then the waiting message; New Conversation letting go
+  of the conversation's buffers; the agent ended with zcode and the panel
+  and Follow back after a relaunch, without an agent
 * bookmarks on a copy of ZKit: Bookmark Line and File, ribbons, edits and
   undo (a deleted line's bookmark back with ⌘Z), next and previous in the file and the workspace, descriptions
   edited in place, completion, the filter, drag and drop (real mouse
@@ -585,6 +626,22 @@ The control channel also takes window screenshots
   binding import skips commands zcode doesn't have (and says which) and
   Xcode's sub-word and mark text commands. Menu checkmarks follow the
   window in front.
+* The agent panel keeps one conversation per window and doesn't keep it
+  across relaunches (no thread history or `session/load`). zcode doesn't
+  offer agents its terminal (`terminal/*`), so they run commands with
+  their own tools, and it lets them write only inside the project. Images,
+  audio, slash-command completion and agent-defined config options aren't
+  shown, and a symbol is mentioned by its lines. Claude Code's and Codex's
+  adapters (checked here with trivial prompts on a copy of a sample) read
+  and write files with their own tools rather than through zcode, so
+  their edits reach the buffer when their tool call reports its diff
+  rather than as the write itself, and they don't see unsaved edits
+  unless a file is mentioned (mentions always send the buffer's text).
+  Gemini CLI wasn't run here (it needs a Google sign-in). Signing in to an
+  agent is the agent's own flow (for Claude Code, `claude /login` in a
+  terminal); the panel offers the agent's sign-in methods and a terminal.
+  Agents' own files written outside `agent_servers`' commands (their
+  configuration, credentials) are theirs; zcode never changes them.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas or Instruments.
 * Devices: there's no Devices and Simulators window (⇧⌘2), so pairing a new
   device, turning on Developer Mode and copying a device's system symbols

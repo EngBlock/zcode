@@ -50,7 +50,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 ## Phase 3: AI
 
 1. ACP client: host Claude Code / Codex / Gemini agents in a panel (Xcode 27's
-   ⌘0 is Coding Assistant).
+   ⌘0 is Coding Assistant). ✅
 2. zcode as an MCP server: build, run, test, diagnostics, simulator
    screenshots (builds on the `debug.rs` control channel).
 3. Inline edit predictions (later).

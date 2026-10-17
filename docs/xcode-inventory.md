@@ -214,7 +214,17 @@ Invisibles is Xcode's `toggleInvisibleCharactersShown:`.
 7. **Debug** ⌘7: threads and stack frames, plus CPU/memory gauges
 8. **Breakpoints** ⌘8
 9. **Reports** ⌘9: Local build/test/run logs, plus Xcode Cloud
-10. **Coding Assistant** ⌘0: AI chat (new; it took ⌘0)
+10. **Coding Assistant** ⌘0: AI chat (new; it took ⌘0). Its command is
+    View ▸ Navigators ▸ Show Coding Assistant (`toggleCodingAssistantNavigator:`);
+    File ▸ New ▸ Conversation is ⌃⌘H (`newCodingAssistant:`, ⌥ for a new
+    tab, ⌥⇧ for an editor pane), Jump to Next Active Conversation ⌃⌘K and
+    Show Coding Tools… ⌥⌘0. Xcode's `IDEIntelligenceAgents` plug-in
+    registers Claude Code and Codex, and `IDEIntelligenceACP` custom
+    Agent Client Protocol agents. zcode's agent panel (Phase 3.1) takes ⌘0
+    and ⌃⌘H and sits on the inspector's side instead of in the navigator
+    area, as Zed's agent panel does, so the project navigator stays in view
+    while an agent works; Show/Hide Navigator, which zcode had on ⌘0, has no
+    key, as in Xcode 27.
 
 **Inspectors (general, not Interface Builder):** File, History (source control log), Quick Help, Source Control. Interface Builder and other editors add Identity, Attributes, Size, Connections, Bindings and so on. The view and memory debuggers add Object, Size and Memory.
 
