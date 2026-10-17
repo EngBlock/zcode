@@ -37,6 +37,7 @@ which was extracted from Xcode 27's own command definitions.
 | Rename, Edit All in Scope (⌃⌘E), fix-its (⌃⌥⌘F) | ✅ | Rename shows the places it changed in a multibuffer, unsaved, undone in one ⌘Z; the index refreshes in the background after save |
 | Re-indent (⌃I), Format File (⌃⇧I) | ✅ | Via sourcekit-lsp (swift-format) |
 | Split panes / assistant | ✅ | Editor Pane on Right / Below (⌃⌘T ⌃⌥⌘T), Close Editor Pane (⌃⇧⌘W), Close Other Editor Panes, Close Other Tabs, Move Focus to Next / Previous Editor Pane (⌃\` ⌃⇧\`), Focus Editor Pane (⌃⇧⌘↩); one buffer in several panes (shared edits, undo and anchors, a cursor each); the assistant (⌃⌥⌘↩, ⌘↩) in Counterparts (.h/.m) or Manual, ⌥-click / ⌥-Return / ⌃⌥⌘J / ⌃⌥⌘↑ open in it; layout and sizes restored. No other assistant modes, no ⌘J pane chooser, no dragging tabs between panes |
+| File ▸ Open Terminal at Location (and the navigator's context menu) | ✅ | Opens zcode's own terminal in the item's folder (Xcode opens Terminal.app); see the terminal below |
 | Git: change gutter, blame, commit | ✅ | Change bars against `HEAD` as you type (staged ones hollow) with a popover: Discard Change, Stage / Unstage Change; Next / Previous Change (⌃\\ ⌃⇧\\); inline blame and Editor ▸ Authors (⌃⇧⌘A); Code Review as a tab, side by side or inline (⌥⇧⌘↩: not in Xcode 27's inventory); Integrate ▸ Commit… (⌥⌘C) with per-file and per-hunk staging and Amend, Push…, Pull… (⌥⌘X), Fetch Changes, Stage / Unstage / Discard All, Switch Branch… / New Branch…; Source Control navigator with staged and unstaged changes and branches. No stash, cherry-pick, tags, history or conflict editor |
 | Swift packages: build, run, test | ✅ | |
 | Swift package management: Package Dependencies in the navigator, Add Package Dependencies…, File ▸ Packages (Reset Package Caches, Resolve Package Versions, Update to Latest Package Versions), Update Package, Remove Package, Add Local… | 🟡 | Xcode projects, workspaces and Swift packages; versions from tags for every dependency rule; products to targets; read-only package sources; errors under Package Loading. No package collections search, registry packages, editing a package's rule, or package plugins |
@@ -67,6 +68,12 @@ which was extracted from Xcode 27's own command definitions.
   (find results, references, issues, renames), with file headers, each
   line's number in its file, change bars, breakpoints and diagnostics, ⌥↩ to
   open the file, ⇧↩ to show more lines, and one undo step across files.
+* An integrated terminal: in the debug area beside the console and in
+  editor tabs, several at once, the login shell in the project's folder,
+  theme colors, scrollback, selection and ⌘C, ⌘-click on `file:line` and
+  URLs, the mouse for programs that ask; fresh shells in the same folders
+  after a relaunch (⌃⌘\`, View ▸ Activate Terminal; File ▸ New ▸ Terminal
+  Tab). No IME composition, ⌥ as Meta or find in scrollback yet.
 * Live memory monitoring for both the editor and the language server, a
   startup benchmark mode, and an idle-baseline memory view.
 * A scriptable UI control channel (`ZCODE_DEBUG_DIR`) for automated UI tests.

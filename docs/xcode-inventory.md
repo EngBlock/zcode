@@ -51,6 +51,14 @@ Source: `/Users/nathan/Downloads/Xcode-beta.app` (Xcode 27.0, build 27A5228h). `
 | Save / Save All | ⌘S / ⌥⌘S |
 | Show in Finder, Open Terminal at Location, Packages > Resolve/Update/Reset | — |
 
+Xcode's Open Terminal at Location (`openTerminalAtLocation:`, also
+`contextMenu_openTerminalAtLocation:` on the navigator) opens Terminal.app;
+zcode's opens its own terminal there. Xcode has no integrated terminal:
+zcode's terminal (Phase 2.6) follows Zed's terminal panel, in the debug
+area beside the console, with View ▸ Activate Terminal on ⌃⌘\` (Zed's
+⌃\` is Xcode's Move Focus to Next Editor Pane; IDEKit binds nothing to
+⌃⌘\`) and File ▸ New ▸ Terminal Tab.
+
 ### Edit
 | Command | Key |
 |---|---|

@@ -28,6 +28,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | File ▸ Packages ▸ Reset Package Caches, Resolve Package Versions, Update to Latest Package Versions; Update Package and Remove Package on a package's context menu. Xcode projects are edited in `project.pbxproj` as Xcode writes it (package references, product dependencies, the targets' Frameworks phase) and resolved with `xcodebuild -resolvePackageDependencies` into the DerivedData folder builds use; Swift packages use `swift package add-dependency`, `add-target-dependency`, `resolve`, `update` and `reset`. Progress shows in the activity view, errors under Package Loading in the Issue navigator, and the index refreshes afterwards so new modules can be imported. | — |
 | **Editor panes** | File ▸ New ▸ Editor Pane on Right / Below splits the focused pane, showing its file at the same place; panes split further side by side or stacked and are resized by dragging. Each pane has its own tabs, jump bar and Go Back / Go Forward history. A file shown in several panes is one document: an edit, undo or redo in one pane shows in the others at once, each pane keeps its own cursor and scroll position, and breakpoints, bookmarks, test diamonds, issues, the execution mark and the property list outline appear in every pane. Close Editor Pane, Close Other Editor Panes, Close Other Tabs; closing a pane's last tab closes the pane. Move Focus to Next / Previous Editor Pane, or click; Focus Editor Pane shows the focused pane alone. The layout, tabs, sizes and focus are restored with the session. | ⌃⌘T ⌃⌥⌘T, ⌃⇧⌘W ⌃⌥⇧⌘W ⌥⌘W, ⌃\` ⌃⇧\`, ⌃⇧⌘↩ |
 | | The assistant (Editor ▸ Assistant) opens beside the focused editor in Counterparts mode, following it with the `.h` / `.m` (`.c`, `.cpp`, `.mm`) counterpart of its file, or in Manual mode with what was opened in it. ⌥-click in the project navigator, ⌥-Return (or ⌥-click) in Open Quickly, Jump to Definition and Jump to Next Counterpart with ⌥ open in the assistant (or the next pane, or a new assistant). Show Editor Only closes it. | ⌃⌥⌘↩, ⌘↩, ⌃⌥⌘J, ⌃⌥⌘↑ |
+| **Terminal** (from Zed) | Terminals in the debug area's Terminal tab, beside the console (several at once, each with its tab and + for another), and in editor panes (File ▸ New ▸ Terminal Tab): the login shell on a pseudo-terminal, started in the project's folder. File ▸ Open Terminal at Location (also on the navigator's context menu) opens one in the selected item's folder. The editor's font and size, the 16 ANSI colors from the theme (so light and dark both read), 256 and 24-bit color, bold, italic, underlines; 10,000 lines of scrollback (the wheel, ⇧PageUp/PageDown); drag to select (double-click a word, triple-click a line, ⇧-click to extend), ⌘C, ⌘V (bracketed when the program asks), ⌘A; ⌘K clears it. ⌘-click a `file:line:column` (compiler errors, `grep -n`, test failures) to open the editor there, a URL to open the browser, or a link a program marks (OSC 8). Programs that ask get the mouse (`vim`, `htop`), and full-screen ones get the wheel as arrows. Plain and ⌃ keys go to the shell (⌃C, ⌃\\, ⌃6 included), ⌘ keys stay zcode's (⌘W closes the terminal). A tab is named after what's running in it. Closing a terminal, its tab or the window ends its processes; the session reopens terminals as fresh shells in the folder each was in. | ⌃⌘\`, ⌘K, ⌘W |
 | **Editing** | Rope-based editor with tree-sitter highlighting (Swift, C/ObjC, C++, JSON, YAML, Markdown…), multiple cursors, folding, indent guides and find/replace. | ⌘F, ⌥⌘F |
 | **Multibuffers** (from Zed) | One editor showing excerpts of many files, edited in place: Find ▸ Show Find Results in Editor (or the Find navigator's button) for Find in Workspace's results or Find Selected Symbol's references, Navigate ▸ Show Issues in Editor (or the Issue navigator's button) for every issue with its lines around it and its message under it, and a rename's changes. Each file has a header with its name and folder; the gutter shows each line's number in its file, its change bars and breakpoints (click one to toggle it), and the excerpts show the file's diagnostics. Typing in an excerpt edits the file itself (unsaved, as in its tab, which shows the change at once, and the other way around); ⌘S saves the files the tab changed, and one ⌘Z undoes one edit across every file it touched, in step with each file's own undo. Click a header or a line number, or ⌥↩, to open the file there; ⇧↩ or a header's ↕ shows three more lines around an excerpt. Find ▸ Find and Replace in Workspace adds a Replace field whose Replace All edits the results this way. A search over thousands of files opens a page of files at a time as the tab scrolls. | ⌥⇧⌘F, ⌥↩, ⇧↩ |
 | | Comment selection, duplicate, move line, select next occurrence, soft wrap and font size. | ⌘/, ⌘D, ⌥⌘[ ⌥⌘], ⌥⌘E, ⌃⇧⌘L, ⌘+ ⌘- ⌃⌘0 |
@@ -144,6 +145,17 @@ if zcode is not faster.
   6,000-line Swift file with both on: median keystroke to frame 5.0–5.1 ms,
   against 5.2–5.3 ms on `master` (alternating runs, load average 4–8). A
   highlight layer follows an edit without sorting its ranges again.
+* The terminal is parsed on its own thread (`alacritty_terminal`'s reader,
+  which holds the grid's lock for at most 64 KB of output at a time) and
+  repainted at most once a frame however fast output comes; a frame copies
+  the visible cells out under the lock and shapes them after it. `yes |
+  head -n 3000000` in a terminal takes ~3.6 s; typing in an editor pane
+  meanwhile: median keystroke to frame 3.8 ms, as without it (a 27 MB
+  `cat`: 0.2 s). Nothing of the terminal runs at startup: a shell starts
+  on a background thread when its terminal is first shown, so a session
+  restored with a terminal tab shows its first frame in ~209 ms (~228 ms
+  with a Swift file's tab instead). Cold launch on this branch: median 247
+  ms against 252 ms on `master` (alternating runs, load average 8–11).
 * Swift highlighting uses a compact tree-sitter query
   (`src/languages/swift-highlights.scm`) that compiles in ~11 ms. The upstream
   query takes ~185 ms, and the editor pays that cost for every Swift file it
@@ -168,7 +180,8 @@ src/
                     source control (change bars, blame, Code Review, the commit and push/pull sheets);
                     language features (inlay hints per view, semantic tokens per file, the hierarchies
                     in the Find navigator); multibuffers (find results, issues, references, renames
-                    as tabs of excerpts, with headless buffers for the files no pane shows)
+                    as tabs of excerpts, with headless buffers for the files no pane shows); terminals
+                    in the debug area and as pane tabs
   lsp/              JSON-RPC client, document sync store, editor provider adapters, what the server offers;
                     inlay hints, semantic tokens and call/type hierarchies converted for the editor
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner, log/issue/test
@@ -181,6 +194,8 @@ src/
                     (generated by scripts/plist_definitions.py)
   signing/          teams, identities and provisioning profiles; capabilities and where they live
   debugger/         DAP client, debugger model, breakpoints and their options, data tips (lldb-dap)
+  terminal/         the integrated terminal: a PTY and its grid (alacritty_terminal), keystrokes and
+                    mouse reports as bytes, links, theme colors, the view and how its grid is painted
   project.rs        project detection and gitignore-aware scanning
   xcodeproj.rs      project.pbxproj parser and in-place editor (build settings)
   xcodeproj/        structural edits: files, groups, build files, target membership, packages,
@@ -224,6 +239,14 @@ navigator and their command names are Xcode's. Multibuffers follow Zed's
 public behavior too (excerpt headers, ⌥↩ to open an excerpt's file, ⇧↩ to
 expand it, editing search results to replace), next to Xcode's Find
 navigator and its Find and Replace in Workspace command.
+The integrated terminal uses `alacritty_terminal` (Apache-2.0) for its
+PTY, VT parser and grid with scrollback, which brings `vte` (Apache-2.0
+OR MIT), `signal-hook` (MIT OR Apache-2.0) and `rustix-openpty`
+(Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT); its view, painting,
+key and mouse encoding and links are zcode's. Its place beside the
+console and in editor tabs follows Zed's public behavior (Zed's terminal
+is GPL; none of its code was read), and Open Terminal at Location is
+Xcode's command.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -316,6 +339,17 @@ saved breakpoints can't leak in. It covers:
   search over 400 files opening a page of 25 and adding more as it scrolls,
   typing latency there and on Swift excerpts, and the files let go when the
   tab closes
+* the integrated terminal on a copy of ZKit, with `zsh -f` as the shell
+  (`ZCODE_TERMINAL_SHELL`) so the user's configuration can't change what
+  it prints: nothing started at launch, ⌃⌘\` opening a shell in the
+  project's folder at the grid's size, ⌃C, ⌃\\ and ⌃6 reaching the shell
+  and ↑ its history, ⌘K, a dragged selection and ⌘C, a double-clicked word,
+  ⌘V, the wheel through the scrollback, ⌘-click on `file:line:column` and
+  on an OSC 8 link, a bigger font giving the shell fewer columns (`stty
+  size`), several terminals in the debug area and one in a tab, Open
+  Terminal at Location, `yes` flooding a terminal while typing in an editor
+  pane, ⌘W and `exit` closing terminals and ending their processes, and
+  quitting and relaunching (fresh shells in the folders they were in)
 * bookmarks on a copy of ZKit: Bookmark Line and File, ribbons, edits and
   undo (a deleted line's bookmark back with ⌘Z), next and previous in the file and the workspace, descriptions
   edited in place, completion, the filter, drag and drop (real mouse
@@ -436,6 +470,16 @@ The control channel also takes window screenshots
   tab says when they changed. The tabs aren't restored with the session.
   Find and Replace in Workspace replaces all results at once (no Replace
   for one result, no preserved case); review and undo it in the tab.
+* The terminal has no input method composition (dead keys and IME), takes
+  ⌥ as macOS composes it rather than as Meta (except ⌥← and ⌥→, which
+  move by word as in Terminal.app), and has no find in its scrollback,
+  settings of its own (shell, font, colors, scrollback size) or blinking
+  cursor. A restored terminal is a new shell in the old folder: what ran
+  in it and its scrollback are gone. Terminals can't be moved between the
+  debug area and editor tabs. URLs open in the browser through macOS; the
+  e2e checks don't open one (their detection is unit-tested), and Open
+  Terminal at Location is driven through the same command its menu item
+  calls rather than a click on the context menu.
 * No Interface Builder, asset-catalog editor, SwiftUI canvas or Instruments.
 * Devices: there's no Devices and Simulators window (⇧⌘2), so pairing a new
   device, turning on Developer Mode and copying a device's system symbols

@@ -369,7 +369,11 @@ color; underline and hollow use the same width. With the selection and
 editing APIs (`set_selected_range`, `add_selection` for visual block,
 `edit`, `transact` for one-step undo of `dw`, `undo`), this is what Vim mode
 (2.7) needs: normal, insert, visual (character, line, block) and replace
-modes are states of the layer, not of the engine.
+modes are states of the layer, not of the engine. Terminals
+(`src/terminal/`) aren't editors and have no interceptor: their keys go to
+the shell through their own key handler, in the `Terminal` key context,
+where zcode's ⌃ and function-key commands are unbound (`TERMINAL_KEYS` in
+`src/actions.rs`), so a Vim layer leaves them alone by construction.
 
 ### Edit events and read-only ranges (`edits.rs`)
 
