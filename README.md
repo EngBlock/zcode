@@ -24,6 +24,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | The target's Info tab: Custom Target Properties, its Info.plist keys and `INFOPLIST_KEY_` build settings together in the property list editor. The first key added to a target with a generated Info.plist creates the file next to its sources and sets `INFOPLIST_FILE` (in a synchronized folder, with the membership exception that keeps it out of the target's resources). | — |
 | **Property lists** | `Info.plist`, `.entitlements`, `.xcprivacy`, `.stringsdict` and any binary or XML `.plist` open in a Key / Type / Value outline: disclosure for dictionaries and arrays, Xcode's names for keys and values ("Bundle display name", "Privacy - Camera Usage Description", "Portrait (bottom home button)") from Xcode's own definitions, Editor ▸ Raw Keys and Values for the raw ones, + and − on each row, Editor ▸ Add Item and Value Type (Array, Dictionary, Boolean, Data, Date, Number, String), key suggestions as you type, menus for Booleans and allowed values, and rows moved with ⌥⌘[ ⌥⌘] or by dragging. Every change edits the file's text in place, so undo, redo, the dirty dot and ⌘S work as in source code, an unmodified file saves byte for byte, and new values are written as Xcode writes them (tabs, the `<!DOCTYPE>` header). Binary plists are saved as binary, keys in their order. Open As ▸ Source Code / Property List (Editor menu, or the navigator's context menu) switches views. | ⌥⌘[ ⌥⌘], ⌘Z |
 | **Asset catalogs** | An `.xcassets` folder is one item in the project navigator, as in Xcode, and opens in Xcode's asset catalog editor as a tab (opening one of its sets' folders, as MCP's `OpenFile` or the control channel can, opens the catalog on that set): the outline of image, app icon, color, data and symbol sets and their folders on the left, the selected set's wells in the middle in rows by device and appearance ("Universal · Dark", "iOS"), each captioned with its scale, size or appearance ("2x", "16pt 1x", "Tinted"), with thumbnails drawn from the files (PNG, JPEG, HEIC, PDF, SVG…) and color swatches from `Contents.json`; a folder shows its sets as tiles. The attributes inspector: name, type, properties (Render As, Preserve Vector Data…), a well's file, pixel size and file size, files no slot names, and for a color its Content (color space), Input Method (floating point, 8-bit, 8-bit hexadecimal) and components. Edits: drop images from Finder into a well (copied into the set and named in `Contents.json`; the file the slot had goes unless another slot keeps it) or onto the outline or a folder (a new image set per name, `name@2x.png` in the 2x well), Delete clears a well; + New Image Set, Color Set, Folder and Import…; − or Delete removes a set; rename in the Name field; type a color's components, change its content or input method. `Contents.json` is written as Xcode writes it, byte for byte. Every edit is undone with ⌘Z (and redone with ⇧⌘Z), removed files included; `project.pbxproj` never changes (Xcode references the catalog as one folder), and new files appear in synchronized folders as they are. | ⌘Z ⇧⌘Z, ⌫ |
+| **SwiftUI previews** | A mark over the line number on each `#Preview` (named, with traits, `arguments:`, a widget's timeline, a view controller) and `PreviewProvider`, found in source as you type, as test diamonds are, in every pane. Clicking one, or Editor ▸ Show in Xcode Canvas (the preview at the cursor, else the file at the cursor's line), saves the file and shows it in Xcode's canvas: Xcode opens the project, then the file at that line in the project's window, and Editor ▸ Canvas is turned on (and refreshed when it waits paused). Turning the canvas on needs zcode allowed under Privacy & Security ▸ Accessibility; without it the file opens and zcode says to press ⌥⌘↩. zcode doesn't draw previews itself: [`docs/previews.md`](docs/previews.md) describes the bridge and measures how far a native preview on the simulator could go. | ⌥⌘↩ |
 | **Swift packages** | Package Dependencies at the bottom of the project navigator: every resolved package with its version (or branch, or commit), expandable to browse its sources, which open read-only (with a lock on the tab), as do package sources Jump to Definition reaches. | — |
 | | File ▸ Add Package Dependencies…: enter a repository URL or a GitHub `owner/repo`; its versions come from its tags (`git ls-remote`) for the dependency rule (Up to Next Major Version, Up to Next Minor Version, Range of Versions, Exact Version, Branch, Commit). Add Package fetches that version to read its products; then pick the target each product is added to. Add Local… adds a package folder. In an `.xcworkspace` you choose which project gets the package. | — |
 | | File ▸ Packages ▸ Reset Package Caches, Resolve Package Versions, Update to Latest Package Versions; Update Package and Remove Package on a package's context menu. Xcode projects are edited in `project.pbxproj` as Xcode writes it (package references, product dependencies, the targets' Frameworks phase) and resolved with `xcodebuild -resolvePackageDependencies` into the DerivedData folder builds use; Swift packages use `swift package add-dependency`, `add-target-dependency`, `resolve`, `update` and `reset`. Progress shows in the activity view, errors under Package Loading in the Issue navigator, and the index refreshes afterwards so new modules can be imported. | — |
@@ -320,6 +321,14 @@ if zcode is not faster.
   219.2 ms against 227.4, 229.2 and 223.7 ms. The binary grows by 1.5 MB
   (the PDF and image decoding zcode now calls; the crates were already
   linked).
+* SwiftUI previews cost nothing at startup: a Swift file is searched for
+  previews when it opens and 300 ms after typing stops, in the background
+  (files that don't mention `#Preview` or `PreviewProvider` aren't
+  parsed), and the gutter reads what was found. Show in Xcode Canvas waits
+  for Xcode on a thread of its own. Cold launch, three alternating rounds
+  of 10 against `master` (load average 12–16): the welcome window's first
+  pixels at 250.3, 243.8 and 246.1 ms against 245.3, 249.2 and 244.6 ms.
+  The binary grows by 0.2 MB.
 * Settings cost nothing measurable at startup: the user's settings,
   keymap and the theme they name are read and parsed on a thread of their
   own started at the top of `main()`, and the first window takes what it
@@ -363,7 +372,8 @@ src/
                     predictive completion (predictions.rs: when to ask, cancelling, the status bar);
                     Profile's template chooser (profile.rs); Archive, the Organizer tab and Distribute App's
                     sheet (archive.rs, organizer.rs, distribute_sheet.rs); the asset catalog editor as a tab
-                    (asset_catalog.rs: outline, wells, inspector, edits and undo; asset_catalogs.rs: opening it)
+                    (asset_catalog.rs: outline, wells, inspector, edits and undo; asset_catalogs.rs: opening it);
+                    SwiftUI previews' gutter marks and Show in Xcode Canvas (previews.rs)
   lsp/              JSON-RPC client, document sync store, editor provider adapters, what the server offers;
                     inlay hints, semantic tokens and call/type hierarchies converted for the editor
   build/            xcodebuild/swift/simctl/devicectl queries, streaming runner (programs started with
@@ -375,6 +385,9 @@ src/
   packages/         Swift package dependencies: rules and versions, Package.resolved, checkouts,
                     Package.swift edits, git queries, resolve/update/reset
   testing/          tests found in source, test plans, test selections per runner, results → tests
+  previews.rs       SwiftUI previews found in source (#Preview, PreviewProvider) with testing/'s parser
+  xcode_app.rs      handing work to Xcode: Open in Xcode, Show in Xcode Canvas (xed, then System Events
+                    for Editor ▸ Canvas); ZCODE_XCODE_COMMANDS records the commands instead
   scheme/           Edit Scheme options: .xcscheme read and edited in place, what launches get
   xcassets/         asset catalogs: sets and folders read from disk, slots laid out as Xcode's editor shows
                     them (slots.rs), colors and their input methods (color.rs), Contents.json written as
@@ -530,6 +543,11 @@ Apache-2.0) and `resvg` (Apache-2.0 OR MIT), both already built for GPUI,
 and PDFs with macOS's Core Graphics through `objc2-core-graphics` (Zlib OR
 Apache-2.0 OR MIT, already built for AppKit); other formats through
 macOS's `sips`.
+Show in Xcode Canvas runs Xcode's own `xed` and drives Xcode's Editor ▸
+Canvas and Refresh Canvas through System Events (AppleScript, `osascript`);
+the canvas's key (⌥⌘↩) and menu names are Xcode 27's, read from its
+command definitions. Previews are found with `tree-sitter-swift` (MIT),
+already there for highlighting and tests. No new dependencies.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -727,6 +745,13 @@ themes or session. It covers:
   untouched; the tab after a relaunch; in the synchronized HelloZ, `actool`
   compiling what zcode wrote; 3,000 sets read off the main thread with only
   the thumbnails on screen decoded
+* SwiftUI previews on a copy of HelloZ given a file with a named
+  `#Preview` and a `PreviewProvider`: the gutter marks, following typing
+  and undo, and in a second pane; a mark's click and ⌥⌘↩ (at a preview,
+  outside one, in a file without previews), with the file saved first.
+  Xcode is never opened: `ZCODE_XCODE_COMMANDS` (set for every launch)
+  records the commands, which the checks compare (`xed <project>`, the
+  wait for its window, `xed --project … --line …`, the canvas step)
 * Archive and Distribute App on a copy of HelloClassic, in the run's own
   Archives folder (never `~/Library/Developer/Xcode/Archives`): a real
   `xcodebuild archive` for any Mac (Sign to Run Locally, so it signs on any
@@ -933,8 +958,14 @@ The control channel also takes window screenshots
   things. Checked with scripts/mcp_client.py and the fake ACP agent; not
   run against Claude Code, Codex, Gemini CLI or Cursor here (that would
   change their configuration on this machine).
-* No Interface Builder or SwiftUI canvas; Instruments is Apple's, which
-  Profile records with and opens.
+* No Interface Builder, and no SwiftUI canvas of zcode's own: previews
+  show in Xcode's canvas (Show in Xcode Canvas), which turns the canvas on
+  through System Events and so needs Accessibility permission (without it,
+  press ⌥⌘↩ in Xcode). The canvas keeps the preview tab last chosen rather
+  than the one at the line. An Xcode that stops at its first-launch
+  dialog never shows the file. A native preview on the simulator is
+  measured in `docs/previews.md` but not built. Instruments is Apple's,
+  which Profile records with and opens.
 * Asset catalogs: the cheap edits only. Appearances, scales, devices,
   gamuts and other variations can't be added to a set (edit
   `Contents.json` with Open Quickly, or Xcode), properties such as Render

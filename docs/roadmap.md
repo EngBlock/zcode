@@ -60,7 +60,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 1. Profile (⌘I) via `xctrace` → Instruments. ✅
 2. Archive / export (`xcodebuild archive`, `-exportArchive`). ✅
 3. Asset catalog viewer (read-only first). ✅
-4. SwiftUI Previews: "open this preview in Xcode" bridge first.
+4. SwiftUI Previews: "open this preview in Xcode" bridge first. ✅
 5. Interface Builder: out of scope; "Open in Xcode".
 
 ## Foundations
