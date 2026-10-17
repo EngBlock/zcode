@@ -375,6 +375,54 @@ the shell through their own key handler, in the `Terminal` key context,
 where zcode's ⌃ and function-key commands are unbound (`TERMINAL_KEYS` in
 `src/actions.rs`), so a Vim layer leaves them alone by construction.
 
+### Vim mode (`vim/`, 2.7)
+
+```rust
+editor.set_vim_enabled(true, cx);          // normal mode; off removes the interceptor and observer
+editor.vim_status();                       // Option<VimStatus>: mode, pending keys, command line, message
+cx.subscribe(&editor, |_, _, _: &VimStatusChanged, cx| cx.notify());   // the status bar
+cx.subscribe(&editor, |_, editor, command: &VimCommand, cx| { /* Write, Quit, NextTab, GoBack, Reindent */ });
+editor.set_vim_message("E37: …", true, cx);  // a host refusing a command
+editor.set_vim_search_style(style, cx);    // the matches of `/`
+```
+
+The layer is the interceptor above plus an observer of the editor itself.
+Its state lives in the editor (`EditorExtras::vim`), so linked views each
+have their own mode, cursors and marks. The modules: `keys.rs` (keystrokes
+as Vim reads them; ⌘, ⌥ and the app's own ⌃ shortcuts pass), `text.rs`
+(lines and characters as Vim counts them: the empty line after a final
+newline isn't one), `motion.rs` (targets and whether they're exclusive,
+inclusive or linewise), `object.rs`, `ops.rs` (operators over the ranges of
+every cursor, paste, join, replace, increment), `normal.rs` (the command
+parser, visual modes, `.`, scrolling and folds), `registers.rs` (a GPUI
+global, the unnamed register written to the clipboard with its kind as
+metadata), `search.rs` (Vim's magic patterns as Rust regexes),
+`command.rs` (`:` ranges, commands and `:s` replacements).
+
+What it needed from the engine, beside `modal.rs`:
+
+* `caret_heads`: in visual modes the element draws the caret on the
+  character Vim's cursor is on (inside the selection), one for a block,
+  instead of at each selection's end.
+* `UndoManager::merge_after(mark)`: at Escape the transactions since the
+  command that started an insert join into one, so `cw` and what was
+  typed undo together, and the cursor goes back to where `cw` was. Not in
+  an editor with an external history (a multibuffer keeps its own steps).
+* `InputModeKind::on_mouse_down`: a click drops a half-typed command and
+  restarts what `.` would repeat.
+* `DisplayMap::fold_candidates` for `zc` and `zM`.
+
+The layer never asks the engine for a "mode": a normal-mode cursor is a
+collapsed selection kept on a character, visual modes are real selections
+(so ⌘C copies them), visual block is a selection per row, and the
+observer reads selections the layer didn't make (a click, ⌘D, a
+placeholder selected by ⌃/) as a cursor or as visual mode. Every command
+puts the cursors where undo should leave them and then edits in one
+`transact`. `.` stores the command's keys and, for an insert, the text it
+typed, worked out at Escape by comparing the text before and after around
+the first cursor (each cursor types the same), so completions and closed
+brackets repeat without keystroke replay.
+
 ### Edit events and read-only ranges (`edits.rs`)
 
 ```rust
@@ -502,7 +550,7 @@ against 5.1–5.2 ms in the same file's own tab; the first page of a
 | Signature help (2.4, done) | `SignatureHelpProvider` next to hover and completion, and a popover above the caret (the hover popover's element, `sticky`) |
 | Call/type hierarchy (2.4, done) | nothing in the engine: a tree in zcode's Find navigator |
 | Multibuffers (2.5, done) | the excerpt model, `BufferEdit` events, read-only ranges, clickable blocks above rows for headers, other line numbers, transaction ids and an external history for one undo step across files (see above) |
-| Vim mode (2.7) | the keystroke interceptor, cursor shapes, an extra key context, transactions for one-step undo of a command |
+| Vim mode (2.7, done) | the keystroke interceptor, cursor shapes, an extra key context, transactions for one-step undo of a command; carets drawn inside visual selections, an insert's transactions joined at Escape, a mouse-down hook (see above) |
 | Edit predictions (3.3) | an inlay at the cursor for the first line and a block for the rest; Tab accepts through `edit` in a `transact` |
 | Minimap (later) | an element beside the editor reading the rope and the highlight styles; the display map already gives row ↔ offset |
 | Read-only views (package sources, generated interfaces) | `set_read_only`, or read-only ranges for parts of a file |

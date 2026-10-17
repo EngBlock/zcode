@@ -12,7 +12,7 @@ Source: `/Users/nathan/Downloads/Xcode-beta.app` (Xcode 27.0, build 27A5228h). `
   - Shortcut fields are `keyEquivalent` plus `useControlKey`/`useOptionKey`/`useShiftKey`/`useCommandKey`. Cmd is on unless `useCommandKey=false`.
   - The root menu is `Xcode.IDEKit.MenuDefinition.Main`, with these menus: Xcode, File, Edit, View, Find, Navigate, Editor, Product, Debug, Integrate, Window, Help.
 - **Text-editing keys:** `IDEKit.framework/Resources/IDEDefaultKeyBindings.idekeybindings` adds only a few Emacs/sub-word bindings. Examples: ⌃←/→ move by sub-word, ⌃⇧↑/↓ column select, ⌃. / ⌃> cycle completions, ⌃@ set mark, ⌃X⌃X swap with mark. `IDETextKeyBindingSet.plist` contains the base Cocoa text bindings.
-- **Vi mode:** an `Xcode.KeyBindings.Vi` extension (`IDESourceEditor.IDEViEventConsumer`). It is switched on and off with Editor > Vim Mode.
+- **Vi mode:** an `Xcode.KeyBindings.Vi` extension (`IDESourceEditor.IDEViEventConsumer`). It is switched on and off with Editor > Vim Mode. Its bindings are implemented in that class, not listed in a data file, so there is no table of them to check against; zcode's Vim mode (Phase 2.7) follows Vim's behavior and Zed's choices where Vim leaves them to the host.
 - **Help:** there is no `.help` book in the bundle. Help menu items open online `doc://com.apple.documentation/...` links, so this inventory is based on the menus.
 
 ## Checking your guessed shortcuts

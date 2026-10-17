@@ -55,7 +55,8 @@ which was extracted from Xcode 27's own command definitions.
 |---|---|
 | Call/type hierarchy | ✅ Find Call Hierarchy (⌃⇧⌘H) with callers or callees, Find Ancestor / Descendent / Conforming Types, in the Find navigator; Editor ▸ Show Callers… |
 | Folding, multi-cursor | ✅ (from the editor engine) |
-| Minimap, Vim mode | ⬜ (the editor's hooks for both exist: `docs/editor-engine.md`) |
+| Vim mode (Editor ▸ Vim Mode) | ✅ Normal, insert, replace and visual (character, line, block) modes; operators with motions, text objects and counts; registers with the system clipboard; `.`, undo, search, marks, `:w` `:q` `:s` and ranges; the mode in the status bar; every editor tab and cursor. No macros or sentence objects (README, Known limitations) |
+| Minimap | ⬜ (the editor's hooks exist: `docs/editor-engine.md`) |
 | Reports navigator (log history) | ✅ |
 | Profile (⌘I) with xctrace | ⬜ |
 | Archive/export | ⬜ |
