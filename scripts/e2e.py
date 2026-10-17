@@ -4502,18 +4502,21 @@ def terminal_checks(samples):
         z.run("terminal panel -- yes | head -n 3000000; echo flood-done; sleep 60", "wait 200", "pane focus 0")
         start = time.time()
         n = len(terms()) - 2  # the new panel terminal, before the pane's tab
-        flood = json.loads(z.run("type-latency abcdefghijklmnopqrstuvwxyz")[-1])
-        assert terms()[n]["process"] in ("yes", "head", "sh", "bash"), terms()[n]["process"]
-        wait_line(n, lambda l: l == "flood-done", timeout=120)
-        took = time.time() - start
-        print(f"    keystroke → frame in the editor: quiet {quiet['median_ms']:.1f} ms median, "
-              f"while `yes` floods a terminal {flood['median_ms']:.1f} ms (p95 {flood['p95_ms']:.1f}); 3M lines shown in {took:.1f} s")
-        assert flood["median_ms"] < 16 and flood["p95_ms"] < 33, flood
-        for _ in range(30):
-            if not z.dump()["active"]["dirty"]:
-                break
-            z.run("keys cmd-z")
-        z.run(f"terminal close {n}", "wait 300")
+        try:
+            flood = json.loads(z.run("type-latency abcdefghijklmnopqrstuvwxyz")[-1])
+            assert terms()[n]["process"] in ("yes", "head", "sh", "bash"), terms()[n]["process"]
+            wait_line(n, lambda l: l == "flood-done", timeout=120)
+            took = time.time() - start
+            print(f"    keystroke → frame in the editor: quiet {quiet['median_ms']:.1f} ms median, "
+                  f"while `yes` floods a terminal {flood['median_ms']:.1f} ms (p95 {flood['p95_ms']:.1f}); 3M lines shown in {took:.1f} s")
+            assert flood["median_ms"] < 16 and flood["p95_ms"] < 33, flood
+        finally:
+            # Left as found, so the checks after this one see what they expect.
+            for _ in range(30):
+                if not z.dump()["active"]["dirty"]:
+                    break
+                z.run("keys cmd-z")
+            z.run(f"terminal close {n}", "wait 300")
 
     def closing_ends_processes():
         # A pane's terminal: ⌘W closes the tab and its processes.
