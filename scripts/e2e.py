@@ -1709,6 +1709,12 @@ def language_feature_checks(samples):
         row = h["rows"].index("  Shape.area() — Shapes.swift:2")
         z.run(f"hierarchy open {row}", "wait 500")
         assert z.dump()["active"]["line"] == 2
+        # Editor ▸ Show Callers…: a menu at the cursor; choosing report() opens the call.
+        z.run(f"open {shapes}:{total_line}", keys_right(6), "action zcode::ShowCallers")
+        z.wait_for(lambda s: s["breakpoints"]["menu_open"], timeout=15, interval=0.3)
+        z.run("keys down", "keys enter", "wait 500")
+        s = z.dump()
+        assert not s["breakpoints"]["menu_open"] and s["active"]["line"] == line_of(shapes, "total(of: [sq])"), s["active"]["line"]
         z.run("keys ctrl-shift-cmd-w", "wait 300")
 
     def type_hierarchy():
@@ -1748,7 +1754,7 @@ def language_feature_checks(samples):
         check("Inlay hints: clangd's parameter names before C arguments", parameter_names_in_c)
         check("Semantic tokens: types at calls, properties and functions over tree-sitter; followed by typing", semantic_tokens)
         check("Signature help: opens on `(`, the argument in brackets, closes after the call and on Escape", signature_help)
-        check("Find Call Hierarchy (⌃⇧⌘H) from the focused pane: callers, callees, opening calls and declarations", call_hierarchy_from_the_focused_pane)
+        check("Find Call Hierarchy (⌃⇧⌘H) from the focused pane: callers, callees, opening calls and declarations; Show Callers…", call_hierarchy_from_the_focused_pane)
         check("Find Ancestor / Descendent / Conforming Types in the Find navigator", type_hierarchy)
         check("Typing in a 6,000-line Swift file with hints and semantic tokens stays under a frame", typing_latency)
     finally:
