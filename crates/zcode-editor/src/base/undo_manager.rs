@@ -404,6 +404,38 @@ impl History {
             || self.pending.as_ref().is_some_and(|pending| !pending.changes.is_empty())
     }
 
+    /// Joins every transaction after `mark` (all of them for `None`) into
+    /// one, which keeps the first one's id and cursors before and the last
+    /// one's cursors after: a Vim insert and the change that started it
+    /// undo in one step.
+    pub(super) fn merge_after(&mut self, mark: Option<u64>) {
+        self.commit_all_transactions();
+        let first = match mark {
+            Some(mark) => self.undo_transactions.iter().position(|t| t.id > mark),
+            None => (!self.undo_transactions.is_empty()).then_some(0),
+        };
+        let Some(first) = first else { return };
+        if self.undo_transactions.len() - first < 2 {
+            return;
+        }
+        let mut merged = self.undo_transactions.drain(first..);
+        let mut into = merged.next().expect("two or more transactions");
+        for next in merged {
+            into.recorded_changes += next.recorded_changes;
+            into.last_batch_len = next.last_batch_len;
+            into.changes.extend(next.changes);
+            if next.selections_after.is_some() {
+                into.selections_after = next.selections_after;
+            }
+            if next.auto_closed_pairs_after.is_some() {
+                into.auto_closed_pairs_after = next.auto_closed_pairs_after;
+            }
+        }
+        into.intent = EditIntent::Atomic;
+        self.undo_transactions.push(into);
+        self.coalescing_boundary = true;
+    }
+
     pub(crate) fn can_redo(&self) -> bool {
         !self.redo_transactions.is_empty()
     }
@@ -517,6 +549,10 @@ impl UndoManager {
 
     pub(crate) fn can_redo(&self) -> bool {
         self.0.borrow().can_redo()
+    }
+
+    pub(crate) fn merge_after(&mut self, mark: Option<u64>) {
+        self.0.borrow_mut().merge_after(mark)
     }
 
     #[cfg(test)]

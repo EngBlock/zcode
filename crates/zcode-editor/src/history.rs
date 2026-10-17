@@ -24,7 +24,7 @@ use crate::{EditorState, InputBaseState, InputModeKind};
 
 /// A transaction in an editor's undo history; the same through undo and redo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct TransactionId(u64);
+pub struct TransactionId(pub(crate) u64);
 
 /// ⌘Z or ⇧⌘Z in an editor whose history is kept elsewhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

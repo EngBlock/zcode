@@ -184,6 +184,10 @@ pub struct InputBaseState<M: InputModeKind> {
     /// How the caret is drawn, and a modal layer's keystroke hook and key
     /// context (`modal.rs`).
     pub(crate) cursor_shape: crate::modal::CursorShape,
+    /// Where carets are drawn instead of at each selection's end: Vim's
+    /// visual modes keep the cursor on a character inside the selection.
+    /// The first is the active one.
+    pub(crate) caret_heads: Option<Vec<usize>>,
     pub(crate) keystroke_interception: Option<Subscription>,
     pub(crate) extra_key_context: Option<SharedString>,
     /// Ranges the user can't edit (`edits.rs`).
@@ -611,6 +615,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             highlight_layers: Default::default(),
             annotations: Default::default(),
             cursor_shape: Default::default(),
+            caret_heads: None,
             keystroke_interception: None,
             extra_key_context: None,
             read_only_ranges: Default::default(),
@@ -2241,6 +2246,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             return;
         }
         self.undo_manager.break_transaction_coalescing();
+        M::on_mouse_down(self);
         // Input has its own text selection; suppress the window-level text
         // selection (Root) so it does not start a drag from here.
         gpui_base::GlobalState::suppress_text_selection(cx);

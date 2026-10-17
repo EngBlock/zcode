@@ -268,6 +268,10 @@ pub trait InputModeKind: sealed::Sealed + Sized + 'static {
     /// when it loses focus.
     fn on_blur(_state: &mut InputBaseState<Self>, _cx: &mut gpui::Context<InputBaseState<Self>>) {}
 
+    /// A press in the text, before it places the caret (Vim mode drops a
+    /// half-typed command).
+    fn on_mouse_down(_state: &mut InputBaseState<Self>) {}
+
     /// Closes any open completion or code-action menu.
     fn hide_context_menu(
         _state: &mut InputBaseState<Self>,
