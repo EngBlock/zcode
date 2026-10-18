@@ -6,7 +6,9 @@
 //! build time, and `ZCODE_UPDATE_FEED` at run time names another (the e2e
 //! suite's local one). Nothing happens at startup: the first check runs a
 //! minute after launch, on a thread of its own, and not again within a
-//! day of the last (its time is kept in the support folder).
+//! day of the last (its time is kept in the support folder). A scripted
+//! zcode (`ZCODE_CONFIG_DIR`) checks on its own only when
+//! `ZCODE_UPDATE_FEED` names a feed, so tests never reach a real server.
 //!
 //! A newer version is downloaded to the cache folder, its SHA-256 checked
 //! against the feed's, unpacked with `ditto` next to the running bundle,
@@ -133,6 +135,9 @@ fn stamp_check() {
 /// `auto_update` is on; the setting is read at each turn so a change in
 /// settings.json takes effect without a relaunch.
 pub fn start_automatic_checks(cx: &mut App) {
+    if crate::paths::has_config_override() && std::env::var_os(FEED_ENV).is_none_or(|v| v.is_empty()) {
+        return;
+    }
     cx.spawn(async move |cx| {
         let mut delay = FIRST_CHECK_DELAY;
         loop {
