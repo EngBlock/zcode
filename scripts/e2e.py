@@ -895,12 +895,27 @@ def device_checks(samples):
             # The scheme builds for iOS only: no watch, TV or Vision Pro; simulators follow.
             assert all(l.split(" | ")[0].endswith("Simulators") for l in m[5:]) and len(m) > 5, m
 
+        def listed():
+            return len([c for c in calls() if c["args"][:2] == ["list", "devices"]])
+
         def hot_plug():
+            # Listed as the destination menu opens (and on USB attach and
+            # detach, which the fake can't make).
             set_devices(drop=("Test iPhone (USB)",))
-            # Polled every few seconds while the window is active.
+            z.run("action zcode::ChooseDestination")
             z.wait_for(lambda s: not any("(USB)" in l for l in s["destination_menu"]), timeout=20, interval=0.5)
+            z.run("keys escape")
             set_devices()
+            z.run("action zcode::ChooseDestination")
             z.wait_for(lambda s: any("(USB)" in l for l in s["destination_menu"]), timeout=20, interval=0.5)
+            z.run("keys escape")
+
+        def not_polled():
+            # devicectl costs ~60 ms of CPU a list: an idle window lists
+            # once a minute, not every few seconds.
+            before = listed()
+            z.run("wait 11000")
+            assert listed() - before <= 1, listed() - before
 
         def unavailable_device():
             z.run("destination Test iPad", "keys cmd-r")
@@ -970,6 +985,7 @@ def device_checks(samples):
 
         check("Devices: the destination menu lists devices by OS with their state, Any iOS Device, then simulators", menu)
         check("Devices: plugging and unplugging a device updates the menu", hot_plug)
+        check("Devices: an idle window doesn't list devices every few seconds", not_polled)
         check("Devices: Run on an unavailable device says why without building", unavailable_device)
         check("Devices: Run signs, installs, waits for unlock, launches with the scheme's arguments and environment; Stop terminates", run_and_stop)
         check("Devices: Run with breakpoints launches suspended and attaches lldb through CoreDevice", debug_attach)

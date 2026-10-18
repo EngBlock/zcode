@@ -7,6 +7,7 @@ pub mod log;
 pub mod process;
 pub mod profile;
 pub mod sim_tests;
+mod usb;
 pub mod xcode;
 
 use std::collections::{BTreeMap, HashMap};
@@ -29,8 +30,13 @@ use xcode::{BuildSettings, Destination, Platform, SchemeList};
 /// full log is still written to disk).
 const MAX_LOG_LINES: usize = 50_000;
 const MAX_CONSOLE_LINES: usize = 20_000;
-/// How often connected devices are listed while the window is active.
-const DEVICE_POLL: Duration = Duration::from_secs(5);
+/// How often connected devices are listed while the window is active, when
+/// nothing else asks: USB attaches and detaches, the window becoming active
+/// and the destination menu opening each list them at once.
+const DEVICE_POLL: Duration = Duration::from_secs(60);
+/// CoreDevice lists a device attached over USB a moment after IOKit sees
+/// it, so a USB change is listed again after this.
+const USB_SETTLE: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuildAction {
@@ -416,27 +422,64 @@ impl BuildController {
         }
     }
 
-    /// Lists devices every few seconds while the window is active; devicectl
-    /// has no way to watch for connections.
+    /// Lists devices when an Apple USB device attaches or detaches, and
+    /// otherwise once a minute while the window is active: devicectl has no
+    /// way to watch for connections, and listing costs ~60 ms of CPU.
     fn poll_devices(&mut self, cx: &mut Context<Self>) {
         if !self.project.kind.is_xcode() {
             return;
         }
         self._device_poll = Some(cx.spawn(async move |this, cx| {
+            use futures::StreamExt as _;
+            use futures::future::{Either, select};
+            let mut usb = Some(cx.background_spawn(async { usb::changes() }).await);
             loop {
-                cx.background_executor().timer(DEVICE_POLL).await;
+                let timer = cx.background_executor().timer(DEVICE_POLL);
+                let attached = match usb.as_mut() {
+                    Some(changes) => match select(timer, changes.next()).await {
+                        Either::Left(_) => false,
+                        Either::Right((Some(()), _)) => true,
+                        Either::Right((None, _)) => {
+                            usb = None;
+                            false
+                        }
+                    },
+                    None => {
+                        timer.await;
+                        false
+                    }
+                };
                 if this.update(cx, |this, cx| this.refresh_devices(cx)).is_err() {
                     break;
+                }
+                if attached {
+                    cx.background_executor().timer(USB_SETTLE).await;
+                    if this.update(cx, |this, cx| this.refresh_devices(cx)).is_err() {
+                        break;
+                    }
                 }
             }
         }));
     }
 
-    /// Re-lists connected devices in the background.
+    /// Re-lists connected devices in the background while the window is
+    /// active.
     pub fn refresh_devices(&mut self, cx: &mut Context<Self>) {
+        if self.window_active {
+            self.list_devices(cx);
+        }
+    }
+
+    /// A destination menu (the toolbar's, or Choose Destination) is opening:
+    /// a device may have been plugged in since the last list.
+    pub fn destinations_shown(&mut self, cx: &mut Context<Self>) {
+        self.list_devices(cx);
+    }
+
+    fn list_devices(&mut self, cx: &mut Context<Self>) {
         // The first list comes with the simulators (`reload`).
         let loaded = !self.all_destinations.is_empty();
-        if !loaded || !self.window_active || !self.wants_devices() || self._devices_task.is_some() {
+        if !loaded || !self.wants_devices() || self._devices_task.is_some() {
             return;
         }
         self._devices_task = Some(cx.spawn(async move |this, cx| {

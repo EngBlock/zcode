@@ -97,6 +97,7 @@ impl Workspace {
             .small()
             .disabled(!can_build)
             .dropdown_menu(move |menu, _, cx| {
+                build_entity.update(cx, |build, cx| build.destinations_shown(cx));
                 let state = build_entity.read(cx);
                 let current = state.destination.as_ref().map(|d| d.id.clone());
                 let mut menu = menu.scrollable(true).max_h(px(480.));
@@ -901,6 +902,7 @@ impl Workspace {
     }
 
     pub(super) fn choose_destination(&mut self, _: &ChooseDestination, window: &mut Window, cx: &mut Context<Self>) {
+        self.build.update(cx, |build, cx| build.destinations_shown(cx));
         let delegate = pickers::DestinationDelegate::new(self.build.clone(), cx);
         let picker = cx.new(|cx| Picker::new(delegate, window, cx));
         self.show_modal(picker, window, cx);
