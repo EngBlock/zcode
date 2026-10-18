@@ -71,12 +71,17 @@ impl Workspace {
                 }
             }
             BuildEvent::CompileDatabaseUpdated(path) => {
+                // Through the build server, its graph follows the database
+                // (`crate::bsp::model`); otherwise sourcekit-lsp reads it.
                 let cache_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-                let args = Self::lsp_args(&self.project, &cache_dir);
+                let launch = Self::sourcekit_launch(&self.project, &cache_dir, &self.settings.current);
                 let db = path.clone();
                 self.lsp.update(cx, |lsp, cx| {
-                    lsp.set_extra_args(args, cx);
-                    lsp.files_changed(&[db], cx);
+                    let through_database = launch.build_server.is_none();
+                    lsp.set_sourcekit(launch, cx);
+                    if through_database {
+                        lsp.files_changed(&[db], cx);
+                    }
                 });
             }
             BuildEvent::TestsChanged => {}

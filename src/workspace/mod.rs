@@ -14,6 +14,7 @@ mod breakpoint_editor;
 mod branch_picker;
 mod breakpoints;
 mod buffers;
+mod build_server;
 mod change_bars;
 mod commit_sheet;
 mod console;
@@ -121,6 +122,8 @@ pub struct Workspace {
     packages: packages::PackagesState,
     pub lsp: Entity<LspStore>,
     pub build: Entity<BuildController>,
+    /// sourcekit-lsp's build settings for an Xcode project (`crate::bsp`).
+    pub build_server: Option<Entity<crate::bsp::model::BuildServer>>,
     pub debugger: Entity<Debugger>,
     /// Open files, one buffer each however many panes show them.
     pub buffers: Vec<Buffer>,
@@ -212,8 +215,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Self {
         let cache_dir = crate::paths::project_cache_dir(&project.root);
-        let lsp_args = Self::lsp_args(&project, &cache_dir);
-        let lsp = cx.new(|_| LspStore::new(project.root.clone(), lsp_args, Default::default()));
+        let lsp = cx.new(|_| LspStore::new(project.root.clone(), Default::default(), Default::default()));
         let t0 = std::time::Instant::now();
         let trace = std::env::var_os("ZCODE_TRACE_STARTUP").is_some();
         let mark = move |label: &str| {
@@ -222,6 +224,11 @@ impl Workspace {
             }
         };
         let build = cx.new(|cx| BuildController::new(project.clone(), cache_dir.clone(), cx));
+        // Idle until sourcekit-lsp connects to it.
+        let build_server = project
+            .kind
+            .is_xcode()
+            .then(|| cx.new(|cx| crate::bsp::model::BuildServer::new(project.clone(), cache_dir.clone(), &build, cx)));
         mark("build controller");
         let tree = cx.new(|cx| TreeState::new(cx));
         let debugger = cx.new(|_| Debugger::default());
@@ -234,7 +241,11 @@ impl Workspace {
         session.save();
         crate::settings::open_project(&project.root, cx);
         let current_settings = crate::settings::Settings::for_project(&project.root, cx);
-        lsp.update(cx, |lsp, cx| lsp.set_config(crate::lsp::LspConfig::from_settings(&current_settings), cx));
+        let launch = Self::sourcekit_launch(&project, &cache_dir, &current_settings);
+        lsp.update(cx, |lsp, cx| {
+            lsp.set_config(crate::lsp::LspConfig::from_settings(&current_settings), cx);
+            lsp.set_sourcekit(launch, cx);
+        });
 
         let mut subscriptions = vec![
             cx.subscribe_in(&lsp, window, Self::on_lsp_event),
@@ -284,6 +295,7 @@ impl Workspace {
             packages: Default::default(),
             lsp,
             build,
+            build_server,
             debugger,
             buffers: vec![],
             panes: vec![Pane::new(PaneId(0))],
@@ -402,6 +414,20 @@ impl Workspace {
             this.focus_handle.focus(window, cx);
         }
         this
+    }
+
+    /// How sourcekit-lsp is started: through zcode's build server for an
+    /// Xcode project, unless the settings say otherwise or nothing listens
+    /// for `zcode bsp`; otherwise with the index build's compilation
+    /// database, once there is one.
+    pub(super) fn sourcekit_launch(project: &ProjectInfo, cache_dir: &Path, settings: &crate::settings::Settings) -> crate::bsp::Launch {
+        if project.kind.is_xcode()
+            && settings.sourcekit_build_settings == crate::settings::SourcekitBuildSettings::BuildServer
+            && let Some(socket) = crate::instance::listening()
+        {
+            return crate::bsp::Launch { args: vec![], build_server: Some(socket.to_path_buf()) };
+        }
+        crate::bsp::Launch { args: Self::lsp_args(project, cache_dir), build_server: None }
     }
 
     fn lsp_args(project: &ProjectInfo, cache_dir: &Path) -> Vec<String> {
@@ -901,6 +927,7 @@ impl Workspace {
         state["predictions"] = self.predictions_summary(cx);
         state["previews"] = self.previews_summary(cx);
         state["language_servers"] = self.lsp.read(cx).summary();
+        state["build_server"] = self.build_server_status(cx);
         state["language_features"] = serde_json::json!({
             "server": self.active_item().map(|i| self.lsp.read(cx).features_for(&i.path)).unwrap_or_default().summary(),
             "inlay_hints": self.inlay_hints_summary(cx),
@@ -955,6 +982,7 @@ impl Workspace {
             "indexing": build.indexing,
             // Where the index build's compilation database is, once written.
             "compile_database": Some(crate::build::compiledb::database_path(&self.cache_dir)).filter(|p| p.exists()),
+            "build_server": self.build_server_status(cx),
             "find_results": self.find.results.iter().map(|f| f.matches.len()).sum::<usize>(),
             "find_files": self.find.results.len(),
             "find_searching": self.find.searching,

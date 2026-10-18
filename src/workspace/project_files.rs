@@ -111,6 +111,10 @@ impl Workspace {
             settings.update(cx, |settings, cx| settings.reload_if_changed(window, cx));
         }
         self.refresh_project_index(cx);
+        // New files, membership and build settings reach sourcekit-lsp.
+        if let Some(build_server) = &self.build_server {
+            build_server.update(cx, |server, cx| server.project_changed(cx));
+        }
         // Target membership decides which test target a file's tests run in.
         self.refresh_tests(cx);
         cx.notify();

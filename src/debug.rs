@@ -800,6 +800,10 @@ fn run_command(
         }
         // `bench status`: the few fields the benchmarks poll, cheap on a
         // project whose `dump` runs to hundreds of kilobytes.
+        "bsp" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            workspace.update(cx, |ws, cx| ws.build_server_command(arg, cx))
+        }
         "bench" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             if arg == "index" {

@@ -529,6 +529,12 @@ impl Workspace {
                 if lsp::language_id_for(&path).is_some() {
                     self.schedule_index_refresh(cx);
                 }
+                // Build settings changed: sourcekit-lsp gets them.
+                if path.extension().is_some_and(|e| e == "xcconfig")
+                    && let Some(build_server) = &self.build_server
+                {
+                    build_server.update(cx, |server, cx| server.project_changed(cx));
+                }
                 self.file_changed_on_disk(cx);
             }
             Err(err) => {

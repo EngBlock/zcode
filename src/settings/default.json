@@ -156,5 +156,11 @@
   // What Editor ▸ Format File and format_on_save use: "language_server",
   // "prettier" (the web app's own, from its node_modules), or "auto":
   // Prettier for a web app that has it, the language server otherwise.
-  "formatter": "auto"
+  "formatter": "auto",
+  // Where sourcekit-lsp gets an Xcode project's build settings:
+  // "build_server", zcode's own (it answers from the project and Xcode's
+  // build settings, so new files and target changes count at once), or
+  // "compilation_database", the one the index build writes. A project with
+  // a build server of its own (buildServer.json, .bsp/) keeps it.
+  "sourcekit_build_settings": "build_server"
 }

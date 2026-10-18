@@ -215,8 +215,9 @@ pub struct ServerSummary {
 
 pub struct LspStore {
     root: PathBuf,
-    /// sourcekit-lsp's command-line arguments (its compilation database).
-    extra_args: Vec<String>,
+    /// How sourcekit-lsp is started: zcode's build server or the
+    /// compilation database.
+    sourcekit: crate::bsp::Launch,
     config: LspConfig,
     servers: Vec<Server>,
     documents: HashMap<PathBuf, Document>,
@@ -232,10 +233,10 @@ pub struct LspStore {
 impl EventEmitter<LspStoreEvent> for LspStore {}
 
 impl LspStore {
-    pub fn new(root: PathBuf, extra_args: Vec<String>, config: LspConfig) -> Self {
+    pub fn new(root: PathBuf, sourcekit: crate::bsp::Launch, config: LspConfig) -> Self {
         Self {
             root,
-            extra_args,
+            sourcekit,
             config,
             servers: vec![],
             documents: HashMap::new(),
@@ -315,11 +316,15 @@ impl LspStore {
         self.servers.iter().filter_map(|s| s.ready().map(|server| server.pid())).collect()
     }
 
-    /// Replaces sourcekit-lsp's extra command-line arguments and restarts it
-    /// if they changed (e.g. once a compilation database is available).
-    pub fn set_extra_args(&mut self, args: Vec<String>, cx: &mut Context<Self>) {
-        if args != self.extra_args {
-            self.extra_args = args;
+    pub fn sourcekit(&self) -> &crate::bsp::Launch {
+        &self.sourcekit
+    }
+
+    /// Changes how sourcekit-lsp is started, restarting it if that changed
+    /// (a compilation database is available, or the setting changed).
+    pub fn set_sourcekit(&mut self, launch: crate::bsp::Launch, cx: &mut Context<Self>) {
+        if launch != self.sourcekit {
+            self.sourcekit = launch;
             let ids: Vec<usize> = (0..self.servers.len()).filter(|&id| self.servers[id].spec.is_sourcekit()).collect();
             for id in ids {
                 self.restart_server(id, cx);
@@ -495,7 +500,7 @@ impl LspStore {
             project_root: self.root.clone(),
             auto_install: self.config.auto_install,
         };
-        let mut args = if spec.is_sourcekit() { self.extra_args.clone() } else { vec![] };
+        let sourcekit = spec.is_sourcekit().then(|| self.sourcekit.clone());
         let tab = (self.config.tab_size, self.config.hard_tabs);
         // vtsls serves a Vue app's files through Vue's TypeScript plugin.
         let vue = spec.id == "vtsls" && self.packages.uses(&root.join("package.json"), &root, &["vue"], &[]);
@@ -545,7 +550,11 @@ impl LspStore {
                         if let Some(own) = &settings.settings {
                             servers::merge_json(&mut server_settings, own);
                         }
-                        program.args.append(&mut args);
+                        if let Some(sourcekit) = sourcekit {
+                            let (mut args, mut env) = sourcekit.resolve(&root);
+                            program.args.append(&mut args);
+                            program.env.append(&mut env);
+                        }
                         let log = crate::paths::logs_dir().join(format!("{}.log", spec.id));
                         let server = LanguageServer::spawn(spec.id, &program.path, &program.args, &program.env, &root, Some(log), events_tx)?;
                         // sourcekit-lsp pushes its diagnostics, as it always has.

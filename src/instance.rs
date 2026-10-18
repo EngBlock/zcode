@@ -2,7 +2,8 @@
 //! hands the path to it over a Unix socket and exits immediately; the warm
 //! instance opens the window without paying process, platform and framework
 //! startup again (Zed's CLI works the same way). `zcode mcp` connects to the
-//! same socket for the MCP server (`crate::mcp`).
+//! same socket for the MCP server (`crate::mcp`), and `zcode bsp` for the
+//! build server (`crate::bsp`).
 //!
 //! Only the user zcode runs as may use the socket: it's created readable
 //! and writable by its owner alone, and every connection's peer is checked
@@ -120,6 +121,15 @@ pub fn listen(cx: &mut App) {
                 } else if line == "mcp" || line.starts_with("mcp ") {
                     stream.set_read_timeout(None).ok();
                     Request::Mcp(line[3..].trim().to_string(), reader)
+                } else if line == "bsp" {
+                    // Answered on threads of its own, from the projects'
+                    // graphs: never the main thread.
+                    stream.set_read_timeout(None).ok();
+                    std::thread::Builder::new()
+                        .name("bsp-connection".into())
+                        .spawn(move || crate::bsp::server::serve(reader, stream, crate::bsp::server::find))
+                        .ok();
+                    continue;
                 } else {
                     Request::Activate
                 };

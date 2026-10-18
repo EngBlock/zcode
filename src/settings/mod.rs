@@ -27,7 +27,7 @@ use serde_json::Value;
 
 pub use content::{
     ClaudeSettings, DEFAULT_FONT_SIZE, EditPredictionSettings, Formatter, LspBinary, LspServerSettings, PredictionProvider, Secret, Settings,
-    SettingsContent, ThemeMode, ThemeSelection,
+    SettingsContent, SourcekitBuildSettings, ThemeMode, ThemeSelection,
 };
 
 pub fn settings_path() -> PathBuf {

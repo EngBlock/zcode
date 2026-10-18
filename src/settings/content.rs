@@ -57,6 +57,27 @@ pub struct Settings {
     /// Install the web's language servers with npm when one is needed.
     pub auto_install_language_servers: bool,
     pub formatter: Formatter,
+    /// Where sourcekit-lsp gets an Xcode project's build settings.
+    pub sourcekit_build_settings: SourcekitBuildSettings,
+}
+
+/// Where sourcekit-lsp gets an Xcode project's build settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SourcekitBuildSettings {
+    /// zcode's build server (`crate::bsp`).
+    #[default]
+    BuildServer,
+    /// The compilation database the index build writes (`crate::build::compiledb`).
+    CompilationDatabase,
+}
+
+impl SourcekitBuildSettings {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::BuildServer => "build_server",
+            Self::CompilationDatabase => "compilation_database",
+        }
+    }
 }
 
 /// `lsp.<id>`, as in Zed.
@@ -209,6 +230,7 @@ impl Default for Settings {
             lsp: Default::default(),
             auto_install_language_servers: true,
             formatter: Formatter::Auto,
+            sourcekit_build_settings: SourcekitBuildSettings::BuildServer,
         }
     }
 }
@@ -300,6 +322,8 @@ pub struct SettingsContent {
     pub auto_install_language_servers: Option<bool>,
     #[serde(deserialize_with = "formatter")]
     pub formatter: Option<Formatter>,
+    #[serde(deserialize_with = "sourcekit_build_settings")]
+    pub sourcekit_build_settings: Option<SourcekitBuildSettings>,
     pub distribution: Option<DistributionContent>,
     pub auto_update: Option<bool>,
 }
@@ -402,6 +426,7 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("lsp", &[]),
     ("auto_install_language_servers", &[]),
     ("formatter", &[]),
+    ("sourcekit_build_settings", &[]),
 ];
 
 /// Settings a project's file can't change: they're the app's, not a window's.
@@ -527,6 +552,7 @@ impl Settings {
             self.terminal_shell = shell;
         }
         take!(formatter);
+        take!(sourcekit_build_settings);
         // A project's file can't name programs to run.
         for (id, server) in content.lsp.iter().flatten() {
             let mine = self.lsp.entry(id.clone()).or_default();
@@ -706,6 +732,15 @@ fn formatter<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Format
     }
 }
 
+fn sourcekit_build_settings<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<SourcekitBuildSettings>, D::Error> {
+    match read(deserializer)? {
+        Value::Null => Ok(None),
+        Value::String(name) if name == "build_server" => Ok(Some(SourcekitBuildSettings::BuildServer)),
+        Value::String(name) if name == "compilation_database" => Ok(Some(SourcekitBuildSettings::CompilationDatabase)),
+        other => Err(expected(r#""build_server" or "compilation_database""#, &other)),
+    }
+}
+
 fn debounce<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u64>, D::Error> {
     match read(deserializer)? {
         Value::Null => Ok(None),
@@ -769,6 +804,7 @@ mod tests {
             "formatter": "prettier",
         }"#;
         let project = r#"{
+            "sourcekit_build_settings": "compilation_database",
             "lsp": { "vtsls": { "binary": { "path": "/tmp/evil" }, "settings": { "typescript": { "b": 3 } } }, "eslint": { "enabled": false } },
             "auto_install_language_servers": true,
         }"#;
@@ -779,6 +815,8 @@ mod tests {
         assert_eq!(settings.lsp["eslint"].enabled, Some(false));
         assert!(!settings.auto_install_language_servers);
         assert_eq!(settings.formatter, Formatter::Prettier);
+        // A project can choose where sourcekit-lsp's build settings come from.
+        assert_eq!(settings.sourcekit_build_settings, SourcekitBuildSettings::CompilationDatabase);
         let problems = unknown_keys(&jsonc::parse_value(project).unwrap(), true);
         assert!(problems.iter().any(|p| p.contains("lsp.vtsls.binary")), "{problems:?}");
         assert!(problems.iter().any(|p| p.contains("auto_install_language_servers")), "{problems:?}");

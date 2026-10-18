@@ -5,6 +5,7 @@ pub mod actions;
 pub mod assets;
 pub mod app;
 pub mod bookmarks;
+pub mod bsp;
 pub mod build;
 pub mod bundle;
 pub mod cli;
