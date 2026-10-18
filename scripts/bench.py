@@ -29,8 +29,10 @@ rounds on `firefox-ios/Client.xcodeproj` (~11,000 files, ~2,100 Swift files):
 * the index build: the app's scheme (Fennec) chosen in ⌃0's picker, its
   background build for the simulator zcode picks (`bench index`, as a save
   starts it) until it ends or `--index-cap` seconds, then sourcekit-lsp
-  with the compilation database; reported, not gated. The rounds run
-  without one (`ZCODE_INDEX_BUILD=0`)
+  on a file the compilation database has and on the app's view
+  controller, which it lacks (its semantic tokens, and where its
+  arguments came from: zcode's build server); with each binary,
+  reported, not gated. The rounds run without one (`ZCODE_INDEX_BUILD=0`)
 
 Every gate has a generous absolute ceiling and, with a `master` build, a
 relative one against master measured in the same run, so a loaded machine
@@ -442,6 +444,26 @@ def session(binary, project, index_cap=None):
                     time.sleep(0.5)
                 r["lsp_ready_with_database_s"] = round(time.time() - again, 1)
                 r["lsp_footprint_with_database_mb"] = status()["memory"]["language_server_mb"]
+            if r["index_done"]:
+                # The app's view controller, which the database lacks (the app
+                # doesn't compile without bootstrap.sh). zcode's build server
+                # gives it the app target's arguments from its build settings;
+                # with the database alone sourcekit-lsp gave it no tokens.
+                z.run(f"open {big}:2500")
+                again = time.time()
+                r["app_tokens_after_index_s"] = None
+                while time.time() - again < 120:
+                    s = status()
+                    if s["lsp"] == "Ready" and s["active"] and (s["active"]["semantic_tokens"] or 0) > 0:
+                        r["app_tokens_after_index_s"] = round(time.time() - again, 1)
+                        break
+                    time.sleep(0.5)
+                # More once its imports resolve: let them settle.
+                time.sleep(5)
+                r["app_tokens_after_index"] = (status()["active"] or {}).get("semantic_tokens")
+                arguments = timed(z, f"bsp options {big}")
+                r["app_arguments"] = arguments.get("origin") if arguments else None
+                r["build_server"] = s.get("build_server")
             if database:
                 os.remove(database)
     finally:
@@ -545,19 +567,29 @@ def main():
                 r = {"load": load(), "error": f"{type(e).__name__}: {e}"}
             results[label].append(r)
             print(f"    {json.dumps({k: (round(v, 1) if isinstance(v, float) else v) for k, v in r.items()})}")
-    index = None
+    index = {}
     if "--skip-index" not in sys.argv:
         cap = int(arg("--index-cap", "600"))
-        print(f"  the index build with the branch binary (up to {cap} s)…", flush=True)
-        index = session(e2e.BINARY, project, index_cap=cap)
-        if index["index_started_s"] is None:
-            print(f"    {index['index_scheme']} on {index['index_destination']}: the index build hadn't started after {index['index_s']} s")
-        else:
-            print(f"    {index['index_scheme']} on {index['index_destination']}: started after {index['index_started_s']} s, "
-                  f"{'finished' if index['index_done'] else 'still running'} after {index['index_s']} s; "
-                  f"compilation database {'written' if index['compile_database'] else 'not written'}"
-                  + (f" ({index['compile_database_files']} files, {'with' if index['compile_database_has_client'] else 'without'} the app's)" if index["compile_database"] else "")
-                  + (f"; sourcekit-lsp ready with it in {index['lsp_ready_with_database_s']} s" if "lsp_ready_with_database_s" in index else ""))
+        for label, binary in binaries:
+            print(f"  the index build with the {label} binary (up to {cap} s)…", flush=True)
+            try:
+                i = index[label] = session(binary, project, index_cap=cap)
+            except Exception as e:  # noqa: BLE001
+                index[label] = {"error": f"{type(e).__name__}: {e}"}
+                print(f"    failed: {index[label]['error']}")
+                continue
+            if i["index_started_s"] is None:
+                print(f"    {i['index_scheme']} on {i['index_destination']}: the index build hadn't started after {i['index_s']} s")
+            else:
+                print(f"    {i['index_scheme']} on {i['index_destination']}: started after {i['index_started_s']} s, "
+                      f"{'finished' if i['index_done'] else 'still running'} after {i['index_s']} s; "
+                      f"compilation database {'written' if i['compile_database'] else 'not written'}"
+                      + (f" ({i['compile_database_files']} files, {'with' if i['compile_database_has_client'] else 'without'} the app's)" if i["compile_database"] else "")
+                      + (f"; sourcekit-lsp ready with it in {i['lsp_ready_with_database_s']} s" if "lsp_ready_with_database_s" in i else ""))
+            if "app_tokens_after_index" in i:
+                print(f"    the app's view controller (not in the database): "
+                      + (f"semantic tokens after {i['app_tokens_after_index_s']} s, {i['app_tokens_after_index']} of them" if i["app_tokens_after_index_s"] is not None else "no semantic tokens in 120 s")
+                      + (f"; arguments from {i['app_arguments']}" if i.get("app_arguments") else ""))
     if rounds == 0:
         print("  no rounds: nothing gated")
         sys.exit(0)
