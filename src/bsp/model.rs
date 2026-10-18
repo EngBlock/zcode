@@ -50,7 +50,9 @@ pub struct BuildServer {
 
 impl BuildServer {
     pub fn new(project: ProjectInfo, cache_dir: PathBuf, build: &Entity<BuildController>, cx: &mut Context<Self>) -> Self {
-        let (shared, woken) = Shared::new(project.root.clone());
+        let store = compiledb::index_store_path(&cache_dir);
+        let database = store.parent().map(|p| p.join("IndexDatabase")).unwrap_or_default();
+        let (shared, woken) = Shared::new(project.root.clone(), Some((store, database)));
         server::register(&shared);
         let wake_task = cx.spawn(async move |this, cx| {
             while woken.recv().await.is_ok() {
@@ -124,6 +126,7 @@ impl BuildServer {
                 .background_spawn(async move {
                     let started = Instant::now();
                     let store = compiledb::index_store_path(&cache_dir);
+                    // Where the compilation database had it, next to the store.
                     let inputs = Inputs {
                         root,
                         model: inputs::model_targets(&projects),
@@ -166,6 +169,8 @@ impl BuildServer {
         let project = self.project.clone();
         let derived_data = self.cache_dir.join("IndexDerivedData");
         self.query_task = Some(cx.spawn(async move |this, cx| {
+            // A burst of edits asks once.
+            cx.background_executor().timer(Duration::from_millis(300)).await;
             let queried = cx.background_spawn(async move { inputs::query(&project, &query, &derived_data) }).await;
             this.update(cx, |this, cx| {
                 this.querying = false;

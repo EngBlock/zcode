@@ -40,6 +40,10 @@ pub struct Stats {
 /// workspace that keeps its graph current (`super::model`).
 pub struct Shared {
     pub root: PathBuf,
+    /// The index store the index build writes and sourcekit-lsp reads, and
+    /// sourcekit-lsp's database of it: known before any graph, since
+    /// sourcekit-lsp opens them once, when it connects.
+    index: Option<(PathBuf, PathBuf)>,
     graph: RwLock<Arc<BuildGraph>>,
     /// Whether a graph has been made yet.
     ready: (Mutex<bool>, Condvar),
@@ -51,10 +55,11 @@ pub struct Shared {
 }
 
 impl Shared {
-    pub fn new(root: PathBuf) -> (Arc<Self>, smol::channel::Receiver<()>) {
+    pub fn new(root: PathBuf, index: Option<(PathBuf, PathBuf)>) -> (Arc<Self>, smol::channel::Receiver<()>) {
         let (wake, woken) = smol::channel::unbounded();
         let shared = Arc::new(Self {
             root,
+            index,
             graph: RwLock::new(Arc::new(BuildGraph::default())),
             ready: (Mutex::new(false), Condvar::new()),
             connections: Mutex::new(vec![]),
@@ -66,7 +71,8 @@ impl Shared {
 
     /// A server answering from `graph` alone (`zcode bsp --graph`).
     pub fn fixed(root: PathBuf, graph: BuildGraph) -> Arc<Self> {
-        let (shared, _) = Self::new(root);
+        let index = Some((graph.index_store.clone(), graph.index_database.clone())).filter(|(store, _)| !store.as_os_str().is_empty());
+        let (shared, _) = Self::new(root, index);
         shared.set_graph(graph);
         shared
     }
@@ -343,13 +349,14 @@ impl Connection {
     }
 
     fn initialize(&self) -> Value {
-        let graph = self.shared.as_ref().map(|s| s.graph());
         let mut data = json!({ "sourceKitOptionsProvider": true, "prepareProvider": false, "outputPathsProvider": false, "watchers": [] });
-        // The index the index build writes; the database is sourcekit-lsp's,
-        // next to it as with the compilation database.
-        if let Some(store) = graph.as_ref().map(|g| g.index_store.clone()).filter(|s| !s.as_os_str().is_empty()) {
+        // The index the index build writes (there before the build, so
+        // sourcekit-lsp can open it); the database is sourcekit-lsp's, next
+        // to it as with the compilation database.
+        if let Some((store, database)) = self.shared.as_ref().and_then(|s| s.index.clone()) {
+            std::fs::create_dir_all(&store).ok();
             data["indexStorePath"] = json!(store);
-            data["indexDatabasePath"] = json!(graph.as_ref().map(|g| g.index_database.clone()).unwrap_or_default());
+            data["indexDatabasePath"] = json!(database);
         }
         json!({
             "displayName": "zcode",
@@ -437,8 +444,9 @@ mod tests {
 
     #[test]
     fn answers_sourcekit_lsp_and_announces_changes() {
-        let (shared, _woken) = Shared::new("/p".into());
-        shared.set_graph(graph(&["/p/App/A.swift"]));
+        let store = std::env::temp_dir().join(format!("zcode-bsp-store-{}", std::process::id()));
+        let index = Some((store.join("DataStore"), store.join("IndexDatabase")));
+        let (shared, woken) = Shared::new("/p".into(), index);
         let (ours, theirs) = UnixStream::pair().unwrap();
         let serving = shared.clone();
         let thread = std::thread::spawn(move || serve(BufReader::new(theirs.try_clone().unwrap()), theirs, move |_| Some(serving.clone())));
@@ -448,7 +456,12 @@ mod tests {
         let data = &init["result"]["data"];
         assert_eq!(data["sourceKitOptionsProvider"], true);
         assert_eq!(data["prepareProvider"], false);
-        assert_eq!(data["indexStorePath"], "/dd/Index.noindex/DataStore");
+        // Known (and made) before any graph.
+        assert_eq!(data["indexStorePath"], json!(store.join("DataStore")));
+        assert!(store.join("DataStore").is_dir());
+        // The connection wakes the workspace's side, which makes the graph.
+        woken.recv_blocking().unwrap();
+        shared.set_graph(graph(&["/p/App/A.swift"]));
         client.notify("build/initialized", json!({}));
 
         let targets = client.request("workspace/buildTargets", json!({}));
@@ -480,19 +493,21 @@ mod tests {
         assert_eq!(notification["method"], "buildTarget/didChange");
         assert_eq!(notification["params"]["changes"], json!([{ "target": { "uri": "xcode://target/0/App/App" }, "kind": 2 }]));
         let stats = shared.stats();
-        assert_eq!((stats.connections, stats.open, stats.changes_sent), (1, 1, 1));
+        // The first graph's targets were announced too.
+        assert_eq!((stats.connections, stats.open, stats.changes_sent), (1, 1, 2));
         assert_eq!(stats.last_options.unwrap().0, PathBuf::from("/p/App/A.swift"));
 
         assert_eq!(client.request("build/shutdown", json!(null))["result"], Value::Null);
         client.notify("build/exit", json!(null));
         thread.join().unwrap();
         assert_eq!(shared.stats().open, 0);
+        std::fs::remove_dir_all(&store).ok();
     }
 
     #[test]
     fn finds_the_project_a_folder_is_in() {
-        let (outer, _) = Shared::new("/zcode-test-find/a".into());
-        let (inner, _) = Shared::new("/zcode-test-find/a/b".into());
+        let (outer, _) = Shared::new("/zcode-test-find/a".into(), None);
+        let (inner, _) = Shared::new("/zcode-test-find/a/b".into(), None);
         register(&outer);
         register(&inner);
         assert!(Arc::ptr_eq(&find(Path::new("/zcode-test-find/a/b/c")).unwrap(), &inner));

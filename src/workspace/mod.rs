@@ -425,21 +425,9 @@ impl Workspace {
             && settings.sourcekit_build_settings == crate::settings::SourcekitBuildSettings::BuildServer
             && let Some(socket) = crate::instance::listening()
         {
-            return crate::bsp::Launch { args: vec![], build_server: Some(socket.to_path_buf()) };
+            return crate::bsp::Launch { args: vec![], build_server: Some((socket.to_path_buf(), cache_dir.to_path_buf())) };
         }
-        crate::bsp::Launch { args: Self::lsp_args(project, cache_dir), build_server: None }
-    }
-
-    fn lsp_args(project: &ProjectInfo, cache_dir: &Path) -> Vec<String> {
-        let db = crate::build::compiledb::database_path(cache_dir);
-        if db.exists() {
-            let rel = crate::paths::relative_path(&project.root, cache_dir);
-            return vec![
-                "--compilation-db-search-path".into(),
-                rel.display().to_string(),
-            ];
-        }
-        vec![]
+        crate::bsp::Launch { args: crate::bsp::database_args(&project.root, cache_dir), build_server: None }
     }
 
     pub fn title(&self) -> String {

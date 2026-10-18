@@ -33,23 +33,28 @@ use anyhow::Result;
 /// starts (each zcode its own).
 pub const SOCKET_ENV: &str = "ZCODE_BSP_SOCKET";
 
+/// The languages sourcekit-lsp serves, which a build server's connection
+/// file must name one of.
+const LANGUAGES: &[&str] = &["swift", "c", "cpp", "objective-c", "objective-cpp"];
+
 /// How sourcekit-lsp is started for a project.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Launch {
     /// Its arguments: where the compilation database is.
     pub args: Vec<String>,
-    /// Through zcode's build server, answering on this socket.
-    pub build_server: Option<PathBuf>,
+    /// Through zcode's build server, answering on this socket; the
+    /// project's cache folder, for the compilation database when it can't.
+    pub build_server: Option<(PathBuf, PathBuf)>,
 }
 
 impl Launch {
     /// The arguments and environment to start sourcekit-lsp with for the
     /// project at `root`. Blocking: writes zcode's connection file.
     pub fn resolve(&self, root: &Path) -> (Vec<String>, Vec<(String, String)>) {
-        let Some(socket) = &self.build_server else { return (self.args.clone(), vec![]) };
+        let Some((socket, cache_dir)) = &self.build_server else { return (self.args.clone(), vec![]) };
         if let Some(own) = own_build_server(root) {
             log::info!("build server: {} has its own ({}); sourcekit-lsp uses that", root.display(), own.display());
-            return (self.args.clone(), vec![]);
+            return (database_args(root, cache_dir), vec![]);
         }
         match write_connection_file() {
             Ok(dir) => (
@@ -58,18 +63,35 @@ impl Launch {
             ),
             Err(err) => {
                 log::warn!("build server: couldn’t write its connection file ({err:#}); sourcekit-lsp falls back to the compilation database");
-                (self.args.clone(), vec![])
+                (database_args(root, cache_dir), vec![])
             }
         }
     }
 }
 
-/// A build server the project brings: what sourcekit-lsp would find
-/// before zcode's.
+/// sourcekit-lsp's arguments for the index build's compilation database,
+/// once there is one.
+pub fn database_args(root: &Path, cache_dir: &Path) -> Vec<String> {
+    if !crate::build::compiledb::database_path(cache_dir).exists() {
+        return vec![];
+    }
+    let relative = crate::paths::relative_path(root, cache_dir);
+    vec!["--compilation-db-search-path".into(), relative.display().to_string()]
+}
+
+/// A build server the project brings, which sourcekit-lsp would find
+/// before zcode's: a connection file in `.bsp/` for one of its languages,
+/// or a `buildServer.json`.
 pub fn own_build_server(root: &Path) -> Option<PathBuf> {
-    let bsp = root.join(".bsp");
-    let in_bsp = std::fs::read_dir(&bsp).ok().and_then(|entries| {
-        entries.flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|e| e == "json"))
+    let serves_ours = |path: &Path| {
+        let file: Option<serde_json::Value> = std::fs::read(path).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        file.and_then(|f| f.get("languages").and_then(|l| l.as_array()).cloned())
+            .is_some_and(|languages| languages.iter().any(|l| l.as_str().is_some_and(|l| LANGUAGES.contains(&l))))
+    };
+    let in_bsp = std::fs::read_dir(root.join(".bsp")).ok().and_then(|entries| {
+        let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).collect();
+        files.sort();
+        files.into_iter().find(|p| serves_ours(p))
     });
     in_bsp.or_else(|| Some(root.join("buildServer.json")).filter(|p| p.is_file()))
 }
@@ -89,7 +111,7 @@ pub fn connection_file(program: &Path) -> serde_json::Value {
         "name": "zcode",
         "version": env!("CARGO_PKG_VERSION"),
         "bspVersion": "2.2.0",
-        "languages": ["swift", "c", "cpp", "objective-c", "objective-cpp"],
+        "languages": LANGUAGES,
         "argv": [program, "bsp"],
     })
 }
@@ -180,12 +202,20 @@ mod tests {
         assert_eq!(own_build_server(&root), None);
         std::fs::write(root.join("buildServer.json"), "{}").unwrap();
         assert_eq!(own_build_server(&root), Some(root.join("buildServer.json")));
+        // A Scala build server's file isn't sourcekit-lsp's; Xcode's is.
         std::fs::create_dir_all(root.join(".bsp")).unwrap();
-        std::fs::write(root.join(".bsp/xcode.json"), "{}").unwrap();
+        std::fs::write(root.join(".bsp/sbt.json"), r#"{"languages": ["scala"]}"#).unwrap();
+        assert_eq!(own_build_server(&root), Some(root.join("buildServer.json")));
+        std::fs::write(root.join(".bsp/xcode.json"), r#"{"languages": ["swift", "objective-c"]}"#).unwrap();
         assert_eq!(own_build_server(&root), Some(root.join(".bsp/xcode.json")));
-        // Theirs: sourcekit-lsp is started without zcode's.
-        let launch = Launch { args: vec![], build_server: Some("/tmp/zcode.sock".into()) };
+        // Theirs: sourcekit-lsp is started without zcode's, on the
+        // compilation database if there is one.
+        let cache = root.join("cache");
+        let launch = Launch { args: vec![], build_server: Some(("/tmp/zcode.sock".into(), cache.clone())) };
         assert_eq!(launch.resolve(&root), (vec![], vec![]));
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(crate::build::compiledb::database_path(&cache), "[]").unwrap();
+        assert_eq!(launch.resolve(&root).0, ["--compilation-db-search-path", "cache"]);
         std::fs::remove_dir_all(&root).ok();
     }
 
