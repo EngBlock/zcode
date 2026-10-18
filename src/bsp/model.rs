@@ -135,6 +135,7 @@ impl BuildServer {
                         build_settings: queried.build_settings.clone(),
                         index_database: store.parent().map(|p| p.join("IndexDatabase")).unwrap_or_default(),
                         index_store: store,
+                        default_sdk: inputs::default_sdk(),
                     };
                     let graph = BuildGraph::build(&inputs);
                     let changed = shared.set_graph(graph);
@@ -228,7 +229,8 @@ impl BuildServer {
                 "index-settings": count(Origin::IndexSettings),
                 "build-log": count(Origin::BuildLog),
                 "build-settings": count(Origin::BuildSettings),
-                "none": graph.targets.iter().filter(|t| t.swift.is_none()).count(),
+                // Their files alone, until something better is known.
+                "file-alone": graph.targets.iter().filter(|t| t.swift.is_none()).count(),
             },
             "querying": self.querying,
             "query": self.query.as_ref().map(|q| json!({ "scheme": q.scheme, "configuration": q.configuration, "destination": q.destination.name })),

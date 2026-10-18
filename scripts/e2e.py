@@ -413,9 +413,10 @@ def xcode_project_checks(z, samples, sim):
 
     def lsp_ready():
         z.run(f"open {content}")
-        # A never-indexed project runs a background index build that restarts
-        # sourcekit-lsp when it finishes; wait for that too.
+        # A never-indexed project runs a background index build, whose index
+        # sourcekit-lsp reads as it's written; wait for that too.
         z.wait_for(lambda s: s["lsp"] == "Ready" and not s["issues"] and not s["indexing"], timeout=300)
+        assert z.dump()["build_server"]["through_build_server"], "sourcekit-lsp gets its arguments from zcode's build server"
 
     def open_quickly():
         z.run("keys cmd-shift-o", "type cou", "wait 300")
@@ -633,7 +634,7 @@ def xcode_project_checks(z, samples, sim):
         print(f"    {memory['status_label']} · {memory['samples']} samples · baseline {memory['baseline_footprint_mb']} MB · {len(samples)} lines in --perf-log")
 
     check("Xcode default shortcuts (from the Xcode 27 inventory)", shortcut_parity)
-    check("sourcekit-lsp ready with compile database (no false errors)", lsp_ready)
+    check("sourcekit-lsp ready through the build server (no false errors)", lsp_ready)
     check("Memory monitoring: sampler, LSP + SourceKitService, perf log", memory_monitoring)
     check("Open Quickly (⇧⌘O)", open_quickly)
     check("Jump to Definition across files (⌃⌘J)", definition)
@@ -733,6 +734,20 @@ def build_server_checks(samples):
         assert s["active"]["path"].endswith("Counter.swift"), s["active"]["path"]
         assert not fresh_issues(z.dump()), "ZCODE_BSP isn't set yet"
 
+    def index_without_a_restart():
+        # The index build's index, opened when sourcekit-lsp connected, fills
+        # as the build writes it: references across files, no restart.
+        z.wait_for(lambda s: not s["indexing"], timeout=300)
+        counter = os.path.join(app, "Counter.swift")
+        for _ in range(20):
+            z.run(f"open {counter}:{line_of(counter, 'mutating func increment')}", "wait 300",
+                  keys_right(column_of(counter, "increment", 2)), "keys ctrl-shift-cmd-f", "wait 1500")
+            if json.loads(z.run("bench status")[-1])["find_files"] >= 2:
+                break
+        b = json.loads(z.run("bench status")[-1])
+        assert b["find_files"] >= 2, (b["find_files"], b["find_results"])
+        assert b["build_server"]["connections"]["connections"] == 1, b["build_server"]["connections"]
+
     def build_setting_reaches_the_open_file():
         z.run(f"open {fresh}")
         text = open(pbxproj).read()
@@ -776,6 +791,7 @@ def build_server_checks(samples):
     try:
         check("Build server: sourcekit-lsp connects through zcode's connection file and asks it for arguments (Xcode's for indexing)", connects)
         check("Build server: a file added to a synchronized folder, never built, gets its target's arguments (⌃⌘J across files)", new_file_without_a_build)
+        check("Build server: the index build's index reaches sourcekit-lsp without a restart (references across files)", index_without_a_restart)
         check("Build server: a build setting edited in project.pbxproj reaches the open file without a build", build_setting_reaches_the_open_file)
         check("Build server: a membership exception takes the file out of its target", membership_exception)
         check("Build server: \"compilation_database\" restarts sourcekit-lsp on the database, and back", compilation_database_setting)

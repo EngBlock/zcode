@@ -416,6 +416,7 @@ mod tests {
             }],
             index_store: "/dd/Index.noindex/DataStore".into(),
             index_database: "/dd/Index.noindex/IndexDatabase".into(),
+            default_sdk: None,
         }
     }
 

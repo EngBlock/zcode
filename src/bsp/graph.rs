@@ -18,7 +18,11 @@
 //!
 //! A Swift file's arguments are its target's (without the file list) and
 //! the target's current Swift files; a C-family file has its own, or a
-//! sibling's of the same language with the file swapped in.
+//! sibling's of the same language with the file swapped in. A file of a
+//! target nothing says how to compile yet gets the file alone with the
+//! default SDK, as sourcekit-lsp would without a build server: answering
+//! nothing would leave it on sourcekit-lsp's fallback, which has no
+//! semantic tokens behind a build server.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -36,6 +40,8 @@ pub enum Origin {
     IndexSettings,
     BuildLog,
     BuildSettings,
+    /// The file alone, until something better is known.
+    FileAlone,
 }
 
 /// What a target is, as BSP tags it. Its order is the order targets sort
@@ -105,6 +111,9 @@ pub struct Inputs {
     /// sourcekit-lsp reads.
     pub index_store: PathBuf,
     pub index_database: PathBuf,
+    /// The SDK a file is compiled against when nothing else is known (the
+    /// Mac's, as sourcekit-lsp's fallback).
+    pub default_sdk: Option<PathBuf>,
 }
 
 /// A C-family command line for one file, which other files of the same
@@ -151,6 +160,8 @@ pub struct BuildGraph {
     pub targets: Vec<Target>,
     pub index_store: PathBuf,
     pub index_database: PathBuf,
+    #[serde(default)]
+    pub default_sdk: Option<PathBuf>,
 }
 
 /// The LSP language of a file sourcekit-lsp serves, by its extension.
@@ -611,7 +622,12 @@ impl BuildGraph {
             });
         }
         targets.sort_by(|a, b| a.id.cmp(&b.id));
-        Self { targets, index_store: inputs.index_store.clone(), index_database: inputs.index_database.clone() }
+        Self {
+            targets,
+            index_store: inputs.index_store.clone(),
+            index_database: inputs.index_database.clone(),
+            default_sdk: inputs.default_sdk.clone(),
+        }
     }
 
     pub fn target(&self, id: &str) -> Option<&Target> {
@@ -625,17 +641,32 @@ impl BuildGraph {
 
     /// The arguments for `file` in target `id`; `language` is what it was
     /// opened as. `None` for a header (sourcekit-lsp borrows a file's that
-    /// includes it) or a file nothing says how to compile.
+    /// includes it).
     pub fn options(&self, id: &str, file: &Path, language: Option<&str>) -> Option<Options> {
         let target = self.target(id)?;
         let swift = match language {
             Some(language) => language == "swift",
             None => is_swift(file),
         };
+        let alone = |flag: &str| -> Option<Options> {
+            if is_header(file) || (!swift && clang_language(file).is_none()) {
+                return None;
+            }
+            let mut arguments: Vec<String> = match &self.default_sdk {
+                Some(sdk) => vec![flag.to_string(), sdk.display().to_string()],
+                None => vec![],
+            };
+            if !swift {
+                arguments.splice(0..0, ["-x".to_string(), clang_language(file)?.to_string()]);
+            }
+            arguments.push(file.display().to_string());
+            Some(Options { arguments, working_directory: target.directory.clone(), origin: Origin::FileAlone })
+        };
         let (arguments, origin) = if swift {
+            let Some(template) = target.swift.clone() else { return alone("-sdk") };
             // The target's files, the asked-for one as sourcekit-lsp names it
             // (swiftc refuses two paths to one file).
-            let mut arguments = target.swift.clone()?;
+            let mut arguments = template;
             let asked = real(file);
             let mut listed = false;
             for f in target.files.iter().chain(&target.generated).filter(|f| is_swift(f)) {
@@ -650,7 +681,7 @@ impl BuildGraph {
         } else if let Some(command) = target.clang.get(file) {
             (command.arguments.clone(), target.clang_origin?)
         } else {
-            let template = target.clang_template.as_ref().filter(|_| !is_header(file))?;
+            let Some(template) = target.clang_template.as_ref().filter(|_| !is_header(file)) else { return alone("-isysroot") };
             (borrow(template, file)?, target.clang_origin?)
         };
         Some(Options { arguments, working_directory: target.directory.clone(), origin })
@@ -867,6 +898,15 @@ mod tests {
         assert!(borrowed.contains(&"/p/App/e.c".to_string()) && !borrowed.contains(&"/p/App/c.m".to_string()), "{borrowed:?}");
         // Headers borrow from a file that includes them, in sourcekit-lsp.
         assert_eq!(graph.options(&app.id, Path::new("/p/App/d.h"), None), None);
+        // A target nothing compiled has its files alone, with the default SDK.
+        let mut inputs = inputs(&dir);
+        inputs.default_sdk = Some("/MacOSX.sdk".into());
+        let graph = BuildGraph::build(&inputs);
+        let tests = graph.targets.iter().find(|t| t.name == "AppTests").unwrap();
+        let alone = graph.options(&tests.id, Path::new("/p/AppTests/T.swift"), Some("swift")).unwrap();
+        assert_eq!((alone.arguments, alone.origin), (strings(&["-sdk", "/MacOSX.sdk", "/p/AppTests/T.swift"]), Origin::FileAlone));
+        let alone = graph.options(&tests.id, Path::new("/p/AppTests/t.c"), Some("c")).unwrap();
+        assert_eq!(alone.arguments, strings(&["-x", "c", "-isysroot", "/MacOSX.sdk", "/p/AppTests/t.c"]));
         std::fs::remove_dir_all(dir).ok();
     }
 

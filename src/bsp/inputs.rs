@@ -102,8 +102,60 @@ fn run_query(project: &ProjectInfo, query: &Query, derived_data: &Path, what: &s
         .or_else(|_| run_json(xcodebuild(project, query, derived_data, what, None)))
 }
 
+/// The Mac's SDK, which a file is compiled against when nothing says
+/// otherwise (as sourcekit-lsp's fallback). Asked once.
+pub fn default_sdk() -> Option<PathBuf> {
+    static SDK: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    SDK.get_or_init(|| {
+        let mut cmd = Command::new("/usr/bin/xcrun");
+        cmd.args(["--show-sdk-path", "--sdk", "macosx"]).stdin(std::process::Stdio::null());
+        crate::build::process::unblock_signals(&mut cmd);
+        let output = cmd.output().ok().filter(|o| o.status.success())?;
+        Some(PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())).filter(|p| p.is_dir())
+    })
+    .clone()
+}
+
+/// Every target's build settings in each project, for the targets the
+/// scheme doesn't build (`-alltargets` takes no destination): for the
+/// destination's SDK when the target supports it, so its arguments match
+/// what the index build made, else for its own.
+fn all_targets(projects: &[PathBuf], configuration: &str, sdk: &str, derived_data: &Path) -> Result<HashMap<String, HashMap<String, String>>> {
+    let settings = |project: &Path, which: &[String]| -> Result<HashMap<String, HashMap<String, String>>> {
+        let mut cmd = Command::new("/usr/bin/xcodebuild");
+        cmd.current_dir(project.parent().unwrap_or(Path::new("/")))
+            .args(["-showBuildSettings", "-json", "-configuration", configuration])
+            .arg("-project")
+            .arg(project)
+            .args(which)
+            .arg("-derivedDataPath")
+            .arg(derived_data)
+            .args(["-skipPackageUpdates", "-skipMacroValidation", "-skipPackagePluginValidation"]);
+        crate::build::process::unblock_signals(&mut cmd);
+        Ok(parse_build_settings(&run_json(cmd)?))
+    };
+    let mut out = HashMap::new();
+    for project in projects {
+        let mut all = settings(project, &["-alltargets".into()])?;
+        let retarget: Vec<String> = all
+            .iter()
+            .filter(|(_, s)| s.get("PLATFORM_NAME").is_some_and(|p| p != sdk))
+            .filter(|(_, s)| s.get("SUPPORTED_PLATFORMS").is_some_and(|p| p.split_whitespace().any(|p| p == sdk)))
+            .map(|(target, _)| target.clone())
+            .collect();
+        if !retarget.is_empty() {
+            let mut which = vec!["-sdk".to_string(), sdk.to_string()];
+            which.extend(retarget.iter().flat_map(|t| ["-target".to_string(), t.clone()]));
+            all.extend(settings(project, &which)?);
+        }
+        out.extend(all);
+    }
+    Ok(out)
+}
+
 /// Asks Xcode for every file's arguments for indexing, and every target's
-/// build settings. Blocking (seconds on a big app).
+/// build settings: the scheme's for its destination, the rest's each for
+/// its own SDK. Blocking (seconds on a big app).
 pub fn query(project: &ProjectInfo, query: &Query, derived_data: &Path) -> Queried {
     let mut queried = Queried::default();
     let started = std::time::Instant::now();
@@ -111,10 +163,26 @@ pub fn query(project: &ProjectInfo, query: &Query, derived_data: &Path) -> Queri
         Ok(value) => queried.index_settings = Arc::new(parse_index_settings(&value)),
         Err(err) => queried.errors.push(format!("-showBuildSettingsForIndex: {err:#}")),
     }
-    match run_query(project, query, derived_data, "-showBuildSettings") {
-        Ok(value) => queried.build_settings = Arc::new(parse_build_settings(&value)),
-        Err(err) => queried.errors.push(format!("-showBuildSettings: {err:#}")),
+    let mut settings = match run_query(project, query, derived_data, "-showBuildSettings") {
+        Ok(value) => parse_build_settings(&value),
+        Err(err) => {
+            queried.errors.push(format!("-showBuildSettings: {err:#}"));
+            HashMap::new()
+        }
+    };
+    let projects = crate::project::xcode_projects(&project.kind);
+    let missing = model_targets(&projects).into_iter().any(|t| !settings.contains_key(&t.name));
+    if missing {
+        match all_targets(&projects, &query.configuration, query.destination.platform.sdk(), derived_data) {
+            Ok(all) => {
+                for (target, values) in all {
+                    settings.entry(target).or_insert(values);
+                }
+            }
+            Err(err) => queried.errors.push(format!("-showBuildSettings -alltargets: {err:#}")),
+        }
     }
+    queried.build_settings = Arc::new(settings);
     let with_arguments = queried.index_settings.values().flat_map(|files| files.values()).filter(|a| a.swift.is_some() || a.clang.is_some()).count();
     log::info!(
         "build server: asked xcodebuild about {} on {} in {:?}: index arguments for {with_arguments} files, settings for {} targets{}",
