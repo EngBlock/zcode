@@ -5518,9 +5518,13 @@ def prediction_checks(samples):
         off = json.loads(z.run("type-latency let measured = name.count + 1")[-1])
         revert()
         z.run("settings set edit_predictions.provider \"claude\"", "wait 300")
-        print(f"    keystroke → frame, median / p95: predictions on {on['median_ms']:.1f} / {on['p95_ms']:.1f} ms, "
-              f"off {off['median_ms']:.1f} / {off['p95_ms']:.1f} ms")
-        assert on["median_ms"] < 16 and on["median_ms"] <= max(off["median_ms"] * 1.5, off["median_ms"] + 2), (on, off)
+        print(f"    a keystroke's work, median / p95: predictions on {on['work_median_ms']:.1f} / {on['work_p95_ms']:.1f} ms, "
+              f"off {off['work_median_ms']:.1f} / {off['work_p95_ms']:.1f} ms (to the next tick: {on['median_ms']:.1f}, "
+              f"{off['median_ms']:.1f} ms)")
+        # The work, not the time to the next tick: where a keystroke lands
+        # in the display's cadence is luck, and decides the tick figure.
+        on_ms, off_ms = on["work_median_ms"], off["work_median_ms"]
+        assert on_ms < 16 and on_ms <= max(off_ms * 1.5, off_ms + 2), (on, off)
 
     def key_in_no_log():
         z.quit()
