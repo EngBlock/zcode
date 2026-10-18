@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use crate::actions::{self, About, OpenProject, Quit};
+use crate::actions::{self, About, CheckForUpdates, InstallCli, OpenProject, Quit, ToggleOpenAtLogin};
 use crate::perf::{self, Perf};
 use crate::project;
 use crate::welcome::Welcome;
@@ -200,6 +200,16 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
     }
 }
 
+/// Shows a notification in the window in front (a project's or the
+/// welcome window): what app-wide commands say when they're done.
+pub fn notify(notification: gpui_kit::component::notification::Notification, cx: &mut App) {
+    use gpui_kit::component::WindowExt as _;
+    let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied()) else {
+        return;
+    };
+    window.update(cx, |_, window, cx| window.push_notification(notification, cx)).ok();
+}
+
 /// Opens what Finder (or `app open-url` on the control channel) handed
 /// over: each path its project, and the app comes forward.
 pub fn open_paths(paths: Vec<PathBuf>, cx: &mut App) {
@@ -392,6 +402,9 @@ pub fn run() {
             cx.on_action(|_: &About, cx| {
                 cx.open_url("https://github.com/zed-industries/zed/tree/main/crates/gpui");
             });
+            cx.on_action(|_: &CheckForUpdates, cx| crate::updates::check(true, cx));
+            cx.on_action(|_: &InstallCli, cx| crate::cli::install_action(cx));
+            cx.on_action(|_: &ToggleOpenAtLogin, cx| crate::login_item::toggle(cx));
             cx.on_window_closed(move |cx, _| {
                 // Like other Mac document apps, a single-instance zcode keeps
                 // running with no windows, so the next open is instant.
@@ -472,6 +485,17 @@ pub fn run() {
             }
             perf::start_sampler(cx);
             crate::settings::watch(cx);
+            // After the first frame: the login item's checkmark (launchd is
+            // asked off the main thread) and the daily update check (a
+            // minute from now).
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(Duration::from_millis(1500)).await;
+                cx.update(|cx| {
+                    crate::login_item::refresh(cx);
+                    crate::updates::start_automatic_checks(cx);
+                });
+            })
+            .detach();
             if args.background && single_instance {
                 // Resident and listening; windows open on request. Lay out
                 // and draw one hidden window first so the first real open

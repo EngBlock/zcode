@@ -78,6 +78,11 @@
 //!                              clear <slot>, color [<slot>] <component> <value>, space <slot> <space>,
 //!                              method <slot> float|8-bit|hex, undo, redo, reload
 //!                              (see `AssetCatalogView::command`); `dump` has `asset_catalog`
+//!   app <command>              the app as packaged: bundle (where it runs from, its version), cli
+//!                              install|status (Install CLI; `ZCODE_CLI_DIR`), login-item status|on|off|
+//!                              toggle|menu (Open at Login; `ZCODE_LOGIN_ITEM_FILE`), updates check|status|
+//!                              restart (Check for Updates…; `ZCODE_UPDATE_FEED`), open-url <file-url>
+//!                              (what Finder hands over)
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -682,6 +687,22 @@ fn run_command(
             }
             let _ = window;
             Ok(serde_json::Value::Object(map).to_string())
+        }
+        "app" => {
+            let (what, rest) = arg.split_once(' ').unwrap_or((arg, ""));
+            match what {
+                "bundle" => Ok(crate::bundle::info().to_string()),
+                "cli" => crate::cli::command(rest.trim(), cx),
+                "login-item" => crate::login_item::command(rest.trim(), cx),
+                "updates" => crate::updates::command(rest.trim(), cx),
+                "open-url" => {
+                    let paths = rest.split(';').filter_map(|url| crate::bundle::path_of_file_url(url.trim())).collect();
+                    crate::app::open_paths(paths, cx);
+                    let open: Vec<String> = workspaces(cx).iter().map(|w| w.read(cx).project.root.display().to_string()).collect();
+                    Ok(serde_json::json!({ "open": open }).to_string())
+                }
+                _ => Err("usage: app bundle|cli …|login-item …|updates …|open-url <url>".into()),
+            }
         }
         "dump" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;

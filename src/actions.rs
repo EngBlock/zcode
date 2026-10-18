@@ -20,6 +20,10 @@ gpui_kit::actions!(
         SelectTheme,
         ImportXcodeTheme,
         ImportXcodeKeyBindings,
+        // Packaging (`crate::updates`, `crate::cli`, `crate::login_item`).
+        CheckForUpdates,
+        InstallCli,
+        ToggleOpenAtLogin,
         OpenProject,
         OpenQuickly,
         NewFile,
@@ -504,12 +508,20 @@ pub fn commands() -> Vec<Command> {
     vec![
         // The app menu: Xcode's Settings… (⌘,) opens the settings file, as in
         // Zed, with the keymap, themes and their Xcode importers.
+        // Check for Updates… after About, Install CLI and Open at Login (the
+        // login item: `zcode --background`) with the other app-wide items,
+        // as Zed's app menu has them; Xcode updates through the App Store.
+        cmd!("zcode", "Check for Updates…", CheckForUpdates),
+        cmd!("zcode", "-", Quit),
         cmd!("zcode", "Settings…", OpenSettings),
         cmd!("zcode", "Key Bindings…", OpenKeymap),
         cmd!("zcode", "Select Theme…", SelectTheme),
         cmd!("zcode", "-", Quit),
         cmd!("zcode", "Import Xcode Theme…", ImportXcodeTheme),
         cmd!("zcode", "Import Xcode Key Bindings…", ImportXcodeKeyBindings),
+        cmd!("zcode", "-", Quit),
+        cmd!("zcode", "Install CLI", InstallCli),
+        cmd!("zcode", "Open at Login", ToggleOpenAtLogin),
         cmd!("zcode", "-", Quit),
         cmd!("zcode", "Open Project Settings File", OpenProjectSettingsFile),
         cmd!("zcode", "Open Default Settings", OpenDefaultSettings),
@@ -761,6 +773,7 @@ fn checked_actions(cx: &App) -> Vec<&'static str> {
         ("zcode::InlineComparison", !settings.side_by_side_comparison),
         ("zcode::ToggleSoftWrap", settings.soft_wrap),
         ("zcode::ToggleInvisibles", settings.show_whitespaces),
+        ("zcode::ToggleOpenAtLogin", crate::login_item::is_enabled(cx)),
     ];
     toggles.into_iter().filter(|(_, on)| *on).map(|(name, _)| name).collect()
 }
