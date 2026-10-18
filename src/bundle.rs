@@ -10,10 +10,19 @@ use std::sync::OnceLock;
 /// The bundle identifier `scripts/package.py` writes to `Info.plist`.
 pub const IDENTIFIER: &str = "dev.zcode.zcode";
 
-/// zcode's version, from `Cargo.toml` (the bundle's
-/// `CFBundleShortVersionString` is the same).
+/// zcode's version: the bundle's `CFBundleShortVersionString` (what was
+/// shipped, read once when first asked), or `Cargo.toml`'s for a bare
+/// binary. `--version` prints Cargo's.
 pub fn version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION.get_or_init(|| bundle_version().unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string()))
+}
+
+fn bundle_version() -> Option<String> {
+    let text = std::fs::read_to_string(app_bundle()?.join("Contents/Info.plist")).ok()?;
+    let info = crate::plist::parse_xml(&text).ok()?;
+    let version = info.get("CFBundleShortVersionString")?.as_str()?.trim();
+    (!version.is_empty()).then(|| version.to_string())
 }
 
 /// This binary, symlinks resolved.

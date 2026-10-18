@@ -168,7 +168,7 @@ def normalize_keys(keys):
 
 
 class Zcode:
-    def __init__(self, project, extra_env=None, keep_vim=False):
+    def __init__(self, project, extra_env=None, keep_vim=False, binary=BINARY):
         # The debug log is shared by every instance: read only this one's
         # lines, so an earlier check's errors can't fail this launch.
         try:
@@ -179,7 +179,7 @@ class Zcode:
         env = dict(os.environ, ZCODE_DEBUG_DIR=DEBUG_DIR, **(extra_env or {}))
         # zcode's own log, for a check that fails: $ZCODE_E2E_STDERR.
         stderr = open(os.environ["ZCODE_E2E_STDERR"], "a") if os.environ.get("ZCODE_E2E_STDERR") else subprocess.DEVNULL
-        self.proc = subprocess.Popen([BINARY, project], env=env,
+        self.proc = subprocess.Popen([binary, project], env=env,
                                      stdout=subprocess.DEVNULL, stderr=stderr)
         self.run("wait 1")
         # The run's settings are shared by its checks: Vim mode is off
@@ -197,7 +197,7 @@ class Zcode:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.proc.poll() is not None:
-                raise RuntimeError("zcode exited")
+                raise RuntimeError(f"zcode exited (status {self.proc.returncode})")
             if self._count(log_path) - before >= len(commands):
                 break
             time.sleep(0.1)
@@ -5599,6 +5599,289 @@ def package_dependency_checks(samples):
         check("Packages (network): versions of github.com/apple/swift-argument-parser", public_package_versions)
 
 
+def packaging_checks(samples):
+    """zcode as a Mac app (scripts/package.py): the bundle and its Info.plist
+    (the document types Finder's Open With lists, by inspection: no
+    LaunchServices registration), an ad hoc signature and the dry runs of
+    Developer ID signing and notarization; then, in a copy of the bundle
+    launched from a folder of its own, what Finder hands over, the CLI link
+    (ZCODE_CLI_DIR) and a launch through it, Open at Login (a file stands in
+    for launchd: ZCODE_LOGIN_ITEM_FILE) and an update from a local feed
+    (scripts/fake_update_feed.py) installed in the bundle's place."""
+    out = tempfile.mkdtemp(prefix="zcode-e2e-package-")
+    package_py = os.path.join(ROOT, "scripts", "package.py")
+
+    def package(*args, out=out):
+        return subprocess.run([sys.executable, package_py, *args, "--out", out], check=True, capture_output=True, text=True)
+
+    app = os.path.join(out, "zcode.app")
+    version = subprocess.run([BINARY, "--version"], capture_output=True, text=True, check=True).stdout.split()[1]
+
+    def bundle_is_built():
+        package("bundle", "--quiet")
+        package("sign", "--adhoc", "--quiet")
+        with open(os.path.join(app, "Contents", "Info.plist"), "rb") as f:
+            info = plistlib.load(f)
+        assert info["CFBundleShortVersionString"] == version and info["CFBundleVersion"] == version, info
+        assert info["CFBundleIdentifier"] == "dev.zcode.zcode" and info["CFBundleExecutable"] == "zcode", info
+        assert info["LSApplicationCategoryType"] == "public.app-category.developer-tools", info
+        types = {t["CFBundleTypeName"]: t for t in info["CFBundleDocumentTypes"]}
+        assert types["Xcode Project"]["LSItemContentTypes"] == ["com.apple.xcode.project"], types
+        assert types["Xcode Workspace"]["LSItemContentTypes"] == ["com.apple.dt.document.workspace"], types
+        assert types["Swift Source"]["LSItemContentTypes"] == ["public.swift-source"], types
+        assert types["Folder"]["LSItemContentTypes"] == ["public.folder"], types
+        # Xcode stays the default opener; zcode is in Open With.
+        assert all(t["LSHandlerRank"] == "Alternate" for t in types.values()), types
+        assert {u["UTTypeIdentifier"] for u in info["UTImportedTypeDeclarations"]} == {"com.apple.xcode.project", "com.apple.dt.document.workspace"}
+        assert os.path.getsize(os.path.join(app, "Contents", "Resources", "zcode.icns")) > 100_000
+        with open(os.path.join(app, "Contents", "Library", "LaunchAgents", "dev.zcode.zcode.background.plist"), "rb") as f:
+            agent = plistlib.load(f)
+        assert agent["BundleProgram"] == "Contents/MacOS/zcode" and agent["ProgramArguments"][-1] == "--background", agent
+        assert agent["Label"] == "dev.zcode.zcode.background" and agent["RunAtLoad"] and agent["AssociatedBundleIdentifiers"] == ["dev.zcode.zcode"], agent
+        subprocess.run(["codesign", "--verify", "--deep", "--strict", app], check=True, capture_output=True)
+        signed = subprocess.run(["codesign", "-dv", "--verbose=2", app], capture_output=True, text=True).stderr
+        assert "Identifier=dev.zcode.zcode" in signed and "flags=0x10002(adhoc,runtime)" in signed, signed
+        # The bundle's binary is zcode.
+        out_version = subprocess.run([os.path.join(app, "Contents", "MacOS", "zcode"), "--version"], capture_output=True, text=True).stdout
+        assert out_version.strip() == f"zcode {version}", out_version
+        # Developer ID signing and notarization only print their commands
+        # here (no Developer ID certificate on this Mac); nothing changes.
+        before = tree_snapshot(app)
+        dry = package("sign", "--dry-run").stdout + package("notarize", "--dry-run").stdout
+        assert "(dry run) codesign --force --options runtime --timestamp --sign Developer ID Application" in dry, dry
+        assert "(dry run) xcrun notarytool submit" in dry and "--keychain-profile" in dry and "(dry run) xcrun stapler staple" in dry, dry
+        assert tree_snapshot(app) == before
+        assert not os.path.exists(os.path.join(out, "zcode-notarize.zip"))
+        # The archives and the feed's entry.
+        package("zip", "--quiet")
+        package("appcast", "--url", "https://example.invalid/releases/", "--quiet")
+        with open(os.path.join(out, "appcast.json")) as f:
+            feed = json.load(f)
+        archive = os.path.join(out, f"zcode-{version}.zip")
+        digest = subprocess.run(["shasum", "-a", "256", archive], capture_output=True, text=True).stdout.split()[0]
+        assert feed == {"version": version, "url": f"https://example.invalid/releases/zcode-{version}.zip", "sha256": digest,
+                        "length": os.path.getsize(archive), "minimum_system": "14.0", "notes": ""}, feed
+
+    check("Packaging: zcode.app from scripts/package.py (Info.plist: version, document types, the agent; icon; ad hoc signature; dry runs; zip and appcast)", bundle_is_built)
+
+    def cold_launch_of_the_bundle():
+        # Alternating rounds, so a loaded machine weighs on both.
+        bare, bundled = [], []
+        for _ in range(3):
+            bare.append(median_launch([BINARY, "--startup-bench"], runs=3)[0])
+            bundled.append(median_launch([os.path.join(app, "Contents", "MacOS", "zcode"), "--startup-bench"], runs=3)[0])
+        bare_ms, bundle_ms = sorted(bare)[1], sorted(bundled)[1]
+        print(f"    content on screen, medians of 3 rounds: bare binary {bare_ms:.0f} ms, zcode.app {bundle_ms:.0f} ms")
+        if "native_ms" in COLD_LAUNCH:
+            assert bundle_ms < COLD_LAUNCH["native_ms"], f"the bundle ({bundle_ms:.0f} ms) should beat the minimal native app ({COLD_LAUNCH['native_ms']:.0f} ms)"
+        assert bundle_ms < bare_ms * 1.3 + 30, f"the bundle ({bundle_ms:.0f} ms) should launch like the bare binary ({bare_ms:.0f} ms)"
+
+    check("Packaging: cold launch of zcode.app's binary is the bare binary's", cold_launch_of_the_bundle)
+
+    if not os.path.exists(app):
+        return
+    # A copy of the bundle in a folder of its own stands in for /Applications.
+    apps = os.path.realpath(tempfile.mkdtemp(prefix="zcode-e2e-apps-"))
+    installed = os.path.join(apps, "zcode.app")
+    subprocess.run(["ditto", app, installed], check=True)
+    installed_binary = os.path.join(installed, "Contents", "MacOS", "zcode")
+    bin_dir = os.path.join(apps, "bin")
+    login_file = os.path.join(apps, "login-item")
+    feed_dir = tempfile.mkdtemp(prefix="zcode-e2e-feed-")
+    port_file, requests_log = os.path.join(feed_dir, "port"), os.path.join(feed_dir, "requests.jsonl")
+    server = subprocess.Popen([sys.executable, os.path.join(ROOT, "scripts", "fake_update_feed.py"), "--dir", feed_dir,
+                               "--port-file", port_file, "--log", requests_log], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.time() + 15
+    while not os.path.exists(port_file) and time.time() < deadline:
+        time.sleep(0.1)
+    with open(port_file) as f:
+        port = int(f.read())
+    feed_url = f"http://127.0.0.1:{port}/appcast.json"
+    config = tempfile.mkdtemp(prefix="zcode-e2e-package-config-")
+    env = {"ZCODE_CONFIG_DIR": config, "ZCODE_UPDATE_FEED": feed_url, "ZCODE_CLI_DIR": bin_dir, "ZCODE_LOGIN_ITEM_FILE": login_file}
+    recorded = os.path.join(apps, "commands.jsonl")
+    env["ZCODE_XCODE_COMMANDS"] = recorded
+
+    def commands_recorded():
+        try:
+            with open(recorded) as f:
+                return [json.loads(l) for l in f]
+        except FileNotFoundError:
+            return []
+
+    def requests():
+        try:
+            with open(requests_log) as f:
+                return [json.loads(l)["path"] for l in f]
+        except FileNotFoundError:
+            return []
+
+    # The next version, as a release: the bundle again with its version
+    # bumped, signed ad hoc as the running one is, zipped, in the feed.
+    next_version = version.rsplit(".", 1)[0] + "." + str(int(version.rsplit(".", 1)[1]) + 1)
+    stage = os.path.join(feed_dir, "stage")
+    os.makedirs(stage)
+    subprocess.run(["ditto", app, os.path.join(stage, "zcode.app")], check=True)
+    info_path = os.path.join(stage, "zcode.app", "Contents", "Info.plist")
+    with open(info_path, "rb") as f:
+        info = plistlib.load(f)
+    info["CFBundleShortVersionString"] = info["CFBundleVersion"] = next_version
+    with open(info_path, "wb") as f:
+        plistlib.dump(info, f)
+    package("sign", "--adhoc", "--quiet", out=stage)
+    archive = os.path.join(feed_dir, f"zcode-{next_version}.zip")
+    subprocess.run(["ditto", "-c", "-k", "--keepParent", os.path.join(stage, "zcode.app"), archive], check=True)
+    digest = subprocess.run(["shasum", "-a", "256", archive], capture_output=True, text=True).stdout.split()[0]
+
+    def set_feed(**entry):
+        release = {"version": next_version, "url": f"http://127.0.0.1:{port}/zcode-{next_version}.zip", "sha256": digest, "notes": "e2e"}
+        release.update(entry)
+        with open(os.path.join(feed_dir, "appcast.json"), "w") as f:
+            json.dump(release, f)
+
+    project = os.path.join(samples, "..", "Packaged", "ZKit")
+    project = os.path.realpath(project)
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    spaced = os.path.join(os.path.dirname(project), "Hello Classic")
+    shutil.copytree(os.path.join(samples, "HelloClassic"), spaced)
+    z = Zcode(project, env, binary=installed_binary)
+    try:
+        def bundle_known():
+            info = json.loads(z.run("app bundle")[-1])
+            assert info["bundle"] == installed and info["version"] == version and not info["cli"], info
+            assert info["executable"] == installed_binary and info["identifier"] == "dev.zcode.zcode", info
+            # Menu items.
+            keymap = json.loads(z.run("keymap")[-1])
+            assert {"zcode::CheckForUpdates", "zcode::InstallCli", "zcode::ToggleOpenAtLogin"} <= set(keymap), sorted(keymap)
+
+        check("Packaging: the bundle knows itself (path, version, identifier); the app menu's three items", bundle_known)
+
+        def finder_opens():
+            # What LaunchServices sends for a double-clicked project (a package: a folder URL).
+            url = "file://" + spaced.replace(" ", "%20") + "/HelloClassic.xcodeproj/"
+            opened = json.loads(z.run(f"app open-url {url}")[-1])["open"]
+            assert opened == [project, spaced], opened
+
+        check("Packaging: Finder's file URL (percent-encoded, a package's trailing slash) opens the project in a second window", finder_opens)
+
+        def cli_installed():
+            status = json.loads(z.run("app cli status")[-1])
+            assert status["status"] == "missing" and status["link"] == os.path.join(bin_dir, "zcode"), status
+            z.run("app cli install", "wait 500")
+            status = json.loads(z.run("app cli status")[-1])
+            assert status["status"] == "installed" and status["target"] == installed_binary, status
+            assert os.readlink(os.path.join(bin_dir, "zcode")) == installed_binary
+            # Through the link, a path goes to the running zcode (its socket is
+            # in the run's configuration folder) and the shell gets its prompt
+            # back at once.
+            shell_env = {k: v for k, v in dict(os.environ, **env).items() if k != "ZCODE_DEBUG_DIR"}
+            started = time.time()
+            subprocess.run([os.path.join(bin_dir, "zcode"), project], env=shell_env, check=True, timeout=10)
+            assert time.time() - started < 2, "the link should hand the path over and return"
+            assert commands_recorded() == [], commands_recorded()
+            # With no zcode running, the link starts the app through
+            # LaunchServices (recorded here, so nothing opens on the screen).
+            alone = dict(shell_env, ZCODE_CONFIG_DIR=tempfile.mkdtemp(prefix="zcode-e2e-cli-config-"))
+            subprocess.run([os.path.join(bin_dir, "zcode"), project], env=alone, check=True, timeout=10)
+            subprocess.run([os.path.join(bin_dir, "zcode"), "--background"], env=alone, check=True, timeout=10)
+            assert commands_recorded() == [["/usr/bin/open", "-a", installed, "--args", project],
+                                           ["/usr/bin/open", "-a", installed, "--args", "--background"]], commands_recorded()
+            # Installing again replaces the link.
+            z.run("app cli install", "wait 500")
+            assert json.loads(z.run("app cli status")[-1])["status"] == "installed"
+
+        check("Packaging: Install CLI links zcode into the folder (ZCODE_CLI_DIR); the link hands a path to the running zcode or starts the app", cli_installed)
+
+        def login_item_toggles():
+            status = json.loads(z.run("app login-item status")[-1])
+            assert status["status"] == "not registered", status
+            assert not json.loads(z.run("app login-item menu")[-1])["checked"]
+            z.run("app login-item toggle", "wait 500")
+            assert json.loads(z.run("app login-item menu")[-1])["checked"]
+            assert json.loads(z.run("app login-item status")[-1])["status"] == "enabled"
+            assert open(login_file).read() == "on"
+            assert "zcode::ToggleOpenAtLogin" in z.dump()["settings"]["menu_checked"]
+            z.run("action zcode::ToggleOpenAtLogin", "wait 500")
+            assert not json.loads(z.run("app login-item menu")[-1])["checked"]
+            assert open(login_file).read() == "off"
+            assert "zcode::ToggleOpenAtLogin" not in z.dump()["settings"]["menu_checked"]
+
+        check("Packaging: Open at Login toggles the login item (a file stands in for launchd) and the menu's checkmark follows", login_item_toggles)
+
+        def settled():
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                status = json.loads(z.run("app updates status")[-1])
+                if status["state"] in ("ready", "failed", "up to date", "available"):
+                    return status
+                time.sleep(0.3)
+            raise TimeoutError(status)
+
+        def update_installs():
+            status = json.loads(z.run("app updates status")[-1])
+            assert status["state"] == "idle" and status["current"] == version and status["feed"] == feed_url, status
+            # A wrong checksum: nothing is installed.
+            set_feed(sha256="0" * 64)
+            z.run("app updates check")
+            status = settled()
+            assert status["state"] == "failed" and "SHA-256" in status["detail"], status
+            assert requests()[-2:] == ["/appcast.json", f"/zcode-{next_version}.zip"], requests()
+            with open(os.path.join(installed, "Contents", "Info.plist"), "rb") as f:
+                assert plistlib.load(f)["CFBundleShortVersionString"] == version
+            # The release: downloaded, checked, unpacked and swapped in.
+            set_feed()
+            z.run("app updates check")
+            status = settled()
+            assert status["state"] == "ready" and status["version"] == next_version, status
+            with open(os.path.join(installed, "Contents", "Info.plist"), "rb") as f:
+                assert plistlib.load(f)["CFBundleShortVersionString"] == next_version
+            subprocess.run(["codesign", "--verify", "--deep", "--strict", installed], check=True, capture_output=True)
+            previous = os.path.join(config, "updates", f"zcode-{version}-previous.app")
+            with open(os.path.join(previous, "Contents", "Info.plist"), "rb") as f:
+                assert plistlib.load(f)["CFBundleShortVersionString"] == version
+            assert not [n for n in os.listdir(apps) if n.startswith(".zcode-update")], os.listdir(apps)
+            # Checking again offers the restart rather than installing twice.
+            z.run("app updates check", "wait 300")
+            assert json.loads(z.run("app updates status")[-1])["state"] == "ready"
+            # Restart Now: the relaunch waits for this process, then opens the bundle.
+            try:
+                z.run("app updates restart")
+            except RuntimeError:
+                pass  # quit before the command's log line was counted
+            z.proc.wait(timeout=15)
+            relaunch = commands_recorded()[-1]
+            assert relaunch[:2] == ["/bin/sh", "-c"] and f'/usr/bin/open -a "{installed}"' in relaunch[2] and str(z.proc.pid) in relaunch[2], relaunch
+
+        check("Packaging: Check for Updates… fails a bad checksum, installs the release in the bundle's place, and Restart Now relaunches it", update_installs)
+    finally:
+        z.quit()
+
+    def updated_app_runs():
+        z2 = Zcode(project, env, binary=installed_binary)
+        try:
+            info = json.loads(z2.run("app bundle")[-1])
+            assert info["version"] == next_version and info["bundle"] == installed, info
+            z2.run("app updates check")
+            deadline = time.time() + 60
+            while time.time() < deadline:
+                status = json.loads(z2.run("app updates status")[-1])
+                if status["state"] != "checking":
+                    break
+                time.sleep(0.3)
+            assert status["state"] == "up to date" and status["current"] == next_version, status
+            assert subprocess.run([installed_binary, "--version"], capture_output=True, text=True).stdout.strip() == f"zcode {version}"
+        finally:
+            z2.quit()
+
+    check("Packaging: the installed update runs and finds itself up to date", updated_app_runs)
+    server.kill()
+    server.wait()
+    shutil.rmtree(feed_dir, ignore_errors=True)
+    shutil.rmtree(apps, ignore_errors=True)
+    shutil.rmtree(config, ignore_errors=True)
+    shutil.rmtree(out, ignore_errors=True)
+
+
 def warm_open(samples, background=False, limit_ms=150):
     """Starts a resident zcode (a regular window, or `--background`), then
     times `zcode <project>` through it."""
@@ -6015,21 +6298,29 @@ def re_strip_comments(text):
     return "\n".join(l for l in text.splitlines() if not l.strip().startswith("//"))
 
 
+# The cold launch's reference (the minimal AppKit app's median), once measured.
+COLD_LAUNCH = {}
+
+
+def median_launch(command, runs=5):
+    """Launches `command` (a `--startup-bench` zcode, or the reference app)
+    once to warm up and then `runs` times: the medians of content on screen
+    and of the first frame, in ms, and the last run's JSON."""
+    env = dict(os.environ, ZCODE_NEW_INSTANCE="1")
+    subprocess.run(command, capture_output=True, env=env)
+    samples = []
+    for _ in range(runs):
+        out = subprocess.run(command, capture_output=True, text=True, env=env).stdout
+        samples.append(json.loads(out.strip().splitlines()[-1]))
+    median = lambda key: sorted(r[key] for r in samples)[len(samples) // 2]
+    return median("total_to_first_pixels_ms"), median("total_to_first_frame_ms"), samples[-1]
+
+
 def main():
     if not os.path.exists(BINARY):
         sys.exit("build first: cargo build --release")
     sim = "--simulator" in sys.argv
     print("Cold launch (welcome window; the first launch after a rebuild includes macOS's binary scan):")
-    env = dict(os.environ, ZCODE_NEW_INSTANCE="1")
-
-    def median_launch(command):
-        subprocess.run(command, capture_output=True, env=env)
-        runs = []
-        for _ in range(5):
-            out = subprocess.run(command, capture_output=True, text=True, env=env).stdout
-            runs.append(json.loads(out.strip().splitlines()[-1]))
-        median = lambda key: sorted(r[key] for r in runs)[2]
-        return median("total_to_first_pixels_ms"), median("total_to_first_frame_ms"), runs[-1]
 
     zcode_ms, zcode_frame_ms, last = median_launch([BINARY, "--startup-bench"])
     print("  " + json.dumps(last))
@@ -6042,6 +6333,7 @@ def main():
                        check=True, capture_output=True)
         native_ms, native_frame_ms, _ = median_launch([floor])
         bare_ms, bare_frame_ms, _ = median_launch([floor, "--no-anim"])
+        COLD_LAUNCH["native_ms"] = native_ms
         # "Pixels" is when the window server's copy of the window first shows
         # content, i.e. what the user sees; "frame" is when the app produced
         # its first frame.
@@ -6093,6 +6385,9 @@ def main():
 
     print("Property lists, Info and Signing & Capabilities (copies of HelloZ and HelloClassic):")
     plist_checks(samples)
+
+    print("Packaging (scripts/package.py: the bundle, the CLI link, Open at Login, an update from scripts/fake_update_feed.py):")
+    packaging_checks(samples)
 
     if warm_open_check_pending:
         print("Single instance:")
