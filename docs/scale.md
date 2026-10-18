@@ -61,8 +61,11 @@ scheme, `Fennec`, in ⌃0's picker, as a user would. zcode then picks an
 iPhone simulator. `bench index` starts the background index build, as a
 save does. The script waits for it to start and end, up to
 `--index-cap` seconds (600 by default). With a database written, it
-opens a file the database covers and times sourcekit-lsp's restart with
-it. This is reported, not gated: the build's time is the toolchain's.
+opens a file the database covers and times sourcekit-lsp with it, then
+the app's view controller, which the database lacks: when its semantic
+tokens come, how many, and where its arguments came from (`bsp options`,
+zcode's build server). The phase runs with each binary. This is
+reported, not gated: the build's time is the toolchain's.
 During the rounds no index build runs when the project opens
 (`ZCODE_INDEX_BUILD=0`), so it doesn't load the machine while they
 measure.
@@ -142,6 +145,40 @@ tool, and the benchmark doesn't run it: it would fetch and run
 third-party tooling and write into the checkout. Everything the app
 depends on compiles first, and the database keeps those commands.
 
+## The build server
+
+Foundations 3 hands sourcekit-lsp its arguments from zcode's build server
+(`src/bsp`) instead of the compilation database. Measured with the same
+script, branch against `master` (`7afb09d`), 3 alternating rounds, load
+average 2–7:
+
+| | Branch | Master |
+|---|---|---|
+| After the index build, the app's view controller (not in the database) | semantic tokens after 8.2 s, 4,945 of them; arguments: Xcode's index settings | no semantic tokens in 120 s |
+| Rounds with no database (the rounds' scheme is `Account`, a Mac library) | ready 0.8 s, first tokens 1.9 s | ready 0.4 s, first tokens 1.5 s |
+| Rounds that found a database at open (left by an interrupted session) | first tokens 1.9–2.0 s | no tokens in any round |
+| sourcekit-lsp with its helpers, end of a round | 246–322 MB | 228–311 MB |
+
+Every other gate held, within a few percent of master. In the rounds the
+app target isn't in the scheme: until Xcode has answered, its files are
+compiled alone with the Mac's SDK (as sourcekit-lsp does without a build
+server, hence the same first tokens), then with the settings
+`-showBuildSettings -alltargets` gives it (its own SDK, here iPhoneOS):
+in a separate check, 633 tokens from the file alone at 2.6 s, then 3,287
+once those arrived (~30 s, most of it `xcodebuild` on a loaded machine).
+Getting there turned up three things a target never built needs: files
+it lists that a build generates (`Client/Generated/FxNimbus.swift`) left
+off the command line, since one missing input makes the compiler give up
+on the module; the folders of the project's headers, which Xcode's header
+maps make reachable (the app's bridging header imports them by name); and
+a refresh of semantic tokens when sourcekit-lsp reopens a file with new
+settings, which it only asks clients that pull diagnostics for. Once the
+index build has run, `xcodebuild -showBuildSettingsForIndex` has the
+app's arguments too (before it, it lists the app's 1,231 files without
+any), and those come first. The index phase took 55–62 s either way;
+sourcekit-lsp isn't restarted when it ends, it reads the index store as
+the build writes it.
+
 ## What profiling found
 
 **The Find navigator laid out every result.** With 5,000 results, every
@@ -182,12 +219,11 @@ package checkouts and the index store.
 * sourcekit-lsp answers for an open file from the file alone in under 2
   s, without waiting for the index build.
 
-**Found, not fixed:** with a database that lacks a file (the app's files
-here), sourcekit-lsp returns no semantic tokens for it. Without a
-database it answers from the file alone. Any project whose index build
-stops partway hits this. A build server that hands sourcekit-lsp
-settings for every file (Foundations 3, the Build Server Protocol server)
-is the place to fix it.
+**Fixed by the build server (Foundations 3):** with a database that
+lacks a file (the app's files here), sourcekit-lsp returned no semantic
+tokens for it; without a database it answered from the file alone. Any
+project whose index build stops partway hit this. zcode's build server
+(`src/bsp`) now gives every file of a target its arguments; see below.
 
 ## About the memory numbers
 

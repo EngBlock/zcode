@@ -231,7 +231,7 @@ if zcode is not faster.
 * **Always warm.** `zcode --background` starts the resident instance with no window. zcode ▸ Open at Login registers it as a login item (the bundle's LaunchAgent, through SMAppService), and even the first open of the day takes the warm path.
 * **The bundle costs ~15–25 ms more to launch.** `zcode.app/Contents/MacOS/zcode --startup-bench` is the same binary and the same startup, plus AppKit's own launch work for a bundled app: `finishLaunching` loads the Writing Tools UI library while it adds the text-input items to the Edit menu (seen with `sample`), which a bare binary without a bundle identifier skips. Three alternating rounds of 10 (load average 20–50): the bare binary's first pixels at 251.1, 260.1 and 259.4 ms, the bundle's at 287.3, 281.4 and 287.8 ms; on a calmer run (load average 18–25) 265.4, 266.8 and 262.8 ms against 281.6, 283.7 and 279.7 ms. The icon, the document types, the hardened runtime and the signature make no difference (each tried alone), nor do `NSAllowsWritingTools` or `NSMenuDoesNotAutomaticallyInsertWritingToolsItems` as `Info.plist` keys or defaults. The e2e suite times both in alternating rounds and holds the bundle to within 40 ms of the bare binary.
 * Resident memory at first frame is ~102 MB for the welcome window and ~120 MB with a project open.
-* **On a large app** (firefox-ios, 10,908 files; `scripts/bench.py`, `docs/scale.md`): the files are listed ~225 ms after `main()` (the scan takes ~75 ms in the background), an Open Quickly keystroke costs ~3 ms over every path, Find in Workspace reads every file in ~100 ms, a redraw with 5,000 results costs ~2 ms, typing in a 9,400-line file ~4 ms a keystroke, and zcode holds ~165–175 MB resident after opening and searching.
+* **On a large app** (firefox-ios, 10,908 files; `scripts/bench.py`, `docs/scale.md`): the files are listed ~225 ms after `main()` (the scan takes ~75 ms in the background), an Open Quickly keystroke costs ~3 ms over every path, Find in Workspace reads every file in ~100 ms, a redraw with 5,000 results costs ~2 ms, typing in a 9,400-line file ~4 ms a keystroke, and zcode holds ~165–175 MB resident after opening and searching. The app's own files, which its index build can't compile without firefox-ios's bootstrap, get semantic highlighting through the build server (~8 s after opening one, once the index build has run; never with the compilation database alone).
 * The first launch after each rebuild also includes macOS scanning the new binary.
 
 * Two startup fixes make zcode faster than a bare GPUI Kit window
@@ -956,9 +956,9 @@ The control channel also takes window screenshots
   index build stops where firefox-ios needs its `bootstrap.sh` (a
   downloaded tool), which the benchmark doesn't run, so the compilation
   database covers the frameworks and packages but not the app's own
-  files. sourcekit-lsp then gives no semantic tokens for files the
-  database lacks, where without a database it answers from the file
-  alone. zcode opens with a project's first scheme in name order (a
+  files; the build server gives those their arguments anyway (from
+  Xcode's index settings once the build has run, from build settings
+  before). zcode opens with a project's first scheme in name order (a
   library here), and the benchmark picks the app's. The relative gates
   need a `master` with the benchmarks' control commands; an older one is
   measured through `dump`, and only the cold open, memory, readiness and
