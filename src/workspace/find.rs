@@ -19,11 +19,45 @@ pub struct FindState {
     pub replacing: bool,
     pub options: SearchOptions,
     pub results: Arc<Vec<FileMatches>>,
+    /// The navigator's rows for `results`, a file's header then its
+    /// matches, laid out only where on screen: a search over a big project
+    /// has thousands.
+    pub rows: Vec<FindRow>,
+    pub scroll: UniformListScrollHandle,
     pub searching: bool,
     pub error: Option<String>,
     pub title: Option<String>,
     pub(super) cancel: Arc<AtomicBool>,
     pub(super) _task: Option<Task<()>>,
+}
+
+/// A row of the Find navigator: a file's header, or one of its matches
+/// (at most `MATCHES_SHOWN_PER_FILE` of them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindRow {
+    File(usize),
+    Match { file: usize, index: usize },
+}
+
+/// How many of a file's matches the navigator lists (all of them open in
+/// the multibuffer).
+pub const MATCHES_SHOWN_PER_FILE: usize = 100;
+
+impl FindState {
+    pub fn set_results(&mut self, results: Vec<FileMatches>) {
+        self.rows = find_rows(&results);
+        self.results = Arc::new(results);
+    }
+}
+
+/// The rows for `results`, in order.
+pub fn find_rows(results: &[FileMatches]) -> Vec<FindRow> {
+    let mut rows = Vec::with_capacity(results.iter().map(|f| 1 + f.matches.len().min(MATCHES_SHOWN_PER_FILE)).sum());
+    for (file, found) in results.iter().enumerate() {
+        rows.push(FindRow::File(file));
+        rows.extend((0..found.matches.len().min(MATCHES_SHOWN_PER_FILE)).map(|index| FindRow::Match { file, index }));
+    }
+    rows
 }
 
 impl Workspace {
@@ -42,7 +76,7 @@ impl Workspace {
         let _ = window;
         self.find.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         if query.is_empty() {
-            self.find.results = Arc::new(vec![]);
+            self.find.set_results(vec![]);
             self.find.searching = false;
             cx.notify();
             return;
@@ -70,12 +104,36 @@ impl Workspace {
             this.update(cx, |this, cx| {
                 let matches = results.iter().map(|f| f.matches.len()).sum();
                 crate::perf::Perf::record_timing(cx, "find", started.elapsed(), matches);
-                this.find.results = Arc::new(results);
+                this.find.set_results(results);
                 this.find.searching = false;
                 cx.notify();
             })
             .ok();
         }));
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FindRow, MATCHES_SHOWN_PER_FILE, find_rows};
+    use crate::search::{FileMatches, LineMatch};
+
+    fn file(matches: usize) -> FileMatches {
+        FileMatches {
+            path: "/p/a.swift".into(),
+            matches: (0..matches).map(|i| LineMatch { line: i as u32, column: 0, range: 0..1, preview: "x".into() }).collect(),
+        }
+    }
+
+    #[test]
+    fn rows_are_a_header_then_the_matches_capped() {
+        let rows = find_rows(&[file(2), file(MATCHES_SHOWN_PER_FILE + 5)]);
+        assert_eq!(rows.len(), 1 + 2 + 1 + MATCHES_SHOWN_PER_FILE);
+        assert_eq!(rows[0], FindRow::File(0));
+        assert_eq!(rows[2], FindRow::Match { file: 0, index: 1 });
+        assert_eq!(rows[3], FindRow::File(1));
+        assert_eq!(rows[rows.len() - 1], FindRow::Match { file: 1, index: MATCHES_SHOWN_PER_FILE - 1 });
+        assert!(find_rows(&[]).is_empty());
     }
 }

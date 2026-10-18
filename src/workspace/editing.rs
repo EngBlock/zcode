@@ -518,7 +518,7 @@ impl Workspace {
                 .background_spawn(async move { locations_to_matches(locations) })
                 .await;
             this.update(cx, |this, cx| {
-                this.find.results = Arc::new(results);
+                this.find.set_results(results);
                 this.find.searching = false;
                 cx.notify();
             })

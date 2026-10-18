@@ -326,6 +326,8 @@ impl Workspace {
                 replacing: false,
                 options: SearchOptions::default(),
                 results: Arc::new(vec![]),
+                rows: vec![],
+                scroll: UniformListScrollHandle::new(),
                 searching: false,
                 error: None,
                 title: None,

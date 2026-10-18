@@ -91,6 +91,9 @@ impl NavigatorTab {
     }
 }
 
+/// The Find navigator's rows share one height, for the list's sake.
+const FIND_ROW_HEIGHT: f32 = 22.;
+
 pub(super) fn row(id: impl Into<ElementId>) -> Stateful<Div> {
     h_flex().id(id).w_full().px_2().py(px(3.)).gap_1p5().text_sm()
 }
@@ -423,6 +426,83 @@ impl Workspace {
             )
     }
 
+    /// The Find navigator's rows on screen: a file's name and folder, then
+    /// its matches with their line numbers and the match highlighted.
+    fn render_find_rows(&mut self, range: std::ops::Range<usize>, _: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let theme = cx.theme().clone();
+        let results = self.find.results.clone();
+        let mut out = Vec::with_capacity(range.len());
+        for row_ix in range {
+            let Some(find_row) = self.find.rows.get(row_ix).copied() else { continue };
+            let element = match find_row {
+                super::find::FindRow::File(file_ix) => {
+                    let file = &results[file_ix];
+                    let bookmark_file = file.path.clone();
+                    row(("find-file", file_ix))
+                        .h(px(FIND_ROW_HEIGHT))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(Icon::new(file_icon(&file.path)).small().text_color(theme.muted_foreground))
+                        .child(div().truncate().child(file.path.file_name().unwrap_or_default().to_string_lossy().to_string()))
+                        .child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::NORMAL)
+                                .text_color(theme.muted_foreground)
+                                .truncate()
+                                .child(self.relative(file.path.parent().unwrap_or(&file.path))),
+                        )
+                        .context_menu({
+                            let workspace = cx.weak_entity();
+                            move |menu, _, _| {
+                                let (workspace, path) = (workspace.clone(), bookmark_file.clone());
+                                menu.item(PopupMenuItem::new("Bookmark File").on_click(move |_, window, cx| {
+                                    workspace.update(cx, |ws, cx| ws.bookmark_path(path.clone(), window, cx)).ok();
+                                }))
+                            }
+                        })
+                        .into_any_element()
+                }
+                super::find::FindRow::Match { file: file_ix, index: match_ix } => {
+                    let file = &results[file_ix];
+                    let m = &file.matches[match_ix];
+                    let path = file.path.clone();
+                    let line = m.line;
+                    let column = m.column;
+                    let highlight = HighlightStyle {
+                        background_color: Some(theme.warning.opacity(0.35)),
+                        font_weight: Some(FontWeight::SEMIBOLD),
+                        ..Default::default()
+                    };
+                    let text = StyledText::new(m.preview.clone()).with_highlights(vec![(m.range.clone(), highlight)]);
+                    let (bookmark_path, bookmark_text) = (file.path.clone(), m.preview.clone());
+                    row(SharedString::from(format!("find-{file_ix}-{match_ix}")))
+                        .h(px(FIND_ROW_HEIGHT))
+                        .pl_6()
+                        .text_xs()
+                        .hover(|el| el.bg(theme.sidebar_accent))
+                        .child(div().text_color(theme.muted_foreground).w(px(28.)).child(format!("{}", line + 1)))
+                        .child(div().flex_1().truncate().font_family(theme.mono_font_family.clone()).child(text))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_file(path.clone(), Some(Target::Line { line, column }), true, window, cx);
+                        }))
+                        .context_menu({
+                            let workspace = cx.weak_entity();
+                            move |menu, _, _| {
+                                let (workspace, path, text) = (workspace.clone(), bookmark_path.clone(), bookmark_text.clone());
+                                menu.item(PopupMenuItem::new("Bookmark Line").on_click(move |_, window, cx| {
+                                    let (path, text) = (path.clone(), text.clone());
+                                    workspace.update(cx, |ws, cx| ws.bookmark_find_result(path, line, text, window, cx)).ok();
+                                }))
+                            }
+                        })
+                        .into_any_element()
+                }
+            };
+            out.push(element);
+        }
+        out
+    }
+
     fn render_find_navigator(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.hierarchy.shown {
             return self.render_hierarchy(cx);
@@ -454,66 +534,12 @@ impl Workspace {
             )
         };
 
-        let mut list = v_flex().id("find-results").flex_1().min_h_0().overflow_y_scroll();
-        for (file_ix, file) in results.iter().enumerate() {
-            let bookmark_file = file.path.clone();
-            list = list.child(
-                row(("find-file", file_ix))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(Icon::new(file_icon(&file.path)).small().text_color(theme.muted_foreground))
-                    .child(div().truncate().child(file.path.file_name().unwrap_or_default().to_string_lossy().to_string()))
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::NORMAL)
-                            .text_color(theme.muted_foreground)
-                            .truncate()
-                            .child(self.relative(file.path.parent().unwrap_or(&file.path))),
-                    )
-                    .context_menu({
-                        let workspace = cx.weak_entity();
-                        move |menu, _, _| {
-                            let (workspace, path) = (workspace.clone(), bookmark_file.clone());
-                            menu.item(PopupMenuItem::new("Bookmark File").on_click(move |_, window, cx| {
-                                workspace.update(cx, |ws, cx| ws.bookmark_path(path.clone(), window, cx)).ok();
-                            }))
-                        }
-                    }),
-            );
-            for (match_ix, m) in file.matches.iter().enumerate().take(100) {
-                let path = file.path.clone();
-                let line = m.line;
-                let column = m.column;
-                let highlight = HighlightStyle {
-                    background_color: Some(theme.warning.opacity(0.35)),
-                    font_weight: Some(FontWeight::SEMIBOLD),
-                    ..Default::default()
-                };
-                let text = StyledText::new(m.preview.clone()).with_highlights(vec![(m.range.clone(), highlight)]);
-                let (bookmark_path, bookmark_text) = (file.path.clone(), m.preview.clone());
-                list = list.child(
-                    row(SharedString::from(format!("find-{file_ix}-{match_ix}")))
-                        .pl_6()
-                        .text_xs()
-                        .hover(|el| el.bg(theme.sidebar_accent))
-                        .child(div().text_color(theme.muted_foreground).w(px(28.)).child(format!("{}", line + 1)))
-                        .child(div().flex_1().truncate().font_family(theme.mono_font_family.clone()).child(text))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_file(path.clone(), Some(Target::Line { line, column }), true, window, cx);
-                        }))
-                        .context_menu({
-                            let workspace = cx.weak_entity();
-                            move |menu, _, _| {
-                                let (workspace, path, text) = (workspace.clone(), bookmark_path.clone(), bookmark_text.clone());
-                                menu.item(PopupMenuItem::new("Bookmark Line").on_click(move |_, window, cx| {
-                                    let (path, text) = (path.clone(), text.clone());
-                                    workspace.update(cx, |ws, cx| ws.bookmark_find_result(path, line, text, window, cx)).ok();
-                                }))
-                            }
-                        }),
-                );
-            }
-        }
+        // Rows are laid out only where on screen: a search over a big
+        // project has thousands.
+        let list = uniform_list("find-results", self.find.rows.len(), cx.processor(Self::render_find_rows))
+            .track_scroll(&self.find.scroll)
+            .flex_1()
+            .min_h_0();
 
         v_flex()
             .size_full()
