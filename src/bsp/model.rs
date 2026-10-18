@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::{AppContext as _, Context, Entity, Task, WeakEntity};
+use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, Task, WeakEntity};
 use serde_json::{Value, json};
 
 use super::graph::{BuildGraph, Inputs, Origin};
@@ -24,6 +24,9 @@ use crate::project::{self, ProjectInfo};
 
 /// How often the files the graph comes from are looked at.
 const POLL: Duration = Duration::from_secs(2);
+
+/// sourcekit-lsp was told some targets' files or arguments changed.
+pub struct SettingsChanged;
 
 pub struct BuildServer {
     shared: Arc<Shared>,
@@ -47,6 +50,8 @@ pub struct BuildServer {
     _wake_task: Task<()>,
     _subscription: gpui_kit::Subscription,
 }
+
+impl EventEmitter<SettingsChanged> for BuildServer {}
 
 impl BuildServer {
     pub fn new(project: ProjectInfo, cache_dir: PathBuf, build: &Entity<BuildController>, cx: &mut Context<Self>) -> Self {
@@ -148,6 +153,7 @@ impl BuildServer {
                 this.synchronized = Arc::new(synchronized);
                 if changed > 0 {
                     log::info!("build server: graph made in {elapsed:?}, {changed} targets changed");
+                    cx.emit(SettingsChanged);
                 }
                 cx.notify();
             })

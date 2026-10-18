@@ -228,6 +228,9 @@ pub struct LspStore {
     /// request may have sent the edit already).
     edited: std::collections::HashSet<PathBuf>,
     flush_task: Option<Task<()>>,
+    /// Until when sourcekit-lsp's diagnostics for a file mean it reopened
+    /// it with new build settings (`build_settings_changed`).
+    reopening_until: Option<std::time::Instant>,
 }
 
 impl EventEmitter<LspStoreEvent> for LspStore {}
@@ -244,6 +247,7 @@ impl LspStore {
             packages: PackageCache::default(),
             edited: Default::default(),
             flush_task: None,
+            reopening_until: None,
         }
     }
 
@@ -314,6 +318,15 @@ impl LspStore {
     /// The servers' process ids, for memory sampling.
     pub fn pids(&self) -> Vec<i32> {
         self.servers.iter().filter_map(|s| s.ready().map(|server| server.pid())).collect()
+    }
+
+    /// zcode's build server told sourcekit-lsp some files' build settings
+    /// changed. sourcekit-lsp reopens them and then pushes their
+    /// diagnostics, but asks for new semantic tokens and inlay hints only
+    /// from clients that pull diagnostics: the diagnostics that follow
+    /// (for a while) refresh them.
+    pub fn build_settings_changed(&mut self) {
+        self.reopening_until = Some(std::time::Instant::now() + Duration::from_secs(120));
     }
 
     pub fn sourcekit(&self) -> &crate::bsp::Launch {
@@ -653,7 +666,14 @@ impl LspStore {
                     } else {
                         server.diagnostics.insert(path.clone(), params.diagnostics);
                     }
+                    let reopened = server.spec.is_sourcekit()
+                        && self.documents.contains_key(&path)
+                        && self.reopening_until.is_some_and(|until| std::time::Instant::now() < until);
                     self.merge_diagnostics(&path, cx);
+                    if reopened {
+                        cx.emit(LspStoreEvent::RefreshSemanticTokens);
+                        cx.emit(LspStoreEvent::RefreshInlayHints);
+                    }
                 }
                 "$/progress" => {
                     let progress = &mut self.servers[id].progress;

@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
-use super::graph::{IndexArguments, Kind, ModelTarget};
+use super::graph::{self, IndexArguments, Kind, ModelTarget};
 use crate::build::xcode::Destination;
 use crate::project::ProjectInfo;
 use crate::xcodeproj::XcodeProject;
@@ -36,6 +36,16 @@ pub fn model_targets(projects: &[PathBuf]) -> Vec<ModelTarget> {
             }
         };
         let name = project.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let mut header_dirs: Vec<PathBuf> = files
+            .items
+            .values()
+            .filter(|i| i.isa == "PBXFileReference")
+            .filter_map(|i| i.resolved.as_deref())
+            .filter(|p| graph::is_header(p))
+            .filter_map(|p| p.parent().map(Path::to_path_buf))
+            .collect();
+        header_dirs.sort();
+        header_dirs.dedup();
         for target in files.targets.iter().filter(|t| t.isa == "PBXNativeTarget") {
             out.push(ModelTarget {
                 name: target.name.clone(),
@@ -43,6 +53,7 @@ pub fn model_targets(projects: &[PathBuf]) -> Vec<ModelTarget> {
                 kind: Some(Kind::from_product_type(target.product_type.as_deref())),
                 files: files.compiled_files(target),
                 directory: files.project_dir.clone(),
+                header_dirs: header_dirs.clone(),
             });
         }
     }
@@ -128,8 +139,9 @@ fn all_targets(projects: &[PathBuf], configuration: &str, sdk: &str, derived_dat
             .arg("-project")
             .arg(project)
             .args(which)
-            .arg("-derivedDataPath")
-            .arg(derived_data)
+            // The index build's products (it refuses -derivedDataPath here).
+            .arg(format!("SYMROOT={}", derived_data.join("Build/Products").display()))
+            .arg(format!("OBJROOT={}", derived_data.join("Build/Intermediates.noindex").display()))
             .args(["-skipPackageUpdates", "-skipMacroValidation", "-skipPackagePluginValidation"]);
         crate::build::process::unblock_signals(&mut cmd);
         Ok(parse_build_settings(&run_json(cmd)?))

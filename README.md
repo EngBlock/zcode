@@ -66,7 +66,7 @@ update feed in one go (`--dry-run` prints what it would run).
 | | Where the servers come from: `lsp.<id>.binary` in your settings, the web app's own `node_modules/.bin`, your login shell's `PATH`, or zcode installs them with npm into `~/Library/Application Support/zcode/language-servers` the first time one is needed (Node.js required; `auto_install_language_servers: false` turns that off). `lsp.<id>` also takes `enabled`, `initialization_options` and `settings` (merged over zcode's), as in Zed. Format File and `format_on_save` use the web app's Prettier when it has one (`formatter`: `auto`, `prettier` or `language_server`), Biome's formatter for a Biome app, the language server otherwise. | ⌃⇧I |
 | | Emmet, built in (no Node): an abbreviation before the cursor is offered as a completion in HTML, the markup of Vue, Svelte and Astro files, JSX and TSX (`className`, `<img />`), and CSS, SCSS and Less (and a component's `<style>`): `ul.list>li*3`, `.card>h2{Title}+p`, `!`, `a:link`, `input:email`, `lorem10`, `m10-20`, `d:f`, `c#fc0`… Expanded, its first tab stop is selected and Tab visits the rest. Editor ▸ Emmet ▸ Expand Abbreviation expands without the menu; Wrap with Abbreviation… puts the selection (or the line) inside one, previewed as you type it (`ul>li*` makes an item of each line). Tags close as their `>` is typed in HTML, Vue, Svelte, Astro, JSX and TSX; ⌘/ comments markup as `<!-- -->` and CSS as `/* */` (a component's script and style blocks in their own language). | ⌃⌥E |
 | | Find ▸ Find Call Hierarchy: the function at the cursor (in whichever pane is focused) as a tree in the Find navigator, with its callers (as in Xcode) or the calls it makes, each level expanded on demand; a caller opens at its call, the rest at their declarations, and a row's menu starts a new hierarchy from it. Find Ancestor Types, Find Descendent Types and Find Conforming Types show a type's supertypes or subtypes the same way. Editor ▸ Show Callers… lists the callers in a menu at the cursor. Features the language server doesn't offer are left out, and their commands say so. | ⌃⇧⌘H |
-| **Xcode project indexing** | zcode pulls a compilation database out of `xcodebuild` output, the job xcode-build-server does, so cross-file features work for `.xcodeproj` targets. When a project has never been built, a low-priority background "index build" produces it. Saving source files refreshes the index, so rename and references stay current. | — |
+| **Xcode project indexing** | sourcekit-lsp learns how to compile an `.xcodeproj`'s files from zcode's own Build Server Protocol server, the job xcode-build-server does: each target's files come from the project (build phases, synchronized folders and their exceptions), their arguments from Xcode's own for indexing (`xcodebuild -showBuildSettingsForIndex`), the last index build's log, or the target's build settings. A file added to a target, a membership change or a build setting edited (in zcode, Xcode or an `.xcconfig` saved in zcode) reaches sourcekit-lsp within seconds, without a build, and a target the build never compiled still gets its arguments. zcode writes nothing into the project: sourcekit-lsp finds `zcode bsp` through a connection file in zcode's cache, and a project's own build server (`buildServer.json`, `.bsp/`) wins. A low-priority background "index build" writes the index (and a compilation database, which `"sourcekit_build_settings": "compilation_database"` hands sourcekit-lsp instead); saving source files refreshes it, so rename and references stay current. | — |
 | **Navigation** | Open Quickly (fuzzy file and symbol search, `file:line`), Quick Actions command palette, back/forward history, jump to line, counterpart (.h ↔ .m), reveal in navigator and tab switching. | ⇧⌘O, ⇧⌘A, ⌃⌘← ⌃⌘→, ⌘L, ⌃⌘↑, ⇧⌘J, ⇧⌘[ ⇧⌘] |
 | | Group-based projects (no file-system-synchronized folders) stay consistent as Xcode keeps them: New File, Rename (a name with `/` moves the item), Move to Trash and Add Files… add, update and remove file references, groups and build files in `project.pbxproj` (Sources for code, Resources for resources), with Xcode-style IDs and the rest of the file left byte for byte. New files join the targets that build their neighbors. | ⌥⌘A |
 | | File inspector: name, type, location, full path and Target Membership checkboxes for the selected file. | ⌥⌘1 |
@@ -414,6 +414,12 @@ src/
                     sheet (archive.rs, organizer.rs, distribute_sheet.rs); the asset catalog editor as a tab
                     (asset_catalog.rs: outline, wells, inspector, edits and undo; asset_catalogs.rs: opening it);
                     SwiftUI previews' gutter marks and Show in Xcode Canvas (previews.rs)
+  bsp/              the Build Server Protocol server sourcekit-lsp starts for an Xcode project (`zcode bsp`,
+                    relayed to the running zcode's socket; its connection file found through XDG_DATA_HOME):
+                    the build graph (graph.rs: targets, files, arguments from Xcode's index settings, the
+                    index build's log or build settings), reading the project and asking xcodebuild
+                    (inputs.rs), connections answered on threads of their own (server.rs), the graph kept
+                    current as the project, the database, the scheme and destination change (model.rs)
   lsp/              JSON-RPC client; the store of a project's servers (one per kind and folder) keeping
                     documents in sync with ranged changes, pushed and pulled diagnostics; which server
                     serves which files and folders, and what each is told (servers.rs); finding and
@@ -452,8 +458,8 @@ src/
                     main thread with cancellation and progress (server.rs), both protocol eras
                     (protocol.rs), the tools (tools.rs; workspace/mcp.rs is their side of the window),
                     the agent panel's tokens
-  instance.rs       the Unix socket: `zcode <path>` handed to the running zcode, `zcode mcp`'s connections;
-                    the same user only
+  instance.rs       the Unix socket: `zcode <path>` handed to the running zcode, `zcode mcp`'s and
+                    `zcode bsp`'s connections; the same user only
   bundle.rs         the zcode.app this binary runs from (path, version from its Info.plist), a launch from the
                     shell's `zcode` link handed to LaunchServices (`open -a`), Finder's file URLs
   cli.rs            zcode ▸ Install CLI: the link in /usr/local/bin, an administrator prompt when needed
@@ -635,6 +641,14 @@ JSX and Vue queries are zcode's. Emmet is written from Emmet's
 documentation of its abbreviation syntax and snippets (`crates/zcode-emmet`,
 no Emmet code); Expand Abbreviation, Wrap with Abbreviation and ⌃⌥E are
 zcode's choices (Xcode has no Emmet).
+The build server is written from the Build Server Protocol's specification
+(build-server-protocol.github.io) and sourcekit-lsp's documentation of its
+extensions and of how it finds a build server (Apache-2.0 with the Runtime
+Library Exception; its source was read to check the installed version's
+method names and search order, none of it copied). It asks Xcode's own
+`xcodebuild -showBuildSettingsForIndex` and `-showBuildSettings`.
+xcode-build-server (MIT) does the same job from build logs; none of its
+code is used. No new dependencies.
 The scale benchmarks (`scripts/bench.py`) run zcode on firefox-ios
 (Mozilla Public License 2.0), fetched at a pinned commit into a cache
 outside the repository and only read; nothing of it is copied into zcode.
@@ -644,7 +658,7 @@ zcode doesn't use any GPL code from Zed.
 
 ```
 cargo test                          # unit tests (zcode and crates/zcode-editor)
-cargo test -- --ignored             # needs Xcode: sourcekit-lsp, lldb-dap, and xcodebuild on an edited project
+cargo test -- --ignored             # needs Xcode: sourcekit-lsp (also through `zcode bsp`), lldb-dap, and xcodebuild on an edited project
                                     # (network_* tests need network access)
 cargo build --release && python3 scripts/e2e.py [--simulator] [--network] [--compare-apps]   # drives the real UI
 python3 scripts/bench.py [--rounds 3] [--skip-index]   # scale benchmarks on firefox-ios, against master (docs/scale.md)
@@ -673,6 +687,14 @@ themes or session. It covers:
   Target Membership on and off, rename and move, Move to Trash, Add Files,
   then a build of the edited project; and in the synchronized HelloZ, the same
   operations leave `project.pbxproj` untouched
+* the build server on a copy of HelloZ: sourcekit-lsp connecting to
+  `zcode bsp` through zcode's connection file (nothing written into the
+  project) and asking for Xcode's index arguments; a file added to the
+  synchronized folder working before any build (⌃⌘J into another file); a
+  build setting edited in `project.pbxproj` reaching the open file (an
+  `#if` block's error appears); a membership exception taking a file out
+  of its target; `"sourcekit_build_settings": "compilation_database"`
+  restarting sourcekit-lsp on the database, and back
 * the build-error → issue flow
 * test diamonds: one Swift Testing test from its diamond (`xcodebuild
   -only-testing`), Test Selected Items at the cursor, Test Again, a whole
@@ -941,6 +963,23 @@ The control channel also takes window screenshots
   need a `master` with the benchmarks' control commands; an older one is
   measured through `dump`, and only the cold open, memory, readiness and
   keystroke-to-tick gates get a relative limit from it.
+* Build server: sourcekit-lsp doesn't prepare targets or index files
+  itself (zcode doesn't offer `buildTarget/prepare`): the index is the
+  index build's, so references, rename and call hierarchies reach only
+  what that build compiled, while every open file still gets its
+  arguments. A target outside the current scheme gets its arguments from
+  `-showBuildSettings -alltargets` (for the destination's SDK when it
+  supports it) or the last index build's log, and until anything is
+  known a target's file is compiled alone with the Mac's SDK, as
+  sourcekit-lsp does without a build server. Xcode's index arguments
+  are empty for a target whose build Xcode can't plan (firefox-ios's app
+  without its `bootstrap.sh`); such a target's arguments are made from its build
+  settings (search paths, definitions, flags, the bridging header, the
+  modules the index build made), without what custom build rules or
+  generated sources would add. A file in several targets is compiled as
+  its first's (an app's before its tests'), as sourcekit-lsp picks, and
+  targets' dependencies aren't reported. An `.xcconfig` edited outside
+  zcode is noticed only with the next project change or scheme switch.
 * Packaging: Developer ID signing and notarization have only been
   dry-run (this Mac has an Apple Development certificate, no Developer
   ID), and the update feed's default URL is a placeholder until there's

@@ -257,6 +257,12 @@ impl Workspace {
                 }
             }),
         ];
+        // New build settings reach sourcekit-lsp's open files.
+        if let Some(server) = &build_server {
+            subscriptions.push(cx.subscribe(server, |this, _, _: &crate::bsp::model::SettingsChanged, cx| {
+                this.lsp.update(cx, |lsp, _| lsp.build_settings_changed());
+            }));
+        }
         // Devices are listed while the window is active, and at once when it
         // becomes active (one may have been plugged in meanwhile).
         subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {

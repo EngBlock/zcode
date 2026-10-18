@@ -87,6 +87,9 @@ pub struct ModelTarget {
     pub files: Vec<PathBuf>,
     /// Its project's folder: the compiler's working directory.
     pub directory: PathBuf,
+    /// The folders of the headers its project references, which Xcode's
+    /// header maps make reachable by name (a bridging header's imports).
+    pub header_dirs: Vec<PathBuf>,
 }
 
 /// Xcode's arguments for indexing one file.
@@ -549,7 +552,12 @@ impl BuildGraph {
                 (Some(args), _) => (Some(crate::build::compiledb::clean_arguments(&args)), Some(Origin::IndexSettings)),
                 (None, Some(args)) => (Some(args), Some(Origin::BuildLog)),
                 (None, None) => match settings.and_then(|s| swift_from_settings(s, &context)) {
-                    Some(args) => (Some(args), Some(Origin::BuildSettings)),
+                    Some(mut args) => {
+                        let at = args.iter().position(|a| a == "-import-objc-header").unwrap_or(args.len());
+                        let dirs = model.header_dirs.iter().flat_map(|d| ["-Xcc".to_string(), format!("-I{}", d.display())]);
+                        args.splice(at..at, dirs);
+                        (Some(args), Some(Origin::BuildSettings))
+                    }
                     None => (None, None),
                 },
             };
@@ -584,8 +592,10 @@ impl BuildGraph {
             if target.clang_template.is_none()
                 && let Some(settings) = settings
                 && let Some(file) = target.files.iter().find(|f| clang_language(f).is_some())
-                && let Some(arguments) = clang_from_settings(settings, file)
+                && let Some(mut arguments) = clang_from_settings(settings, file)
             {
+                let at = arguments.len().saturating_sub(2);
+                arguments.splice(at..at, model.header_dirs.iter().map(|d| format!("-I{}", d.display())));
                 target.clang_template = Some(ClangCommand { file: file.clone(), arguments: with_index_store(arguments, store) });
                 target.clang_origin = Some(Origin::BuildSettings);
             }
@@ -665,11 +675,13 @@ impl BuildGraph {
         let (arguments, origin) = if swift {
             let Some(template) = target.swift.clone() else { return alone("-sdk") };
             // The target's files, the asked-for one as sourcekit-lsp names it
-            // (swiftc refuses two paths to one file).
+            // (swiftc refuses two paths to one file). Not the ones missing
+            // from disk (a build would generate them): one input the
+            // compiler can't open and it gives up on every file.
             let mut arguments = template;
             let asked = real(file);
             let mut listed = false;
-            for f in target.files.iter().chain(&target.generated).filter(|f| is_swift(f)) {
+            for f in target.files.iter().chain(&target.generated).filter(|f| is_swift(f) && (*f == &asked || f.exists())) {
                 let this = *f == asked || f == file;
                 listed |= this;
                 arguments.push(if this { file } else { f }.display().to_string());
@@ -720,6 +732,7 @@ mod tests {
                     kind: Some(Kind::Application),
                     files: ["/p/App/A.swift", "/p/App/B.swift", "/p/App/c.m", "/p/App/d.h"].map(PathBuf::from).to_vec(),
                     directory: "/p".into(),
+                    header_dirs: vec![],
                 },
                 ModelTarget {
                     name: "AppTests".into(),
@@ -727,6 +740,7 @@ mod tests {
                     kind: Some(Kind::Test),
                     files: vec!["/p/AppTests/T.swift".into()],
                     directory: "/p".into(),
+                    header_dirs: vec![],
                 },
             ],
             commands: vec![
@@ -787,26 +801,44 @@ mod tests {
     #[test]
     fn swift_files_get_their_targets_arguments_and_current_files() {
         let dir = scratch("swift");
-        let graph = BuildGraph::build(&inputs(&dir));
+        // A project on disk: A and B exist, Missing (a file a build
+        // generates) doesn't yet.
+        let project = real(&dir).join("proj");
+        std::fs::create_dir_all(project.join("App")).unwrap();
+        for file in ["A.swift", "B.swift"] {
+            std::fs::write(project.join("App").join(file), "").unwrap();
+        }
+        let at = |relative: &str| project.join(relative).display().to_string();
+        let mut inputs = inputs(&dir);
+        inputs.root = project.clone();
+        inputs.model[0].directory = project.clone();
+        inputs.model[0].files = ["App/A.swift", "App/B.swift", "App/Missing.swift", "App/c.m"].map(|f| project.join(f)).to_vec();
+        for arg in &mut inputs.commands[0].arguments {
+            if let Some(name) = arg.strip_prefix("/p/") {
+                *arg = at(name);
+            }
+        }
+        let graph = BuildGraph::build(&inputs);
         let app = app(&graph);
         assert_eq!(app.swift_origin, Some(Origin::BuildLog));
         let generated = real(&dir.join("GeneratedAssetSymbols.swift"));
         assert_eq!(app.generated, [generated.clone()]);
-        let options = graph.options(&app.id, Path::new("/p/App/B.swift"), Some("swift")).unwrap();
+        let options = graph.options(&app.id, Path::new(&at("App/B.swift")), Some("swift")).unwrap();
         let args = &options.arguments;
         // No compiler, the index build's store, the target's files now (B is
-        // new since the build; Gone was removed) and the generated one.
+        // new since the build; Gone was removed; Missing isn't there) and
+        // the generated one.
         assert_eq!(args[..3], strings(&["-module-name", "App", "-sdk"]));
         assert_eq!(flag_value(args, "-index-store-path"), Some("/dd/Index.noindex/DataStore"));
-        for file in ["/p/App/A.swift", "/p/App/B.swift"] {
-            assert_eq!(args.iter().filter(|a| *a == file).count(), 1, "{file} in {args:?}");
+        for file in [at("App/A.swift"), at("App/B.swift")] {
+            assert_eq!(args.iter().filter(|a| **a == file).count(), 1, "{file} in {args:?}");
         }
-        assert!(!args.contains(&"/p/App/Gone.swift".to_string()), "{args:?}");
+        assert!(!args.contains(&at("App/Gone.swift")) && !args.contains(&at("App/Missing.swift")), "{args:?}");
         assert!(args.contains(&generated.display().to_string()));
-        assert_eq!(options.working_directory, Path::new("/p"));
+        assert_eq!(options.working_directory, project);
         // A file the project doesn't list yet is compiled with the rest.
-        let loose = graph.options(&app.id, Path::new("/p/App/New.swift"), None).unwrap();
-        assert!(loose.arguments.contains(&"/p/App/New.swift".to_string()));
+        let loose = graph.options(&app.id, Path::new(&at("App/New.swift")), None).unwrap();
+        assert!(loose.arguments.contains(&at("App/New.swift")) && loose.arguments.contains(&at("App/A.swift")));
         // A file asked for through a symlink is listed once, as asked.
         let through_link = Path::new("/").join(generated.strip_prefix("/private").unwrap_or(&generated));
         if through_link != generated {
@@ -866,6 +898,7 @@ mod tests {
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
         inputs.build_settings = Arc::new(HashMap::from([("AppTests".to_string(), settings)]));
+        inputs.model[1].header_dirs = vec!["/p/App/Headers".into()];
         let graph = BuildGraph::build(&inputs);
         let tests = graph.targets.iter().find(|t| t.name == "AppTests").unwrap();
         assert_eq!(tests.swift_origin, Some(Origin::BuildSettings));
@@ -879,6 +912,9 @@ mod tests {
         }
         let features: Vec<&str> = args.iter().enumerate().filter(|(_, a)| *a == "-enable-upcoming-feature").map(|(i, _)| args[i + 1].as_str()).collect();
         assert_eq!(features, ["DisableOutwardActorInference", "ExistentialAny"]);
+        // The project's headers, as Xcode's header maps reach them, before the bridging header.
+        let headers = args.iter().position(|a| a == "-I/p/App/Headers").unwrap();
+        assert!(args[headers - 1] == "-Xcc" && headers < args.iter().position(|a| a == "-import-objc-header").unwrap(), "{args:?}");
         // The modules the index build made: products and packages' module maps.
         assert!(args.windows(2).any(|w| w == ["-I", "/dd/Build/Products/Debug-iphonesimulator"]), "{args:?}");
         assert!(args.contains(&"-fmodule-map-file=/dd/GeneratedModuleMaps/Kingfisher.modulemap".to_string()), "{args:?}");
