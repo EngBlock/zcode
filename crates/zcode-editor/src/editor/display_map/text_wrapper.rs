@@ -124,6 +124,16 @@ pub(crate) struct LineItem {
 }
 
 impl LineItem {
+    /// A line `len` bytes long that is one row on screen.
+    fn plain(len: usize) -> Self {
+        Self {
+            len,
+            indent: 0,
+            wrapped_lines: smallvec::smallvec![0..len],
+            long: None,
+        }
+    }
+
     /// Get the bytes length of this line.
     #[inline]
     pub(crate) fn len(&self) -> usize {
@@ -135,9 +145,81 @@ impl LineItem {
     pub(crate) fn lines_len(&self) -> usize {
         self.wrapped_lines.len()
     }
+
+    /// Whether the line is one row on screen and laid out whole: all a
+    /// [`LineRun::Plain`] needs to know of it is its length.
+    fn is_plain(&self) -> bool {
+        self.long.is_none() && self.indent == 0 && self.wrapped_lines.len() == 1
+    }
 }
 
-/// Summary of a subtree of [`LineItem`]s, maintained incrementally by the [`SumTree`].
+/// At most this many plain lines make one [`LineRun::Plain`]: an edit
+/// re-reads the lengths of the run's lines from the rope.
+const PLAIN_RUN_LINES: u32 = 128;
+
+/// What the wrap index keeps, so that it costs what the wrapped lines do: a
+/// line that wraps (or is long) is kept whole, and consecutive lines that
+/// are one row on screen each are one run that keeps only what the
+/// summary needs. Their lengths are the rope's.
+#[derive(Debug, Clone)]
+pub(crate) enum LineRun {
+    Line(LineItem),
+    Plain(PlainLines),
+}
+
+/// Consecutive lines that are one row on screen each.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PlainLines {
+    lines: u32,
+    /// Their byte lengths, summed, without the `\n`s.
+    bytes: usize,
+    /// The longest one's length, and its row in the run (the first one).
+    max_len: u32,
+    longest: u32,
+}
+
+/// Appends `item` to `runs`: to the last run if both are plain and it has
+/// room, else on its own.
+fn push_line(runs: &mut Vec<LineRun>, item: LineItem) {
+    if !item.is_plain() {
+        runs.push(LineRun::Line(item));
+        return;
+    }
+    let len = item.len as u32;
+    if let Some(LineRun::Plain(run)) = runs.last_mut()
+        && run.lines < PLAIN_RUN_LINES
+    {
+        if len > run.max_len {
+            run.max_len = len;
+            run.longest = run.lines;
+        }
+        run.lines += 1;
+        run.bytes += item.len;
+        return;
+    }
+    runs.push(LineRun::Plain(PlainLines {
+        lines: 1,
+        bytes: item.len,
+        max_len: len,
+        longest: 0,
+    }));
+}
+
+/// The index of `items`, in order.
+fn line_runs(items: impl IntoIterator<Item = LineItem>) -> SumTree<LineRun> {
+    let mut runs = Vec::new();
+    for item in items {
+        push_line(&mut runs, item);
+    }
+    SumTree::from_iter(runs, &())
+}
+
+/// The length of `row` in `text`, as a [`LineItem`]'s (without the `\n`).
+fn line_len(text: &Rope, row: usize) -> usize {
+    text.slice_line(row).len()
+}
+
+/// Summary of a subtree of [`LineRun`]s, maintained incrementally by the [`SumTree`].
 #[derive(Debug, Clone)]
 pub(crate) struct LineSummary {
     /// Number of buffer lines.
@@ -177,16 +259,25 @@ impl sum_tree::Summary for LineSummary {
     }
 }
 
-impl sum_tree::Item for LineItem {
+impl sum_tree::Item for LineRun {
     type Summary = LineSummary;
 
     fn summary(&self, _: &()) -> LineSummary {
-        LineSummary {
-            buffer_rows: 1,
-            wrap_rows: self.lines_len(),
-            bytes: self.len(),
-            max_line_len: self.len(),
-            longest_row: 0,
+        match self {
+            LineRun::Line(item) => LineSummary {
+                buffer_rows: 1,
+                wrap_rows: item.lines_len(),
+                bytes: item.len(),
+                max_line_len: item.len(),
+                longest_row: 0,
+            },
+            LineRun::Plain(run) => LineSummary {
+                buffer_rows: run.lines as usize,
+                wrap_rows: run.lines as usize,
+                bytes: run.bytes,
+                max_line_len: run.max_len as usize,
+                longest_row: run.longest as usize,
+            },
         }
     }
 }
@@ -229,8 +320,8 @@ pub(crate) struct TextWrapper {
     /// If is none, it means the text is not wrapped
     wrap_width: Option<Pixels>,
     wrapping_indent: WrappingIndent,
-    /// The lines by split \n
-    pub(crate) lines: SumTree<LineItem>,
+    /// The lines by split \n: runs of the ones not wrapped, the others whole.
+    pub(crate) lines: SumTree<LineRun>,
 
     inline_metrics: Rc<[(Range<usize>, Pixels)]>,
     /// The font's character widths, for long lines.
@@ -283,18 +374,33 @@ impl TextWrapper {
         self.lines.summary().longest_row
     }
 
-    /// Get the line item by buffer row index.
+    /// Get the line item by buffer row index: borrowed when the line wraps
+    /// or is long, else made from its length.
     #[inline]
-    pub(crate) fn line(&self, row: usize) -> Option<&LineItem> {
+    pub(crate) fn line(&self, row: usize) -> Option<Cow<'_, LineItem>> {
         let mut cursor = self.lines.cursor::<BufferRows>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        cursor.item()
+        match cursor.item()? {
+            LineRun::Line(item) => Some(Cow::Borrowed(item)),
+            LineRun::Plain(_) => Some(Cow::Owned(LineItem::plain(line_len(&self.text, row)))),
+        }
     }
 
     /// Iterate buffer lines in order.
-    #[inline]
-    pub(crate) fn iter_lines(&self) -> impl Iterator<Item = &LineItem> {
-        self.lines.iter()
+    #[cfg(test)]
+    pub(crate) fn iter_lines(&self) -> impl Iterator<Item = Cow<'_, LineItem>> {
+        let mut row = 0;
+        self.lines.iter().flat_map(move |run| {
+            let start = row;
+            let items: Vec<Cow<'_, LineItem>> = match run {
+                LineRun::Line(item) => vec![Cow::Borrowed(item)],
+                LineRun::Plain(run) => (start..start + run.lines as usize)
+                    .map(|row| Cow::Owned(LineItem::plain(line_len(&self.text, row))))
+                    .collect(),
+            };
+            row += items.len();
+            items
+        })
     }
 
     /// First wrap row of buffer line `row`. Returns the total wrap row count if `row` is
@@ -302,15 +408,24 @@ impl TextWrapper {
     pub(crate) fn buffer_line_to_first_wrap_row(&self, row: usize) -> usize {
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        cursor.start().1.0
+        let Dimensions(BufferRows(first_row), WrapRows(first_wrap_row), _) = *cursor.start();
+        match cursor.item() {
+            // One row a line.
+            Some(LineRun::Plain(_)) => first_wrap_row + (row - first_row),
+            _ => first_wrap_row,
+        }
     }
 
     /// Wrap row range of buffer line `row`.
     pub(crate) fn buffer_line_to_wrap_row_range(&self, row: usize) -> Range<usize> {
-        let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
+        let start = self.buffer_line_to_first_wrap_row(row);
+        let mut cursor = self.lines.cursor::<BufferRows>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        let start = cursor.start().1.0;
-        let len = cursor.item().map(|l| l.lines_len()).unwrap_or(0);
+        let len = match cursor.item() {
+            Some(LineRun::Line(item)) => item.lines_len(),
+            Some(LineRun::Plain(_)) => 1,
+            None => 0,
+        };
         start..start + len
     }
 
@@ -318,8 +433,10 @@ impl TextWrapper {
     pub(crate) fn wrap_row_to_buffer_line(&self, wrap_row: usize) -> usize {
         let mut cursor = self.lines.cursor::<Dimensions<WrapRows, BufferRows>>(&());
         cursor.seek(&WrapRows(wrap_row), Bias::Right);
+        let Dimensions(WrapRows(first_wrap_row), BufferRows(first_row), _) = *cursor.start();
         match cursor.item() {
-            Some(_) => cursor.start().1.0,
+            Some(LineRun::Plain(_)) => first_row + (wrap_row - first_wrap_row),
+            Some(LineRun::Line(_)) => first_row,
             None => self.lines_count().saturating_sub(1),
         }
     }
@@ -588,7 +705,7 @@ impl TextWrapper {
             .offset_to_point(range.start + new_text.len())
             .row;
 
-        let mut new_lines = Vec::with_capacity(new_end_row.saturating_sub(new_start_row) + 1);
+        let mut new_lines = Vec::new();
         let wrap_width = self.wrap_width;
 
         // An edit inside one long line carries its measurements and rows
@@ -675,13 +792,34 @@ impl TextWrapper {
         }
 
         if self.lines.is_empty() {
-            self.lines = SumTree::from_iter(new_lines, &());
+            self.lines = line_runs(new_lines);
         } else {
             let mut cursor = self.lines.cursor::<BufferRows>(&());
             let mut new_tree = cursor.slice(&BufferRows(start_row), Bias::Right);
-            // Skip the replaced rows
+            // A run the edit starts in keeps its lines before it, which the
+            // edit didn't touch.
+            let mut runs = Vec::new();
+            for row in cursor.start().0..start_row {
+                push_line(&mut runs, LineItem::plain(line_len(changed_text, row)));
+            }
+            for item in new_lines {
+                push_line(&mut runs, item);
+            }
+            // Skip the replaced rows, and keep the lines after them of a run
+            // they end in: they're the rows after the edit in the new text.
             cursor.seek_forward(&BufferRows(end_row + 1), Bias::Right);
-            new_tree.extend(new_lines, &());
+            if let Some(LineRun::Plain(run)) = cursor.item()
+                && cursor.start().0 < end_row + 1
+            {
+                let run_end = cursor.start().0 + run.lines as usize;
+                let shift = new_end_row as isize - end_row as isize;
+                for row in end_row + 1..run_end {
+                    let row = row.checked_add_signed(shift).expect("a row of the new text");
+                    push_line(&mut runs, LineItem::plain(line_len(changed_text, row)));
+                }
+                cursor.next();
+            }
+            new_tree.extend(runs, &());
             // Untouched rows after the edit
             new_tree.append(cursor.suffix(), &());
             drop(cursor);
@@ -785,12 +923,18 @@ impl TextWrapper {
         // Seek to buffer row
         let mut cursor = self.lines.cursor::<Dimensions<BufferRows, WrapRows>>(&());
         cursor.seek(&BufferRows(row), Bias::Right);
-        let wrapped_row = cursor.start().1.0;
-        let Some(line) = cursor.item() else {
-            return WrapDisplayPoint::new(wrapped_row, 0, 0);
+        let Dimensions(BufferRows(first_row), WrapRows(wrapped_row), _) = *cursor.start();
+        let local_offset = offset.saturating_sub(start);
+        let line = match cursor.item() {
+            None => return WrapDisplayPoint::new(wrapped_row, 0, 0),
+            // One row, the whole line.
+            Some(LineRun::Plain(_)) => {
+                let column = local_offset.min(line_len(&self.text, row));
+                return WrapDisplayPoint::new(wrapped_row + (row - first_row), 0, column);
+            }
+            Some(LineRun::Line(line)) => line,
         };
 
-        let local_offset = offset.saturating_sub(start);
         // A long line's rows are many, contiguous and not empty: find the
         // row by its end.
         if line.long.is_some() {
@@ -831,11 +975,16 @@ impl TextWrapper {
         // Seek to wrap row `point.row`
         let mut cursor = self.lines.cursor::<Dimensions<WrapRows, BufferRows>>(&());
         cursor.seek(&WrapRows(point.row), Bias::Right);
-        let Some(line) = cursor.item() else {
-            return self.text.len();
+        let Dimensions(WrapRows(wrapped_row), BufferRows(row), _) = *cursor.start();
+        let line = match cursor.item() {
+            None => return self.text.len(),
+            Some(LineRun::Plain(_)) => {
+                let row = row + (point.row - wrapped_row);
+                let len = line_len(&self.text, row);
+                return self.text.line_start_offset(row) + point.column.min(len);
+            }
+            Some(LineRun::Line(line)) => line,
         };
-        let wrapped_row = cursor.start().0.0;
-        let row = cursor.start().1.0;
 
         let line_start = self.text.line_start_offset(row);
         let local_row = point.row.saturating_sub(wrapped_row);
@@ -1861,7 +2010,7 @@ mod tests {
     fn test_wrap_row_buffer_line_boundaries() {
         let mut wrapper = TextWrapper::new(test_font(), px(14.), None);
         wrapper.text = Rope::from("aa\nbbbb\nc");
-        wrapper.lines = SumTree::from_iter(
+        wrapper.lines = line_runs(
             vec![
                 LineItem {
                     len: 2,
@@ -1882,7 +2031,6 @@ mod tests {
                     long: None,
                 },
             ],
-            &(),
         );
 
         assert_eq!(wrapper.lines_count(), 3);
@@ -2036,7 +2184,7 @@ mod tests {
     fn a_wrap_boundary_offset_resolves_to_the_row_the_caret_is_drawn_on() {
         let mut wrapper = TextWrapper::new(test_font(), px(14.), None);
         wrapper.text = Rope::from("first line\nthis one wraps");
-        wrapper.lines = SumTree::from_iter(
+        wrapper.lines = line_runs(
             vec![
                 LineItem {
                     len: Rope::from("first line").len(),
@@ -2051,7 +2199,6 @@ mod tests {
                     long: None,
                 },
             ],
-            &(),
         );
 
         // Offset 20 is the wrap boundary of the second buffer line: 11 (line start) + 9.
@@ -2093,7 +2240,7 @@ mod tests {
         wrapper.text = Rope::from(
             "Hello, 世界!\r\nThis is second line.\nThis is third line.\n这里是第 4 行。",
         );
-        wrapper.lines = SumTree::from_iter(
+        wrapper.lines = line_runs(
             vec![
                 // range: 0..15
                 LineItem {
@@ -2124,7 +2271,6 @@ mod tests {
                     long: None,
                 },
             ],
-            &(),
         );
 
         assert_eq!(
@@ -2292,5 +2438,118 @@ mod tests {
             line_layout.position_for_index(6, &last_layout, false),
             Some(point(px(20.), px(20.))),
         )
+    }
+
+    /// Wraps a line every 8 bytes past its first 12, at char boundaries.
+    fn every_eight(line: &str, _: Pixels, _: usize) -> Vec<Boundary> {
+        (12..line.len())
+            .step_by(8)
+            .filter(|&ix| line.is_char_boundary(ix))
+            .map(|ix| Boundary { ix, next_indent: 0 })
+            .collect()
+    }
+
+    fn fresh_wrapper(text: &Rope) -> TextWrapper {
+        let mut wrapper = TextWrapper::new(test_font(), px(14.), Some(px(100.)));
+        wrapper._update(text, &(0..text.len()), text, &mut every_eight);
+        wrapper
+    }
+
+    #[track_caller]
+    fn assert_same_index(text: &Rope, wrapper: &TextWrapper) {
+        let fresh = fresh_wrapper(text);
+        assert_eq!(wrapper.lines_count(), fresh.lines_count());
+        assert_eq!(wrapper.len(), fresh.len());
+        assert_eq!(wrapper.longest_row(), fresh.longest_row());
+        for row in 0..=fresh.lines_count() {
+            let (a, b) = (wrapper.line(row), fresh.line(row));
+            assert_eq!(a.as_ref().map(|l| (l.len(), l.wrapped_lines.clone())), b.as_ref().map(|l| (l.len(), l.wrapped_lines.clone())), "row {row}");
+            assert_eq!(wrapper.buffer_line_to_wrap_row_range(row), fresh.buffer_line_to_wrap_row_range(row), "row {row}");
+        }
+        for wrap_row in 0..=fresh.len() {
+            assert_eq!(wrapper.wrap_row_to_buffer_line(wrap_row), fresh.wrap_row_to_buffer_line(wrap_row));
+            let point = WrapDisplayPoint::new(wrap_row, 0, 5);
+            assert_eq!(wrapper.display_point_to_offset(point), fresh.display_point_to_offset(point));
+        }
+        for offset in (0..=text.len()).filter(|&ix| text.is_char_boundary(ix)) {
+            for affinity in [false, true] {
+                assert_eq!(
+                    wrapper.offset_to_display_point_with_affinity(offset, affinity),
+                    fresh.offset_to_display_point_with_affinity(offset, affinity),
+                    "offset {offset}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lines_that_dont_wrap_cost_a_run_not_an_item() {
+        let line = "let a = 1\n";
+        let text = Rope::from(line.repeat(100_000).as_str());
+        let wrapper = fresh_wrapper(&text);
+        assert_eq!(wrapper.lines_count(), 100_001);
+        // ~782 runs of 128 lines, not 100,001 items.
+        assert!(wrapper.lines.iter().count() <= 100_001 / PLAIN_RUN_LINES as usize + 1);
+        assert_eq!(wrapper.buffer_line_to_wrap_row_range(70_000), 70_000..70_001);
+        assert_eq!(wrapper.wrap_row_to_buffer_line(70_000), 70_000);
+        let offset = text.line_start_offset(70_000) + 4;
+        assert_eq!(wrapper.offset_to_display_point(offset), WrapDisplayPoint::new(70_000, 0, 4));
+        assert_eq!(wrapper.display_point_to_offset(WrapDisplayPoint::new(70_000, 0, 4)), offset);
+        // A wrapped line among them is kept whole.
+        let mut text = text;
+        let at = text.line_start_offset(500);
+        let long = "a line long enough to wrap twice over";
+        text.insert(at, long);
+        let mut wrapper = wrapper;
+        wrapper._update(&text, &(at..at), &Rope::from(long), &mut every_eight);
+        // 46 bytes: rows break at 12, 20, 28, 36 and 44.
+        assert_eq!(wrapper.buffer_line_to_wrap_row_range(500), 500..506);
+        assert_eq!(wrapper.buffer_line_to_wrap_row_range(501), 506..507);
+        assert_eq!(wrapper.longest_row(), 500);
+        assert_eq!(wrapper.lines.iter().filter(|run| matches!(run, LineRun::Line(_))).count(), 1);
+    }
+
+    #[test]
+    fn edits_keep_the_runs_what_a_fresh_index_has() {
+        // Edits of every kind at pseudo-random places: inserting and deleting
+        // lines, short and wrapping ones, across run boundaries and at the ends.
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n.max(1) as u64) as usize
+        };
+        let pieces = ["", "x", "\n", "ab\ncd", "a wrapping line of text here", "\n\n\n", "é\n", "short\nand a much longer line that wraps\n"];
+        let base: String = (0..400).map(|i| if i % 37 == 0 { "this line is long enough to wrap\n".to_string() } else { format!("line {i}\n") }).collect();
+        let mut text = Rope::from(base.as_str());
+        let mut wrapper = fresh_wrapper(&text);
+        assert_same_index(&text, &wrapper);
+        for step in 0..120 {
+            let len = text.len();
+            let mut start = next(len + 1);
+            while !text.is_char_boundary(start) {
+                start -= 1;
+            }
+            let mut end = (start + [0, 1, 5, 40, 300, 2000][next(6)]).min(len);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let insert = pieces[next(pieces.len())];
+            text.replace(start..end, insert);
+            wrapper._update(&text, &(start..end), &Rope::from(insert), &mut every_eight);
+            if step % 10 == 0 || step > 110 {
+                assert_same_index(&text, &wrapper);
+            }
+        }
+        assert_same_index(&text, &wrapper);
+        // Everything deleted, then typed again.
+        let all = 0..text.len();
+        text.replace(all.clone(), "");
+        wrapper._update(&text, &all, &Rope::new(), &mut every_eight);
+        assert_same_index(&text, &wrapper);
+        text.insert(0, "a\nb");
+        wrapper._update(&text, &(0..0), &Rope::from("a\nb"), &mut every_eight);
+        assert_same_index(&text, &wrapper);
     }
 }

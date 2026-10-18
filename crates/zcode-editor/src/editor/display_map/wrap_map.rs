@@ -150,9 +150,10 @@ impl WrapMap {
         &self.wrapper
     }
 
-    /// Get the line item by buffer row index.
+    /// Get the line item by buffer row index (made from its length when it
+    /// isn't wrapped).
     #[inline]
-    pub(crate) fn line(&self, row: usize) -> Option<&LineItem> {
+    pub(crate) fn line(&self, row: usize) -> Option<std::borrow::Cow<'_, LineItem>> {
         self.wrapper.line(row)
     }
 

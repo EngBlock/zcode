@@ -358,7 +358,7 @@ impl DisplayMap {
 
     /// Get the line item by buffer row index.
     #[inline]
-    pub(crate) fn line(&self, row: usize) -> Option<&LineItem> {
+    pub(crate) fn line(&self, row: usize) -> Option<std::borrow::Cow<'_, LineItem>> {
         self.wrap_map.line(row)
     }
 
