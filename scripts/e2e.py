@@ -4598,16 +4598,28 @@ def long_line_checks():
     """A minified script, one ~430 KB line, in a folder of its own: typing at
     its end and Page Down cost about what a short file's do, a frame shapes
     only what's on screen, soft wrap wraps it within the same budgets, and
-    the text stays right throughout (docs/scale.md, Performance batch 2)."""
+    the text stays right throughout (docs/scale.md, Performance batch 2).
+    Then large files: the script and a 2.6 MB Swift file open without a
+    syntax tree and keep the language's comments, brackets and Vim's text
+    objects; a 20 MB log, past the old 16 MB limit, opens (batch 3)."""
     project = os.path.realpath(os.path.join(WORK, "LongLines"))
     os.makedirs(project, exist_ok=True)
     minified = os.path.join(project, "min.js")
     short = os.path.join(project, "short.js")
+    small_swift = os.path.join(project, "Small.swift")
+    big_swift = os.path.join(project, "Big.swift")
+    big_log = os.path.join(project, "big.log")
     line = ";".join(f"var a{i}=function(b){{return b*{i}+Math.sqrt({i})}}" for i in range(8000))
     with open(minified, "w") as f:
         f.write(line)
     with open(short, "w") as f:
         f.write("".join(f"var x{i} = function(b) {{ return b * {i}; }};\n" for i in range(200)))
+    with open(small_swift, "w") as f:
+        f.write("".join(f"func value{i}(_ a: Int) -> Int {{\n    let b = (a + {i}) * 2\n    return b\n}}\n" for i in range(50)))
+    with open(big_swift, "w") as f:
+        f.write("".join(f"func value{i}(_ a: Int) -> Int {{ return (a + {i}) * 2 }}\n" for i in range(48_000)))
+    with open(big_log, "w") as f:
+        f.write("".join(f"2026-10-19T01:00:{i % 60:02d}Z INFO request {i} handled in {i % 97} ms path=/api/v1/items/{i}\n" for i in range(240_000)))
     z = Zcode(project)
 
     def undo_all():
@@ -4664,9 +4676,42 @@ def long_line_checks():
         z.run("action zcode::ToggleSoftWrap", "wait 200")
         print(f"    soft wrap on: {toggled['drawn_ms']:.0f} ms to the frame on screen, typing {typed['work_median_ms']:.1f} ms of work a key")
 
+    def large_files_have_no_syntax_tree():
+        z.run(f"open {small_swift}", "wait 800")
+        s = z.dump()["active"]
+        assert s["no_syntax_tree"] is None and s["fold_candidates"] >= 50, {k: s[k] for k in ("no_syntax_tree", "fold_candidates")}
+        assert os.path.getsize(big_swift) > 2 * 1024 * 1024
+        z.run(f"open {big_swift}:20", "wait 800")
+        s = z.dump()["active"]
+        assert s["no_syntax_tree"] == "Large" and s["fold_candidates"] == 0, s
+        # Comments and brackets go by the language's rules, without a tree.
+        z.run("keys cmd-/", "wait 100")
+        assert z.dump()["active"]["line_text"] == "// func value19(_ a: Int) -> Int { return (a + 19) * 2 }", z.dump()["active"]["line_text"]
+        undo_all()
+        z.run("keys end", "type x(", "wait 100")
+        assert z.dump()["active"]["line_text"].endswith("* 2 }x()"), z.dump()["active"]["line_text"]
+        undo_all()
+        # Vim's text objects go by the text too.
+        z.run("vim on", "wait 200", "keys home", "type f(ci(", "type b: Int", "keys escape", "wait 100")
+        try:
+            assert z.dump()["active"]["line_text"] == "func value19(b: Int) -> Int { return (a + 19) * 2 }", z.dump()["active"]["line_text"]
+        finally:
+            z.run("keys escape", "vim off", "wait 100")
+        undo_all()
+        z.run(f"open {minified}", "wait 500")
+        assert z.dump()["active"]["no_syntax_tree"] == "Minified", z.dump()["active"]
+        # Past the old 16 MB limit: it opens, and its end is reached.
+        assert os.path.getsize(big_log) > 16 * 1024 * 1024
+        z.run(f"open {big_log}", "wait 1000", "keys cmd-down", "wait 200")
+        s = z.dump()["active"]
+        assert s["path"] == big_log and s["line"] == 240_001 and s["no_syntax_tree"] == "Large", {k: s[k] for k in ("path", "line", "no_syntax_tree")}
+        paged = json.loads(z.run("bench keys pageup pageup pageup pageup pageup")[-1])
+        print(f"    a 20 MB log: five Page Ups {paged['work_ms']:.1f} ms of work")
+
     try:
         check("Long lines: typing at the end of a minified line and Page Down cost about what a short file's do, and only what's on screen is shaped", typing_and_page_down)
         check("Long lines: soft wrap on a minified line, the rows on screen shaped, typing and moving up a row", soft_wrap)
+        check("Large files: a 2.6 MB Swift file and the minified script open without a syntax tree, keeping comments, brackets and Vim's text objects; a 20 MB log opens", large_files_have_no_syntax_tree)
     finally:
         z.quit()
 

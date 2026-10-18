@@ -79,6 +79,10 @@ impl Workspace {
             (head, index) => (head.unwrap_or_default(), index.unwrap_or_default()),
         };
         let text = buffer.editor.read(cx).text().clone();
+        // A file this large isn't compared at every pause in typing.
+        if text.len() > super::buffers::MAX_LANGUAGE_FEATURES_SIZE {
+            return;
+        }
         let path = path.to_path_buf();
         buffer.git.diff_task = Some(cx.spawn(async move |this, cx| {
             if !delay.is_zero() {

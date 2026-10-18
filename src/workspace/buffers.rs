@@ -24,7 +24,16 @@ use super::pane::{EditorItem, Item, PaneId, PlistView};
 use super::{PlistEditor, PlistEditorEvent, Target, Workspace, line_anchors};
 use crate::lsp::{self, DocumentProviders};
 
-pub(super) const MAX_OPEN_FILE_SIZE: u64 = 16 * 1024 * 1024;
+pub(super) const MAX_OPEN_FILE_SIZE: u64 = 64 * 1024 * 1024;
+/// Past this a file goes to no language server and gets no change bars
+/// (the limit files could be opened at before they got no syntax tree).
+pub(super) const MAX_LANGUAGE_FEATURES_SIZE: usize = 16 * 1024 * 1024;
+
+/// The language servers' id for `path`'s language, unless its text, `len`
+/// bytes, is too large to give them.
+fn served_language(path: &Path, len: usize) -> Option<&'static str> {
+    (len <= MAX_LANGUAGE_FEATURES_SIZE).then(|| lsp::language_id_for(path)).flatten()
+}
 
 pub struct Buffer {
     pub path: PathBuf,
@@ -235,12 +244,13 @@ impl Workspace {
             || is_installed_package(path)
             || super::settings::is_generated(path);
         let config = self.editor_config();
+        let served = served_language(path, text.len());
         let editor = if headless {
             cx.new(|cx| EditorState::new(window, cx).default_value(text))
         } else {
             cx.new(|cx| Self::new_editor(&config, language, window, cx).default_value(text))
         };
-        if !headless && let Some(language_id) = lsp::language_id_for(path) {
+        if !headless && let Some(language_id) = served {
             let (text, journal) = editor.update(cx, |state, _| (state.text().clone(), state.edit_journal()));
             self.lsp.update(cx, |store, cx| store.open_document(path.to_path_buf(), language_id, text, Some(journal), cx));
         }
@@ -278,11 +288,11 @@ impl Workspace {
 
     /// Opens the language server's document of a headless buffer's file.
     fn ensure_lsp_document(&mut self, path: &Path, cx: &mut Context<Self>) {
-        let Some(language_id) = lsp::language_id_for(path) else { return };
+        let Some(editor) = self.buffer(path).map(|b| b.editor.clone()) else { return };
+        let Some(language_id) = served_language(path, editor.read(cx).text().len()) else { return };
         if self.lsp.read(cx).is_open(path) {
             return;
         }
-        let Some(editor) = self.buffer(path).map(|b| b.editor.clone()) else { return };
         let (text, journal) = editor.update(cx, |state, _| (state.text().clone(), state.edit_journal()));
         self.lsp.update(cx, |store, cx| store.open_document(path.to_path_buf(), language_id, text, Some(journal), cx));
     }
@@ -340,7 +350,7 @@ impl Workspace {
         editor.update(cx, |state, cx| state.set_read_only(read_only, cx));
         self.install_gutter_lanes(&editor, cx);
 
-        if lsp::language_id_for(path).is_some() {
+        if served_language(path, editor.read(cx).text().len()).is_some() {
             let apply_edit: crate::lsp::ApplyEditFn = {
                 let workspace = cx.weak_entity();
                 Rc::new(move |edit, window, cx| {
