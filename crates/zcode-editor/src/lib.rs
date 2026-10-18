@@ -126,7 +126,7 @@ pub use gutter::{
     LineNumberLabels, PaintedGutterItem,
 };
 pub use cursor::Selection;
-pub use edits::BufferEdit;
+pub use edits::{BufferEdit, EditJournal};
 pub use highlights::HighlightPriority;
 pub use history::{HistoryRequest, TransactionId};
 pub use modal::{CursorShape, KeystrokeInterceptor};

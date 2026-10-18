@@ -265,6 +265,40 @@ def keys_right(n):
     return "keys " + " ".join(["right"] * n)
 
 
+def replay_lsp_changes(log, suffix):
+    """The text a language server has for the file whose path ends with
+    `suffix`, from the didOpen and didChange params `lsp_proxy.py` logged
+    (`ZCODE_LSP_PROXY_CHANGES`), and the content changes sent."""
+    def offset(text, position):
+        lines = text.splitlines(keepends=True)
+        start = sum(len(line) for line in lines[:position["line"]])
+        line = lines[position["line"]] if position["line"] < len(lines) else ""
+        units = 0
+        for i, ch in enumerate(line):
+            if units >= position["character"]:
+                return start + i
+            units += 2 if ord(ch) > 0xFFFF else 1
+        return start + len(line)
+
+    text, changes = None, []
+    for entry in open(log):
+        message = json.loads(entry)
+        document = message["params"]["textDocument"]
+        if not document["uri"].endswith(suffix):
+            continue
+        if message["method"] == "textDocument/didOpen":
+            text, changes = document["text"], []
+            continue
+        for change in message["params"]["contentChanges"]:
+            changes.append(change)
+            if "range" not in change:
+                text = change["text"]
+                continue
+            start, end = offset(text, change["range"]["start"]), offset(text, change["range"]["end"])
+            text = text[:start] + change["text"] + text[end:]
+    return text, changes
+
+
 def line_of(path, needle):
     """1-based line number of the first line containing `needle`."""
     with open(path) as f:
@@ -2813,6 +2847,7 @@ def language_feature_checks(samples):
             f.write(text)
     proxy = os.path.join(ROOT, "scripts", "lsp_proxy.py")
     traffic = os.path.join(WORK, "lsp-traffic.log")
+    changes = os.path.join(WORK, "lsp-changes.log")
 
     def features(z):
         return z.dump()["language_features"]
@@ -2998,9 +3033,10 @@ def language_feature_checks(samples):
         z.quit()
 
     def bounded_traffic():
-        if os.path.exists(traffic):
-            os.remove(traffic)
-        z = Zcode(project, {"ZCODE_SOURCEKIT_LSP": proxy, "ZCODE_LSP_PROXY_LOG": traffic})
+        for log in (traffic, changes):
+            if os.path.exists(log):
+                os.remove(log)
+        z = Zcode(project, {"ZCODE_SOURCEKIT_LSP": proxy, "ZCODE_LSP_PROXY_LOG": traffic, "ZCODE_LSP_PROXY_CHANGES": changes})
         try:
             z.run("inlay-hints on", f"open {big}:3000")
             z.wait_for(lambda s: s["language_features"]["semantic_tokens"]["count"] > 1000
@@ -3017,6 +3053,21 @@ def language_feature_checks(samples):
             assert 1 <= count("textDocument/semanticTokens/full") <= 3, during
             assert 1 <= count("textDocument/inlayHint") <= 3, during
             assert count("textDocument/signatureHelp") <= 4, during
+            # The server's copy is the editor's text: the typing went as the
+            # editor's own edits. Then one letter typed over two selections
+            # 21 lines apart is two one-letter changes, not one range
+            # spanning them (what comparing the texts would send).
+            suffix = "/Sources/ZKit/Big.swift"
+            sent, typed = replay_lsp_changes(changes, suffix)
+            assert typed and all("range" in c for c in typed), typed[:3]
+            mark = len(typed)
+            z.run(f"open {big}:{line_of(big, 'name.uppercased()')}", keys_right(26),
+                  *["action zcode::SelectNextOccurrence"] * 2, "type Q", "wait 1500")
+            z.run(f"editor text {os.path.join(WORK, 'big-editor.txt')}")
+            sent, typed = replay_lsp_changes(changes, suffix)
+            assert sent == open(os.path.join(WORK, "big-editor.txt")).read(), "the server's text differs from the editor's"
+            assert sent.count("name.Q()") == 2, sent.count("name.Q()")
+            assert [c["text"] for c in typed[mark:]] == ["Q"] * 2, typed[mark:]
             # Scrolling through the file asks for hints, not for every row.
             mark = len(open(traffic).read().splitlines())
             z.run(*[f"open {big}:{line}" for line in range(200, 6000, 400)], "wait 1500")
@@ -3059,7 +3110,7 @@ def language_feature_checks(samples):
             z.run("inlay-hints " + ("on" if was_on else "off"))
             z.quit()
 
-    check("Requests stay bounded: typing and scrolling ask for tokens and hints a few times, not per keystroke", bounded_traffic)
+    check("Requests stay bounded: typing and scrolling ask for tokens and hints a few times, not per keystroke; the server's copy follows the editor's own edits", bounded_traffic)
     check("A server without these features: nothing asked for, commands say so, the rest works", without_the_features)
 
 

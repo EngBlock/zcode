@@ -11,7 +11,10 @@ through both ways, and:
     server's `initialize` answer, to check zcode does without them;
   * with `$ZCODE_LSP_PROXY_INLINE_TEXT`, offers `inlineCompletionProvider`
     (sourcekit-lsp has none) and answers `textDocument/inlineCompletion`
-    itself with one item inserting that text at the position.
+    itself with one item inserting that text at the position;
+  * appends the params of every `textDocument/didOpen` and `didChange`
+    zcode sends, as a JSON line, to `$ZCODE_LSP_PROXY_CHANGES`, so a test
+    can replay what the server was told.
 """
 
 import json
@@ -23,6 +26,7 @@ import threading
 LOG = os.environ.get("ZCODE_LSP_PROXY_LOG")
 HIDE = [c for c in os.environ.get("ZCODE_LSP_PROXY_HIDE", "").split(",") if c]
 INLINE_TEXT = os.environ.get("ZCODE_LSP_PROXY_INLINE_TEXT")
+CHANGES = os.environ.get("ZCODE_LSP_PROXY_CHANGES")
 initialize_ids = set()
 log_lock = threading.Lock()
 # Both threads write to zcode.
@@ -61,6 +65,9 @@ def client_to_server(server):
         if LOG and method:
             with log_lock, open(LOG, "a") as log:
                 log.write(method + "\n")
+        if CHANGES and method in ("textDocument/didOpen", "textDocument/didChange"):
+            with log_lock, open(CHANGES, "a") as log:
+                log.write(json.dumps({"method": method, "params": message["params"]}) + "\n")
         if INLINE_TEXT is not None and method == "textDocument/inlineCompletion":
             items = [{"insertText": INLINE_TEXT}] if INLINE_TEXT else []
             write_message(sys.stdout.buffer, {"jsonrpc": "2.0", "id": message["id"], "result": {"items": items}})

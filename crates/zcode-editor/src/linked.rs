@@ -29,6 +29,9 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// Reports an edit this editor just applied to its text, and applies it
     /// to the views linked to it.
     pub(crate) fn buffer_edited(&mut self, range: &Range<usize>, new_text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(journal) = &self.edit_journal {
+            journal.record(range, new_text);
+        }
         if !self.quiet_edits {
             cx.emit(crate::BufferEdit { range: range.clone(), new_text: new_text.to_string() });
         }

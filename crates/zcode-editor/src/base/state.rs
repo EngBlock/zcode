@@ -204,6 +204,8 @@ pub struct InputBaseState<M: InputModeKind> {
     /// Set while a multibuffer applies its own edit to its editor, so the
     /// edit isn't reported back to it as a `BufferEdit`.
     pub(crate) quiet_edits: bool,
+    /// Records every edit as it's applied, once a client asks for it.
+    pub(crate) edit_journal: Option<crate::edits::EditJournal>,
     pub(super) inline_tokens: Option<Box<super::inline_tokens::InlineTokenStore>>,
     pub(super) pending_token: Option<super::InlineToken>,
     pub(super) replaying_history: bool,
@@ -624,6 +626,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             applying_linked_edit: false,
             external_history: false,
             quiet_edits: false,
+            edit_journal: None,
             inline_tokens: None,
             pending_token: None,
             replaying_history: false,

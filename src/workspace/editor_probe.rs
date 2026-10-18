@@ -14,7 +14,8 @@ const PROBE: &str = "e2e-probe";
 
 impl Workspace {
     /// `inlay <offset> before|after <text>`, `block <row> <line>|<line>…`,
-    /// `layer <start> <end>`, `modal on|off`, `clear`.
+    /// `layer <start> <end>`, `modal on|off`, `clear`, `text <file>` (writes
+    /// the text to the file, for checks that compare it).
     pub(crate) fn editor_probe(&mut self, arg: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
         let editor = self.active_editor().ok_or("no editor")?;
         let (command, rest) = arg.split_once(' ').unwrap_or((arg, ""));
@@ -72,6 +73,9 @@ impl Workspace {
                     state.set_keystroke_interceptor(None, cx);
                     state.set_cursor_shape(CursorShape::Bar, cx);
                     state.set_extra_key_context(None, cx);
+                }
+                "text" => {
+                    std::fs::write(rest, state.text().to_string()).map_err(|e| e.to_string())?;
                 }
                 "clear" => {
                     state.clear_inlays(PROBE, cx);

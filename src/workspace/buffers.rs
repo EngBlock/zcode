@@ -241,9 +241,8 @@ impl Workspace {
             cx.new(|cx| Self::new_editor(&config, language, window, cx).default_value(text))
         };
         if !headless && let Some(language_id) = lsp::language_id_for(path) {
-            self.lsp.update(cx, |store, cx| {
-                store.open_document(path.to_path_buf(), language_id, editor.read(cx).text().clone(), cx)
-            });
+            let (text, journal) = editor.update(cx, |state, _| (state.text().clone(), state.edit_journal()));
+            self.lsp.update(cx, |store, cx| store.open_document(path.to_path_buf(), language_id, text, Some(journal), cx));
         }
         let saved_text = editor.read(cx).text().clone();
         let subscription = self.follow_buffer_changes(&editor, path.to_path_buf(), cx);
@@ -283,8 +282,9 @@ impl Workspace {
         if self.lsp.read(cx).is_open(path) {
             return;
         }
-        let Some(text) = self.buffer(path).map(|b| b.editor.read(cx).text().clone()) else { return };
-        self.lsp.update(cx, |store, cx| store.open_document(path.to_path_buf(), language_id, text, cx));
+        let Some(editor) = self.buffer(path).map(|b| b.editor.clone()) else { return };
+        let (text, journal) = editor.update(cx, |state, _| (state.text().clone(), state.edit_journal()));
+        self.lsp.update(cx, |store, cx| store.open_document(path.to_path_buf(), language_id, text, Some(journal), cx));
     }
 
     /// What the workspace does after each edit of a buffer, whichever pane

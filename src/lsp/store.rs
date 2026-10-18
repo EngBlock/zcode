@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use gpui_kit::{App, AppContext as _, BorrowAppContext as _, Context, EventEmitter, Task};
 use serde_json::{Value, json};
-use zcode_editor::Rope;
+use zcode_editor::{EditJournal, Rope};
 
 use super::install::{self, Found, Lookup};
 use super::servers::{self, PackageCache, ServerContext, ServerSpec};
@@ -191,6 +191,8 @@ struct DocumentServer {
     synced_version: i32,
     /// The text it has, which the next change is a range of.
     synced_text: Rope,
+    /// The journal's revision of `synced_text`, as far as known.
+    synced_revision: u64,
     opened: bool,
 }
 
@@ -200,6 +202,12 @@ struct Document {
     /// be mid-update when it calls a provider).
     text: Rope,
     version: i32,
+    /// The editor's edits as they're applied, which a change is made of
+    /// ([`super::sync`]), and the revision of `text` there: the editor's
+    /// current one when it was adopted (the edits are checked against the
+    /// texts before they're sent).
+    journal: Option<EditJournal>,
+    revision: u64,
     /// Its servers, in the order they're asked.
     servers: Vec<DocumentServer>,
 }
@@ -211,6 +219,25 @@ pub struct ServerSummary {
     pub root: PathBuf,
     pub status: LspStatus,
     pub progress: Option<String>,
+}
+
+impl Document {
+    /// Takes `text`, the editor's current text, as the document's.
+    fn adopt(&mut self, text: Rope) {
+        self.text = text;
+        self.version += 1;
+        if let Some(journal) = &self.journal {
+            self.revision = journal.revision();
+        }
+    }
+
+    /// Lets the journal drop the edits every server that has the document
+    /// open has (all of them, when none has).
+    fn forget_synced_edits(&self) {
+        let Some(journal) = &self.journal else { return };
+        let oldest = self.servers.iter().filter(|s| s.opened).map(|s| s.synced_revision).min();
+        journal.forget_through(oldest.unwrap_or(self.revision));
+    }
 }
 
 pub struct LspStore {
@@ -472,7 +499,7 @@ impl LspStore {
             for id in &wanted {
                 match doc.servers.iter().position(|s| s.id == *id) {
                     Some(ix) => kept.push(doc.servers.remove(ix)),
-                    None => kept.push(DocumentServer { id: *id, synced_version: version, synced_text: Rope::new(), opened: false }),
+                    None => kept.push(DocumentServer { id: *id, synced_version: version, synced_text: Rope::new(), synced_revision: 0, opened: false }),
                 }
             }
             doc.servers = kept;
@@ -840,10 +867,13 @@ impl LspStore {
     }
 
     /// Registers an open editor buffer and starts the servers it needs.
-    pub fn open_document(&mut self, path: PathBuf, language_id: &'static str, text: Rope, cx: &mut Context<Self>) {
+    /// Opens `path`'s document with `text`, the editor's current text, and
+    /// the editor's edit journal for incremental changes.
+    pub fn open_document(&mut self, path: PathBuf, language_id: &'static str, text: Rope, journal: Option<EditJournal>, cx: &mut Context<Self>) {
         let ids = self.match_servers(&path, language_id);
-        let servers = ids.iter().map(|&id| DocumentServer { id, synced_version: 1, synced_text: Rope::new(), opened: false }).collect();
-        self.documents.insert(path.clone(), Document { language_id, text, version: 1, servers });
+        let servers = ids.iter().map(|&id| DocumentServer { id, synced_version: 1, synced_text: Rope::new(), synced_revision: 0, opened: false }).collect();
+        let revision = journal.as_ref().map_or(0, EditJournal::revision);
+        self.documents.insert(path.clone(), Document { language_id, text, version: 1, journal, revision, servers });
         for id in ids {
             match self.servers[id].status {
                 LspStatus::Ready => {
@@ -900,14 +930,15 @@ impl LspStore {
         entry.opened = true;
         entry.synced_version = doc.version;
         entry.synced_text = doc.text.clone();
+        entry.synced_revision = doc.revision;
     }
 
     /// Marks a document as edited; changes are flushed after a short pause so
     /// live diagnostics follow typing without flooding the servers.
     pub fn document_changed(&mut self, path: &Path, text: Rope, cx: &mut Context<Self>) {
         let Some(doc) = self.documents.get_mut(path) else { return };
-        doc.version += 1;
-        doc.text = text;
+        doc.adopt(text);
+        doc.forget_synced_edits();
         self.edited.insert(path.to_path_buf());
         if self.flush_task.is_none() {
             self.flush_task = Some(cx.spawn(async move |this, cx| {
@@ -994,25 +1025,30 @@ impl LspStore {
         for entry in doc.servers.iter_mut().filter(|s| s.opened && s.synced_version != doc.version) {
             let server = &self.servers[entry.id];
             let Some(running) = server.ready() else { continue };
-            let change = if server.incremental {
-                let (old, new) = super::changed_range(&entry.synced_text, &doc.text);
-                json!({
-                    "range": { "start": super::offset_to_lsp(&entry.synced_text, old.start), "end": super::offset_to_lsp(&entry.synced_text, old.end) },
-                    "text": doc.text.slice(new).to_string(),
-                })
+            let changes = if server.incremental {
+                // The editor's edits since the server's text, when they're
+                // kept and make the current text; otherwise where the texts
+                // differ.
+                doc.journal
+                    .as_ref()
+                    .and_then(|journal| journal.edits_between(entry.synced_revision, doc.revision))
+                    .and_then(|edits| super::sync::edit_changes(&entry.synced_text, &edits, &doc.text))
+                    .unwrap_or_else(|| vec![super::sync::diff_change(&entry.synced_text, &doc.text)])
             } else {
-                json!({ "text": whole.get_or_insert_with(|| doc.text.to_string()) })
+                vec![json!({ "text": whole.get_or_insert_with(|| doc.text.to_string()) })]
             };
             running.notify_raw(
                 "textDocument/didChange",
                 json!({
                     "textDocument": { "uri": path_to_uri(path).as_str(), "version": doc.version },
-                    "contentChanges": [change],
+                    "contentChanges": changes,
                 }),
             );
             entry.synced_version = doc.version;
             entry.synced_text = doc.text.clone();
+            entry.synced_revision = doc.revision;
         }
+        doc.forget_synced_edits();
     }
 
     /// `path`'s ready servers that have it open, in order.
@@ -1030,10 +1066,9 @@ impl LspStore {
     fn sync(&mut self, path: &Path, text: Option<&Rope>) {
         if let Some(text) = text
             && let Some(doc) = self.documents.get_mut(path)
-            && doc.text != *text
+            && !super::sync::same_text(&doc.text, text)
         {
-            doc.text = text.clone();
-            doc.version += 1;
+            doc.adopt(text.clone());
             self.edited.insert(path.to_path_buf());
         }
         self.flush(path);
