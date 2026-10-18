@@ -338,7 +338,8 @@ impl RopeExt for Rope {
         let point = self.offset_to_point(offset);
         let line = self.slice_line(point.row);
         let offset = line.utf16_to_byte_idx(line.byte_to_utf16_idx(point.column));
-        let character = line.slice(..offset).chars().count();
+        // Ropey counts characters, so a long line isn't walked.
+        let character = line.byte_to_char_idx(offset);
         Position::new(point.row as u32, character as u32)
     }
 
@@ -438,12 +439,12 @@ impl RopeExt for Rope {
     }
 
     fn char_index_to_offset(&self, char_offset: usize) -> usize {
-        self.chars().take(char_offset).map(|c| c.len_utf8()).sum()
+        self.char_to_byte_idx(char_offset.min(self.len_chars()))
     }
 
     fn offset_to_char_index(&self, offset: usize) -> usize {
         let offset = self.clip_offset(offset, Bias::Right);
-        self.slice(..offset).chars().count()
+        self.byte_to_char_idx(offset)
     }
 }
 

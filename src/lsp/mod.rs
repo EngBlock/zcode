@@ -119,16 +119,13 @@ pub fn uri_to_path(uri: &lsp_types::Uri) -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf8_lossy(&bytes).into_owned()))
 }
 
-/// Byte offset → LSP position (UTF-16 columns).
+/// Byte offset → LSP position (UTF-16 columns). The rope counts UTF-16
+/// units, so this doesn't walk the line (a minified file's is megabytes).
 pub fn offset_to_lsp(text: &Rope, offset: usize) -> lsp_types::Position {
-    let offset = offset.min(text.len());
+    let offset = text.floor_char_boundary(offset.min(text.len()));
     let point = text.offset_to_point(offset);
     let line_start = text.line_start_offset(point.row);
-    let character: usize = text
-        .slice(line_start..offset)
-        .chars()
-        .map(char::len_utf16)
-        .sum();
+    let character = text.offset_to_offset_utf16(offset) - text.offset_to_offset_utf16(line_start);
     lsp_types::Position::new(point.row as u32, character as u32)
 }
 
@@ -139,16 +136,20 @@ pub fn lsp_to_offset(text: &Rope, position: lsp_types::Position) -> usize {
         return text.len();
     }
     let line_start = text.line_start_offset(row);
-    let mut remaining = position.character as usize;
-    let mut offset = line_start;
-    for ch in text.slice_line(row).chars() {
-        if remaining == 0 || ch == '\n' || ch == '\r' {
-            break;
-        }
-        remaining = remaining.saturating_sub(ch.len_utf16());
-        offset += ch.len_utf8();
+    let mut line_end = line_start + text.slice_line(row).len();
+    if line_end > line_start && text.char_at(line_end - 1) == Some('\r') {
+        line_end -= 1;
     }
-    offset
+    let start_utf16 = text.offset_to_offset_utf16(line_start);
+    let end_utf16 = text.offset_to_offset_utf16(line_end);
+    let target = (start_utf16 + position.character as usize).min(end_utf16);
+    let offset = text.offset_utf16_to_offset(target);
+    // A column inside a surrogate pair counts the whole character.
+    if text.offset_to_offset_utf16(offset) < target {
+        text.ceil_char_boundary(offset + 1)
+    } else {
+        offset
+    }
 }
 
 pub fn lsp_range_to_offsets(text: &Rope, range: lsp_types::Range) -> std::ops::Range<usize> {
@@ -233,5 +234,43 @@ mod tests {
             lsp_to_offset(&text, lsp_types::Position::new(1, 4)),
             "let 🙂 = 1\nlet ".len()
         );
+    }
+
+    /// The rope's UTF-16 counts give what walking each line's characters did.
+    #[test]
+    fn utf16_positions_match_walking_the_line() {
+        let walk_to_lsp = |text: &Rope, offset: usize| {
+            let point = text.offset_to_point(offset);
+            let start = text.line_start_offset(point.row);
+            let column: usize = text.slice(start..offset).chars().map(char::len_utf16).sum();
+            lsp_types::Position::new(point.row as u32, column as u32)
+        };
+        let walk_to_offset = |text: &Rope, position: lsp_types::Position| {
+            let row = position.line as usize;
+            if row >= text.lines_len() {
+                return text.len();
+            }
+            let mut remaining = position.character as usize;
+            let mut offset = text.line_start_offset(row);
+            for ch in text.slice_line(row).chars() {
+                if remaining == 0 || ch == '\n' || ch == '\r' {
+                    break;
+                }
+                remaining = remaining.saturating_sub(ch.len_utf16());
+                offset += ch.len_utf8();
+            }
+            offset
+        };
+        let source = "a🙂b\r\nnaïve 中文 𝄞x\n\n🙂🙂\r\nend";
+        let text = Rope::from(source);
+        for (offset, _) in source.char_indices().chain([(source.len(), ' ')]) {
+            assert_eq!(offset_to_lsp(&text, offset), walk_to_lsp(&text, offset), "at {offset}");
+        }
+        for line in 0..6 {
+            for character in 0..16 {
+                let position = lsp_types::Position::new(line, character);
+                assert_eq!(lsp_to_offset(&text, position), walk_to_offset(&text, position), "at {position:?}");
+            }
+        }
     }
 }
