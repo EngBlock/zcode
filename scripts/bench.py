@@ -26,6 +26,9 @@ rounds on `firefox-ios/Client.xcodeproj` (~11,000 files, ~2,100 Swift files):
 * sourcekit-lsp ready and the first semantic tokens for a 5,000-line file
 * typing in that file and in a 9,400-line one, a keystroke's work and its
   time to the next tick
+* files far larger than the app's, generated into the cache: typing near
+  the end of a 50,000-line Swift file, and five Page Downs in a 15 MB JSON
+  file (a keystroke's and the Page Downs' work)
 * the index build: the app's scheme (Fennec) chosen in ⌃0's picker, its
   background build for the simulator zcode picks (`bench index`, as a save
   starts it) until it ends or `--index-cap` seconds, then sourcekit-lsp
@@ -99,6 +102,8 @@ GATES = [
     ("typing_big_ms", "ms", 16, 1.5, 3),
     ("typing_tick_ms", "ms", 50, 1.5, 5),
     ("typing_big_tick_ms", "ms", 50, 1.5, 5),
+    ("typing_huge_ms", "ms", 16, 1.5, 3),
+    ("pagedown_json_ms", "ms", 50, 1.5, 5),
     ("lsp_footprint_mb", "MB", 2000, None, None),
 ]
 # Reported beside the gates, never gated.
@@ -242,6 +247,22 @@ class Status:
             "navigator": s["navigator"],
             "modal_open": s["modal_open"],
         }
+
+
+def huge_files():
+    """A 50,000-line Swift file and a 15 MB JSON one, in the cache (made
+    once, the same every time)."""
+    folder = os.path.join(CACHE, "huge")
+    swift, data = os.path.join(folder, "Huge.swift"), os.path.join(folder, "huge.json")
+    if not (os.path.exists(swift) and os.path.exists(data)):
+        os.makedirs(folder, exist_ok=True)
+        with open(swift, "w") as f:
+            f.write(e2e.big_swift(blocks=2500))
+        records = [{"id": i, "name": f"record {i}", "tags": ["a", "b", str(i % 7)], "position": {"x": i * 0.5, "y": -i}}
+                   for i in range(77_000)]
+        with open(data, "w") as f:
+            json.dump({"records": records}, f, indent=2)
+    return swift, data
 
 
 def frames(z, n=5):
@@ -391,6 +412,20 @@ def session(binary, project, index_cap=None):
         undo_all(z, status)
         z.run("keys cmd-w", "wait 300")
         r["lsp_footprint_mb"] = status()["memory"]["language_server_mb"]
+
+        # Typing near the end of a 50,000-line file: what an edit costs
+        # beyond the rows shown (fold candidates, the language server's
+        # change). Page Down in a 15 MB JSON file: the gutter's fold
+        # lookups for every row shown.
+        huge_swift, huge_json = huge_files()
+        z.run(f"open {huge_swift}:49000", "wait 1500", "keys end", "keys enter")
+        typed = json.loads(z.run(f"type-latency {TYPED}", timeout=240)[-1])
+        r["typing_huge_ms"] = typed.get("work_median_ms")
+        undo_all(z, status)
+        z.run("keys cmd-w", "wait 300", f"open {huge_json}", "wait 3000")
+        pages = [timed(z, "bench keys pagedown pagedown pagedown pagedown pagedown") for _ in range(5)]
+        r["pagedown_json_ms"] = None if None in pages else statistics.median(p["work_ms"] for p in pages)
+        z.run("keys cmd-w", "wait 300")
 
         if index_cap:
             # The app's scheme, chosen as in ⌃0's picker (zcode opens with
