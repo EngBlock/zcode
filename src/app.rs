@@ -202,11 +202,9 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
     }
 }
 
-/// Shows a notification in the window in front (a project's or the
-/// welcome window): what app-wide commands say when they're done.
 /// Compiles the highlight queries of the languages the project's restored
 /// tabs are in, on a background thread while its window is created: the shown
-/// tab's editor builds its highlighter in the window's first frame, and a
+/// tab's editor builds its highlighter before the window appears, and a
 /// language's queries are compiled once and shared (~13 ms for Swift's).
 fn prepare_restored_languages(root: PathBuf, cx: &App) {
     cx.background_spawn(async move {
@@ -231,6 +229,8 @@ fn prepare_restored_languages(root: PathBuf, cx: &App) {
     .detach();
 }
 
+/// Shows a notification in the window in front (a project's or the
+/// welcome window): what app-wide commands say when they're done.
 pub fn notify(notification: gpui_kit::component::notification::Notification, cx: &mut App) {
     use gpui_kit::component::WindowExt as _;
     let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied()) else {

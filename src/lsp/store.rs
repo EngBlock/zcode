@@ -866,9 +866,9 @@ impl LspStore {
         cx.emit(LspStoreEvent::DiagnosticsChanged(path.to_path_buf()));
     }
 
-    /// Registers an open editor buffer and starts the servers it needs.
-    /// Opens `path`'s document with `text`, the editor's current text, and
-    /// the editor's edit journal for incremental changes.
+    /// Registers an open editor buffer and starts the servers it needs:
+    /// `text` is the editor's current text, and `journal` its edits, which
+    /// incremental changes are made of.
     pub fn open_document(&mut self, path: PathBuf, language_id: &'static str, text: Rope, journal: Option<EditJournal>, cx: &mut Context<Self>) {
         let ids = self.match_servers(&path, language_id);
         let servers = ids.iter().map(|&id| DocumentServer { id, synced_version: 1, synced_text: Rope::new(), synced_revision: 0, opened: false }).collect();
