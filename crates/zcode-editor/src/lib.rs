@@ -60,6 +60,8 @@ mod language;
 pub mod language_config;
 #[path = "base/layout.rs"]
 mod layout;
+#[path = "base/long_lines.rs"]
+mod long_lines;
 #[path = "editor/lsp/mod.rs"]
 mod lsp;
 #[path = "base/mask_pattern.rs"]

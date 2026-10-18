@@ -30,12 +30,41 @@ pub(super) struct LastLayout {
     pub(super) cursor_bounds: Option<Bounds<Pixels>>,
     pub(super) text_align: TextAlign,
     pub(super) content_width: Pixels,
+    /// The text area on screen, in content coordinates (x from the text's
+    /// left edge, y from the document's top), after this frame's scrolling.
+    /// Long lines draw ranges only here.
+    pub(super) viewport: Bounds<Pixels>,
 }
 
 impl LastLayout {
     pub(crate) fn line(&self, row: usize) -> Option<&LineLayout> {
         let pos = self.visible_buffer_lines.binary_search(&row).ok()?;
         self.lines.get(pos)
+    }
+
+    /// The laid-out text's byte ranges, ascending and merged: each visible
+    /// line with its newline, or a long line's laid-out pieces.
+    pub(super) fn visible_spans(&self) -> Vec<Range<usize>> {
+        let mut spans: Vec<Range<usize>> = Vec::new();
+        let mut push = |span: Range<usize>| {
+            let span = span.start..span.end.min(self.visible_range_offset.end);
+            if let Some(previous) = spans.last_mut().filter(|previous| previous.end == span.start) {
+                previous.end = span.end;
+            } else if span.start < span.end {
+                spans.push(span);
+            }
+        };
+        for (&offset, line) in self.visible_line_byte_offsets.iter().zip(self.lines.iter()) {
+            match line.laid_out_ranges() {
+                Some(pieces) => {
+                    for piece in pieces {
+                        push(offset + piece.start..offset + piece.end);
+                    }
+                }
+                None => push(offset..offset + line.len() + 1),
+            }
+        }
+        spans
     }
 
     pub(super) fn alignment_offset(&self, line_width: Pixels) -> Pixels {

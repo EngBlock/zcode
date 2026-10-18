@@ -20,7 +20,7 @@ use crate::gutter::{GutterGeometry, GutterLayout};
 use crate::cursor::CursorSelection;
 use crate::modal::CursorShape;
 use crate::selection::CursorId;
-use crate::{RopeExt as _, blink_cursor::CURSOR_WIDTH, display_map::LineLayout};
+use crate::{RopeExt as _, blink_cursor::CURSOR_WIDTH, display_map::LineLayout, long_lines::LongPlan};
 use gpui_base::Scrollbar;
 
 use super::{
@@ -605,6 +605,11 @@ impl<M: InputModeKind> TextElement<M> {
                 if offset < visible.start || offset > visible.end {
                     continue;
                 }
+                // A long line leaves its inlays out: it isn't laid out whole.
+                let row = state.text.offset_to_point(offset).row;
+                if state.display_map.line(row).is_some_and(|line| line.long.is_some()) {
+                    continue;
+                }
                 layout.inlays.push(LaidOutInlay {
                     offset,
                     shaped: shape(&inlay.text, inlay.color, inlay.background, window),
@@ -1073,7 +1078,7 @@ impl<M: InputModeKind> TextElement<M> {
     /// Project a buffer range through the visible (non-folded) shaped lines.
     /// Half-open intersections give soft-wrap ends their trailing affinity and
     /// prevent ranges on later lines from painting an earlier line's first glyph.
-    fn layout_range_corners(
+    pub(crate) fn layout_range_corners(
         range: &Range<usize>,
         last_layout: &LastLayout,
     ) -> Option<Vec<Corners<Point<Pixels>>>> {
@@ -1083,6 +1088,11 @@ impl<M: InputModeKind> TextElement<M> {
             return None;
         }
 
+        let line_height = last_layout.line_height;
+        // A long line's part of a range is drawn on screen only, reaching a
+        // little past its edges so no edge of the shape shows.
+        let viewport = last_layout.viewport;
+        let margin = px(64.);
         let mut y = last_layout.visible_top;
         let mut corners = Vec::new();
         for (&line_offset, line) in last_layout
@@ -1090,37 +1100,56 @@ impl<M: InputModeKind> TextElement<M> {
             .iter()
             .zip(last_layout.lines.iter())
         {
-            let mut offset = line_offset;
             let alignment = last_layout.alignment_offset(line.longest_width);
-            for (row, shaped) in line.wrapped_lines.iter().enumerate() {
-                let end = offset + shaped.len;
+            let long = line.is_long();
+            let row_count = line.row_count();
+            let rows = if long && line_height > px(0.) {
+                let reached = line.rows_reached(
+                    range.start.saturating_sub(line_offset)..range.end.saturating_sub(line_offset),
+                );
+                let first = ((viewport.top() - y) / line_height).floor().max(0.) as usize;
+                let last = ((viewport.bottom() - y) / line_height).ceil().max(0.) as usize;
+                reached.start.max(first)..reached.end.min(last + 1)
+            } else {
+                0..row_count
+            };
+            for row in rows {
+                let Some((row_start, row_len, row_width)) = line.row_span(row) else {
+                    break;
+                };
+                let offset = line_offset + row_start;
+                let end = offset + row_len;
                 let start_ix = range.start.max(offset);
                 let end_ix = range.end.min(end);
-                let is_last = row + 1 == line.wrapped_lines.len();
+                let is_last = row + 1 == row_count;
                 // A selected newline has a one-space cell, including empty lines.
                 // A wrap boundary is not a newline and must not get such a cell.
                 let newline = is_last && range.start <= end && range.end > end;
                 if start_ix < end_ix || newline {
                     let indent = if row == 0 { px(0.) } else { line.wrap_indent };
-                    let left = alignment + indent + shaped.x_for_index(start_ix.min(end) - offset);
-                    let right = alignment
+                    let mut left = alignment + indent + line.row_x(row, start_ix.min(end) - offset);
+                    let mut right = alignment
                         + indent
                         + if newline {
-                            shaped.width + last_layout.space_width
+                            row_width + last_layout.space_width
                         } else {
-                            shaped.x_for_index(end_ix - offset)
+                            line.row_x(row, end_ix - offset)
                         };
+                    if long {
+                        let visible = viewport.left() - margin..viewport.right() + margin;
+                        left = left.clamp(visible.start, visible.end);
+                        right = right.clamp(visible.start, visible.end);
+                    }
+                    let top = y + row * line_height;
                     corners.push(Corners {
-                        top_left: point(left, y),
-                        top_right: point(right, y),
-                        bottom_left: point(left, y + last_layout.line_height),
-                        bottom_right: point(right, y + last_layout.line_height),
+                        top_left: point(left, top),
+                        top_right: point(right, top),
+                        bottom_left: point(left, top + line_height),
+                        bottom_right: point(right, top + line_height),
                     });
                 }
-                offset = end;
-                y += last_layout.line_height;
             }
-            y += line.extra_height;
+            y += line.text_height(line_height) + line.extra_height;
         }
         (!corners.is_empty()).then_some(corners)
     }
@@ -1138,19 +1167,7 @@ impl<M: InputModeKind> TextElement<M> {
         let mut frames = Vec::new();
         // Query separate buffer spans across folds instead of scanning annotations
         // in the hidden text between the first and last visible buffer offsets.
-        let mut visible_spans: Vec<Range<usize>> = Vec::new();
-        for (&offset, line) in last_layout
-            .visible_line_byte_offsets
-            .iter()
-            .zip(last_layout.lines.iter())
-        {
-            let end = (offset + line.len() + 1).min(last_layout.visible_range_offset.end);
-            if let Some(previous) = visible_spans.last_mut().filter(|span| span.end == offset) {
-                previous.end = end;
-            } else if offset < end {
-                visible_spans.push(offset..end);
-            }
-        }
+        let visible_spans = last_layout.visible_spans();
         for decoration in state.extras.range_decorations(&visible_spans) {
             match decoration.style() {
                 RangeDecorationStyle::Fill => {
@@ -1196,7 +1213,7 @@ impl<M: InputModeKind> TextElement<M> {
         (fills, frames)
     }
 
-    fn layout_search_matches(
+    pub(crate) fn layout_search_matches(
         &self,
         last_layout: &LastLayout,
         bounds: &Bounds<Pixels>,
@@ -1210,18 +1227,20 @@ impl<M: InputModeKind> TextElement<M> {
         let current_match_ix = state.search_session.matcher.current_match_index();
 
         // Matches are sorted and do not overlap, so only the ones that reach
-        // into the visible range need a layout.
-        let visible_range = &last_layout.visible_range_offset;
-        let first = ranges.partition_point(|range| range.end <= visible_range.start);
+        // into the laid-out text need a layout (a long line has many off
+        // screen).
         let mut paths = Vec::new();
-        for (index, range) in ranges
-            .iter()
-            .enumerate()
-            .skip(first)
-            .take_while(|(_, range)| range.start < visible_range.end)
-        {
-            if let Some(path) = Self::layout_match_range(range.clone(), last_layout, bounds) {
-                paths.push((path, current_match_ix == index));
+        for span in last_layout.visible_spans() {
+            let first = ranges.partition_point(|range| range.end <= span.start);
+            for (index, range) in ranges
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take_while(|(_, range)| range.start < span.end)
+            {
+                if let Some(path) = Self::layout_match_range(range.clone(), last_layout, bounds) {
+                    paths.push((path, current_match_ix == index));
+                }
             }
         }
 
@@ -2261,6 +2280,7 @@ impl<M: InputModeKind> TextElement<M> {
         bg_segments: &[(Range<usize>, Hsla)],
         whitespace_indicators: Option<WhitespaceIndicators>,
         annotations: &AnnotationLayout,
+        long_plans: &[Option<LongPlan>],
         window: &mut Window,
     ) -> Vec<LineLayout> {
         let is_single_line = state.is_single_line();
@@ -2315,18 +2335,39 @@ impl<M: InputModeKind> TextElement<M> {
         let mut run_offset = 0;
 
         for (vi, &buffer_line) in last_layout.visible_buffer_lines.iter().enumerate() {
-            let line_text: String = display_text.slice_line(buffer_line).into();
             let line_item = state
                 .display_map
                 .line(buffer_line)
                 .expect("line should exists in wrapper");
-
-            debug_assert_eq!(line_item.len(), line_text.len());
-
             let block_height = annotations
                 .blocks
                 .get(&buffer_line)
                 .map_or(px(0.), |lines| lines.len() * last_layout.line_height);
+
+            // A long line is laid out in pieces, without copying it.
+            if let (Some(plan), Some(long)) =
+                (long_plans.get(vi).and_then(Option::as_ref), &line_item.long)
+            {
+                lines.push(crate::long_lines::layout_long_line(
+                    state,
+                    buffer_line,
+                    long,
+                    plan,
+                    runs,
+                    run_offset,
+                    bg_segments,
+                    last_layout.visible_line_byte_offsets[vi],
+                    font_size,
+                    whitespace_indicators.clone(),
+                    block_height,
+                    window,
+                ));
+                run_offset += line_item.len() + 1;
+                continue;
+            }
+
+            let line_text: String = display_text.slice_line(buffer_line).into();
+            debug_assert_eq!(line_item.len(), line_text.len());
             let line_start = state.text.line_start_offset(buffer_line);
             let first_inlay = annotations.inlays.partition_point(|inlay| inlay.offset < line_start);
             let line_inlays = &annotations.inlays[first_inlay..];
@@ -2426,6 +2467,7 @@ impl<M: InputModeKind> TextElement<M> {
         visible_buffer_lines: &[usize],
         _visible_top: Pixels,
         visible_byte_range: Range<usize>,
+        long_spans: &[Option<Vec<Range<usize>>>],
         cx: &mut App,
     ) -> Option<Vec<(Range<usize>, HighlightStyle)>> {
         let state = self.state.read(cx);
@@ -2462,50 +2504,123 @@ impl<M: InputModeKind> TextElement<M> {
                 .flatten();
         };
 
-        let mut styles = Vec::with_capacity(visible_buffer_lines.len());
-        // Byte ranges of the flushed line groups; the composed styles are
-        // clipped to these at the end so the resulting runs cover exactly the
-        // visible (non-folded) lines' bytes.
-        let mut group_ranges: Vec<Range<usize>> = Vec::new();
+        // Hover definition style, composed over every group.
+        let hover_style = M::hover_definition_style(self.state.read(cx), cx);
 
+        // Compose a stretch of styled text: tree-sitter (with the hover
+        // underline), the highlight layers (semantic tokens among them),
+        // application decorations, then diagnostic styles; clipped to the
+        // groups in it.
+        //
+        // Some sources reach outside the flushed groups — a diagnostic
+        // straddling the viewport edge, or any range inside a folded region —
+        // which would inject extra bytes into the runs coordinate space and
+        // shift every later run boundary (see `layout_lines`). Clipping keeps
+        // the runs covering exactly the visible (non-folded) lines' bytes.
+        let compose = |mut styles: Vec<(Range<usize>, HighlightStyle)>, groups: &[Range<usize>]| {
+            let (Some(first), Some(last)) = (groups.first(), groups.last()) else {
+                return styles;
+            };
+            let range = first.start..last.end;
+            if let Some(hover_style) = hover_style.clone() {
+                styles.push(hover_style);
+            }
+            let diagnostic_styles: Vec<_> = diagnostics
+                .range(range.clone())
+                .map(|entry| {
+                    (
+                        entry.range.clone(),
+                        diagnostic_highlight_style(entry.severity, state.editor_style.diagnostics),
+                    )
+                })
+                .collect();
+            styles = gpui::combine_highlights(std::iter::empty(), styles).collect();
+            styles = state.highlight_layers.compose(styles, &range);
+            if !state.masked {
+                styles = compose_decoration_collections(
+                    styles,
+                    state.extras.decoration_layers().into_iter(),
+                    range.clone(),
+                )
+                .unwrap_or_default();
+            }
+            styles = gpui::combine_highlights(diagnostic_styles, styles).collect();
+            clip_styles_to_ranges(styles, groups)
+        };
+
+        // The visible lines' styles, in order and covering every visible
+        // line's bytes. Ordinary lines are styled whole, a long line only in
+        // its laid-out spans (`long_lines.rs`), the rest of it plain.
+        let mut styles = Vec::with_capacity(visible_buffer_lines.len());
+        // Byte ranges of the flushed line groups since the last long line,
+        // and their styles before composing.
+        let mut group_ranges: Vec<Range<usize>> = Vec::new();
+        let mut group_styles: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+        let line_end_with_newline = |line: usize| {
+            if is_multi_line {
+                // +1 for `\n`
+                text.line_start_offset(line + 1)
+            } else {
+                text.line_end_offset(line)
+            }
+        };
+
+        let mut style_range = |range: &Range<usize>, skip: bool| {
+            if skip {
+                vec![(range.clone(), HighlightStyle::default())]
+            } else {
+                highlighter.styles(range, state.editor_style.highlight_styles.as_ref())
+            }
+        };
         // Helper to flush a contiguous range of lines. These ranges are disjoint,
         // so appending avoids repeatedly cloning and recombining prior styles.
-        let mut flush_range =
-            |start_line: usize, end_line: usize, skip: bool, styles: &mut Vec<_>| {
-                let byte_start = text.line_start_offset(start_line);
-                let byte_end = if is_multi_line {
-                    // +1 for `\n`
-                    text.line_start_offset(end_line + 1)
-                } else {
-                    text.line_end_offset(end_line)
-                };
-                let range_styles = if skip {
-                    vec![(byte_start..byte_end, HighlightStyle::default())]
-                } else {
-                    highlighter.styles(
-                        &(byte_start..byte_end),
-                        state.editor_style.highlight_styles.as_ref(),
-                    )
-                };
-
-                group_ranges.push(byte_start..byte_end);
-                styles.extend(range_styles);
-            };
+        let flush_range = |style_range: &mut dyn FnMut(&Range<usize>, bool) -> Vec<(Range<usize>, HighlightStyle)>,
+                           start_line: usize,
+                           end_line: usize,
+                           skip: bool,
+                           group_ranges: &mut Vec<Range<usize>>,
+                           styles: &mut Vec<_>| {
+            let range = text.line_start_offset(start_line)..line_end_with_newline(end_line);
+            styles.extend(style_range(&range, skip));
+            group_ranges.push(range);
+        };
 
         // Group contiguous visible lines into ranges and call styles() once per range
-        let mut visible_iter = visible_buffer_lines.iter().peekable();
+        let mut visible_iter = visible_buffer_lines.iter().enumerate().peekable();
         let mut range_start: Option<usize> = None;
 
-        while let Some(&line) = visible_iter.next() {
+        while let Some((vi, &line)) = visible_iter.next() {
             // Check if this line is too long for highlighting
             let line_len = text.slice_line(line).len();
+            if let Some(spans) = long_spans.get(vi).and_then(Option::as_ref) {
+                if let Some(start) = range_start.take() {
+                    flush_range(&mut style_range, start, line - 1, false, &mut group_ranges, &mut group_styles);
+                }
+                styles.extend(compose(std::mem::take(&mut group_styles), &std::mem::take(&mut group_ranges)));
+
+                let mut at = text.line_start_offset(line);
+                for span in spans {
+                    if at < span.start {
+                        styles.push((at..span.start, HighlightStyle::default()));
+                    }
+                    // Past the length limit a line has no syntax styling.
+                    let span_styles = style_range(span, line_len > MAX_HIGHLIGHT_LINE_LENGTH);
+                    styles.extend(compose(span_styles, std::slice::from_ref(span)));
+                    at = span.end;
+                }
+                let line_end = line_end_with_newline(line);
+                if at < line_end {
+                    styles.push((at..line_end, HighlightStyle::default()));
+                }
+                continue;
+            }
             if line_len > MAX_HIGHLIGHT_LINE_LENGTH {
                 // Flush any accumulated range first
                 if let Some(start) = range_start.take() {
-                    flush_range(start, line - 1, false, &mut styles);
+                    flush_range(&mut style_range, start, line - 1, false, &mut group_ranges, &mut group_styles);
                 }
 
-                flush_range(line, line, true, &mut styles);
+                flush_range(&mut style_range, line, line, true, &mut group_ranges, &mut group_styles);
                 continue;
             }
 
@@ -2514,7 +2629,7 @@ impl<M: InputModeKind> TextElement<M> {
             // Check if next line is contiguous, if so keep accumulating
             if visible_iter
                 .peek()
-                .map(|&&next| next == line + 1)
+                .map(|&(_, &next)| next == line + 1)
                 .unwrap_or(false)
             {
                 continue;
@@ -2522,45 +2637,9 @@ impl<M: InputModeKind> TextElement<M> {
 
             // Flush the contiguous range
             let start_line = range_start.take().unwrap();
-            flush_range(start_line, line, false, &mut styles);
+            flush_range(&mut style_range, start_line, line, false, &mut group_ranges, &mut group_styles);
         }
-
-        let diagnostic_styles: Vec<_> = diagnostics
-            .range(visible_byte_range.clone())
-            .map(|entry| {
-                (
-                    entry.range.clone(),
-                    diagnostic_highlight_style(entry.severity, state.editor_style.diagnostics),
-                )
-            })
-            .collect();
-
-        // hover definition style
-        if let Some(hover_style) = M::hover_definition_style(self.state.read(cx), cx) {
-            styles.push(hover_style);
-        }
-
-        // Compose tree-sitter (with the hover underline), the highlight
-        // layers (semantic tokens among them), application decorations, then
-        // diagnostic styles.
-        styles = gpui::combine_highlights(std::iter::empty(), styles).collect();
-        styles = state.highlight_layers.compose(styles, &visible_byte_range);
-        if !state.masked {
-            styles = compose_decoration_collections(
-                styles,
-                state.extras.decoration_layers().into_iter(),
-                visible_byte_range.clone(),
-            )
-            .unwrap_or_default();
-        }
-        styles = gpui::combine_highlights(diagnostic_styles, styles).collect();
-
-        // Some sources reach outside the flushed groups — a diagnostic
-        // straddling the viewport edge, or any range inside a folded region —
-        // which would inject extra bytes into the runs coordinate space and
-        // shift every later run boundary (see `layout_lines`). Clip the
-        // composed styles back to the groups.
-        styles = clip_styles_to_ranges(styles, &group_ranges);
+        styles.extend(compose(group_styles, &group_ranges));
 
         Some(styles)
     }
@@ -2610,8 +2689,8 @@ pub(super) struct PrepaintState {
     token_elements: Vec<AnyElement>,
     /// The lines only contains the visible lines in the viewport, based on `visible_range`.
     ///
-    /// The child is the soft lines.
-    line_numbers: Option<Vec<SmallVec<[ShapedLine; 1]>>>,
+    /// Each line's number and its number of rows (soft wrapped).
+    line_numbers: Option<Vec<(ShapedLine, usize)>>,
     /// Size of the scrollable area by entire lines.
     scroll_size: Size<Pixels>,
     /// Caret bounds for every selection, active flagged.
@@ -2935,10 +3014,36 @@ impl<M: InputModeKind> Element for TextElement<M> {
             .text
             .line_end_offset(visible_range.end.saturating_sub(1));
 
+        // What of each long line to lay out (`long_lines.rs`), from the text
+        // area before this frame follows the caret.
+        let scroll_before = state
+            .deferred_scroll_offset
+            .unwrap_or_else(|| state.scroll_handle.offset());
+        let viewport = Bounds::new(
+            point(-scroll_before.x, -scroll_before.y),
+            size((bounds.size.width - line_number_width).max(px(0.)), bounds.size.height),
+        );
+        let long_plans = crate::long_lines::plan_long_lines(
+            state,
+            &visible_buffer_lines,
+            line_height,
+            viewport,
+        );
+        let long_spans: Vec<Option<Vec<Range<usize>>>> = long_plans
+            .iter()
+            .zip(&visible_buffer_lines)
+            .map(|(plan, &buffer_line)| {
+                let spans = plan.as_ref()?.spans(&state.display_map.line(buffer_line)?.wrapped_lines);
+                let start = state.text.line_start_offset(buffer_line);
+                Some(spans.into_iter().map(|span| start + span.start..start + span.end).collect())
+            })
+            .collect();
+
         let highlight_styles = self.highlight_lines(
             &visible_buffer_lines,
             visible_top,
             visible_start_offset..visible_end_offset,
+            &long_spans,
             cx,
         );
 
@@ -2981,6 +3086,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             cursor_bounds: None,
             text_align: state.text_align,
             content_width: bounds.size.width,
+            viewport,
         };
 
         let run = TextRun {
@@ -3055,6 +3161,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             &document_colors,
             whitespace_indicators,
             &annotations,
+            &long_plans,
             window,
         );
 
@@ -3078,8 +3185,14 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 .longest_line_width
                 .take()
                 .filter(|(cached_key, _)| *cached_key == key);
+            let long = state
+                .display_map
+                .line(longest_row)
+                .and_then(|line| line.long.clone());
             longest_line_width = match cached {
                 Some((_, width)) => width,
+                // A long line is measured, not shaped (`long_line.rs`).
+                None if let Some(long) = long => px(long.width() as f32),
                 None => {
                     let longest_line: SharedString = longest_line.to_string().into();
                     window
@@ -3179,6 +3292,17 @@ impl<M: InputModeKind> Element for TextElement<M> {
 
         let (cursor_infos, cursor_scroll_offset, current_row) =
             self.layout_cursors(&last_layout, &mut bounds, scroll_size, window, cx);
+        // Where the text area ends up this frame, as paint will clamp it.
+        {
+            let state = self.state.read(cx);
+            let safe_y_range = (-scroll_size.height + input_bounds.size.height).min(px(0.))..px(0.);
+            let scroll_y = if state.is_single_line() {
+                px(0.)
+            } else {
+                cursor_scroll_offset.y.clamp(safe_y_range.start, safe_y_range.end)
+            };
+            last_layout.viewport.origin = point(-cursor_scroll_offset.x, -scroll_y);
+        }
         // Completion/code-action menus position at the active caret.
         last_layout.cursor_bounds = cursor_infos
             .iter()
@@ -3266,16 +3390,11 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     &other_line_runs
                 };
 
-                let mut sub_lines: SmallVec<[ShapedLine; 1]> = SmallVec::new();
-                sub_lines.push(
-                    window
-                        .text_system()
-                        .shape_line(line_no, text_size, &runs, None),
-                );
-                for _ in 0..line.wrapped_lines.len().saturating_sub(1) {
-                    sub_lines.push(ShapedLine::default());
-                }
-                line_numbers.push(sub_lines);
+                // The number on the first row; the line's other rows are blank.
+                line_numbers.push((
+                    window.text_system().shape_line(line_no, text_size, &runs, None),
+                    line.row_count(),
+                ));
             }
             Some(line_numbers)
         } else {
@@ -3423,7 +3542,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             {
                 let is_active = prepaint.current_row == Some(buffer_line);
                 let p = point(input_bounds.origin.x, origin.y + offset_y);
-                let height = line_height * lines.len() as f32;
+                let height = line_height * lines.1 as f32;
                 // Paint the current line background
                 if is_active {
                     if let Some(bg_color) = active_line_color {
@@ -3623,7 +3742,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 let p = point(input_bounds.origin.x + prepaint.numbers_x, origin.y + offset_y);
                 let is_active = prepaint.current_row == Some(buffer_line);
 
-                let height = line_height * lines.len() as f32;
+                let height = line_height * lines.1 as f32;
                 // paint active line number background
                 if is_active {
                     if let Some(bg_color) = active_line_color {
@@ -3637,11 +3756,8 @@ impl<M: InputModeKind> Element for TextElement<M> {
                     }
                 }
 
-                for line in lines {
-                    _ = line.paint(p, line_height, TextAlign::Left, None, window, cx);
-                    offset_y += line_height;
-                }
-                offset_y += prepaint.last_layout.lines[ix].extra_height;
+                _ = lines.0.paint(p, line_height, TextAlign::Left, None, window, cx);
+                offset_y += height + prepaint.last_layout.lines[ix].extra_height;
             }
         }
 
@@ -3882,11 +3998,11 @@ fn has_background_runs(runs: &[TextRun]) -> bool {
     has_background(runs)
 }
 
-fn has_background(runs: &[TextRun]) -> bool {
+pub(super) fn has_background(runs: &[TextRun]) -> bool {
     runs.iter().any(|run| run.background_color.is_some())
 }
 
-fn split_runs_by_bg_segments(
+pub(super) fn split_runs_by_bg_segments(
     start_offset: usize,
     runs: &[TextRun],
     bg_segments: &[(Range<usize>, Hsla)],

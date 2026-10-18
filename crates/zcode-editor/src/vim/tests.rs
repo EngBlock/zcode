@@ -575,3 +575,26 @@ fn a_binding_made_for_a_vim_mode_wins_over_vims_own_keys(cx: &mut TestAppContext
     t.keys("i space").mode(VimMode::Insert);
     assert_eq!(t.text(), "one  two\nthree\n");
 }
+
+#[gpui::test]
+fn motions_and_edits_on_a_long_line(cx: &mut TestAppContext) {
+    // Past the length laid out in pieces (`display_map/long_line.rs`).
+    let long: String = (0..1000).map(|ix| format!("v{ix}=f(b);")).collect();
+    let mut t = VimTest::new(cx, &format!("|{long}\nnext\n"));
+    let cursor = |t: &VimTest| t.editor.read_with(&t.cx, |state, _| state.cursor());
+    t.keys("$");
+    assert_eq!(cursor(&t), long.len() - 1);
+    t.keys("0");
+    assert_eq!(cursor(&t), 0);
+    t.keys("w");
+    assert_eq!(cursor(&t), 2);
+    t.keys("$ x");
+    assert_eq!(t.text(), format!("{}\nnext\n", &long[..long.len() - 1]));
+    // Down to `next` (its last character) and back.
+    t.keys("j");
+    assert_eq!(cursor(&t), long.len() + 3);
+    t.keys("k 0 d w");
+    assert_eq!(t.text(), format!("{}\nnext\n", &long[2..long.len() - 1]));
+    t.keys("u u");
+    assert_eq!(t.text(), format!("{long}\nnext\n"));
+}
