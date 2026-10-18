@@ -66,7 +66,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 ## Foundations
 
 1. Packaging: signed, notarized `.app`, updates, CLI install, `.xcodeproj`
-   file association, login-item toggle for `--background`.
+   file association, login-item toggle for `--background`. ✅
 2. Scale benchmarks on a large open-source app (e.g. firefox-ios) with e2e
    gates for indexing, scan, search latency and memory.
 3. Built-in Build Server Protocol server for sourcekit-lsp instead of the

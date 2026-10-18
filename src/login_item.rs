@@ -30,7 +30,8 @@ pub enum Status {
     NotRegistered,
     /// Registered, and the user turned it off in System Settings.
     RequiresApproval,
-    /// The bundle has no agent plist (a bundle made another way).
+    /// launchd has no record of the agent: never registered on this Mac
+    /// (what a fresh bundle reports), or the bundle has no agent plist.
     NotFound,
     /// Not running from a bundle: launchd has nothing to register.
     NoBundle,

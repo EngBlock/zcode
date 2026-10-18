@@ -67,6 +67,12 @@ which was extracted from Xcode 27's own command definitions.
 | Asset catalog editor (`.xcassets`) | 🟡 Xcode's layout as a tab: the outline of image, app icon, color, data and symbol sets and folders; wells in rows by device and appearance with thumbnails from the files (PNG, JPEG, HEIC, PDF, SVG…) and swatches from `Contents.json`; the attributes inspector. Images dropped from Finder into wells or onto the outline, a well cleared, New Image Set / Color Set / Folder, Import…, remove, rename, a color's components, content and input method; `Contents.json` written as Xcode writes it, every edit undone with ⌘Z, `project.pbxproj` untouched. No adding appearances, scales or devices to a set, no editing properties (Render As, Compression…), no new app icon, data or symbol sets, no color panel |
 | SwiftUI Previews | 🟡 Shown in Xcode's canvas: gutter marks on `#Preview` and `PreviewProvider` (found in source as you type) and Editor ▸ Show in Xcode Canvas (⌥⌘↩, Xcode's Canvas key) open the project, then the file at the preview in its window, and turn on Editor ▸ Canvas through System Events (Accessibility permission). No canvas of zcode's own; `docs/previews.md` measures a native preview on the simulator (the app as host, preview thunks hot-loaded in ~0.5 s) without private frameworks |
 
+## Foundations
+
+| Item | Status |
+|---|---|
+| zcode as a Mac app: `zcode.app`, signed and notarized, updates, CLI, Finder's Open With, a login item | 🟡 `scripts/package.py` bundles (icon, `Info.plist` with Xcode's document types as an alternate handler), signs (Developer ID with the hardened runtime, or ad hoc), notarizes and staples, and makes the zip, dmg and update feed; Finder opens projects in the running zcode or starts it; zcode ▸ Install CLI, Open at Login (SMAppService, `--background`) and Check for Updates… (a JSON feed, SHA-256 and `codesign` checked, swapped in place, Restart Now; daily with `auto_update`). Developer ID signing and notarization only dry-run (no Developer ID on the dev Mac); no delta updates; no installer package |
+
 ## Beyond Xcode (from Zed)
 
 * A fuzzy command palette with every command and its shortcut (⇧⌘A / ⇧⌘P).

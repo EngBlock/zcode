@@ -14,6 +14,21 @@ cargo build --release
 
 Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rust 1.90+.
 
+As a Mac app:
+
+```
+python3 scripts/package.py bundle          # target/release/bundle/zcode.app, from the release build
+python3 scripts/package.py sign --adhoc    # or sign (Developer ID, ZCODE_SIGN_IDENTITY) and notarize (ZCODE_NOTARY_PROFILE)
+open target/release/bundle/zcode.app
+```
+
+Then zcode ▸ Install CLI puts a `zcode` command in `/usr/local/bin`, zcode ▸
+Open at Login starts the resident instance (`--background`) when you log in,
+zcode ▸ Check for Updates… installs a newer release, and Finder's Open With
+lists zcode for `.xcodeproj`, `.xcworkspace`, Swift sources and folders.
+`scripts/package.py release` does bundle, sign, notarize, zip, dmg and the
+update feed in one go (`--dry-run` prints what it would run).
+
 ## What works
 
 | Area | Feature | Keys (Xcode-compatible) |
@@ -79,6 +94,7 @@ Requirements: macOS with Xcode installed (`xcode-select -p` pointing at it), Rus
 | | Pause/continue, step over/into/out, the stopped line highlighted in green, threads and frames in the Debug navigator, and an expandable Variables view next to the console, with Copy Value and Print Description. Hovering a variable while paused shows its value. | ⌃⌘Y, F6, F7, F8 |
 | | The LLDB console: an `(lldb)` prompt while paused takes `po`, `p`, `v`, `expr` and any other lldb command, with ↑/↓ history; an empty Return repeats the last command. | ⇧⌘C |
 | **Monitoring** | Memory is sampled every 2 s for the life of the app. The status bar shows zcode's footprint and the language server's (including its `SourceKitService` XPC helpers), and turns orange above 1.5 GB idle for zcode or 4 GB for the language server. View ▸ Performance shows startup timings, the current and 30 s idle-baseline footprint, peak, and a history graph. `--perf-log <file>` (or `ZCODE_PERF_LOG`) appends every sample as a JSON line for long-term tracking. `zcode --startup-bench` prints startup and memory as JSON and quits. | — |
+| **The app** | `scripts/package.py` builds `zcode.app` (icon, `Info.plist` with the version from `Cargo.toml`, the document types for `.xcodeproj`, `.xcworkspace`, Swift sources, source code and folders as an alternate handler so Xcode stays the default), signs it (Developer ID with the hardened runtime, or ad hoc for local use), notarizes and staples it (`notarytool` with a keychain profile; nothing in the repo), and makes the zip, the dmg and the update feed. Finder opens projects in the running zcode or starts it. zcode ▸ Install CLI links `zcode` into `/usr/local/bin` (an administrator prompt when needed, as Zed's): `zcode <path>` hands the path to the running zcode in ~50 ms or starts the app through LaunchServices and returns. zcode ▸ Open at Login registers the bundle's LaunchAgent (`zcode --background`) with SMAppService, listed under zcode in System Settings ▸ Login Items. zcode ▸ Check for Updates… (and a daily check, `auto_update` in settings.json) reads a JSON feed, downloads the release, checks its SHA-256 and signature (the running app's team), swaps it into the bundle's place and offers Restart Now. | — |
 
 The full Xcode 27 menu and shortcut inventory this was matched against is in
 [`docs/xcode-inventory.md`](docs/xcode-inventory.md), and remaining gaps are in
@@ -207,7 +223,8 @@ zcode shows its window ~55 ms sooner than a minimal native AppKit app and
 if zcode is not faster.
 
 * **Single instance.** zcode keeps running when its last window closes, as Xcode and other Mac document apps do. `zcode <path>` hands the path to the running instance over a Unix socket and exits, and the warm instance opens the project window in ~50–75 ms. `ZCODE_NEW_INSTANCE=1` forces a separate process.
-* **Always warm.** `zcode --background` starts the resident instance with no window. Run it as a login item (System Settings ▸ General ▸ Login Items, or a LaunchAgent), and even the first open of the day takes the warm path.
+* **Always warm.** `zcode --background` starts the resident instance with no window. zcode ▸ Open at Login registers it as a login item (the bundle's LaunchAgent, through SMAppService), and even the first open of the day takes the warm path.
+* **The bundle costs ~12 ms more to launch.** `zcode.app/Contents/MacOS/zcode --startup-bench` is the same binary and the same startup, plus AppKit's own launch work for a bundled app: `finishLaunching` loads the Writing Tools UI library while it adds the text-input items to the Edit menu (seen with `sample`), which a bare binary without a bundle identifier skips. Three alternating rounds of 10 (load average 18–25): the bare binary's first pixels at 265.4, 266.8 and 262.8 ms, the bundle's at 281.6, 283.7 and 279.7 ms; the icon, the document types, the hardened runtime and the signature make no difference (each tried alone), nor do `NSAllowsWritingTools` or `NSMenuDoesNotAutomaticallyInsertWritingToolsItems` as `Info.plist` keys or defaults. The e2e suite times both and holds the bundle to the same reference as the bare binary.
 * Resident memory at first frame is ~102 MB for the welcome window and ~120 MB with a project open.
 * The first launch after each rebuild also includes macOS scanning the new binary.
 
@@ -329,6 +346,19 @@ if zcode is not faster.
   of 10 against `master` (load average 12–16): the welcome window's first
   pixels at 250.3, 243.8 and 246.1 ms against 245.3, 249.2 and 244.6 ms.
   The binary grows by 0.2 MB.
+* Packaging costs nothing at startup: the bundle is found from the
+  executable's path the first time something asks (the update check, the
+  control channel), the login item's status is asked of launchd on a
+  thread of its own 1.5 s after launch, and the first update check runs a
+  minute after launch and then once a day, on a thread of its own; the
+  three menu items are three more entries in the menu built at startup.
+  `Info.plist` and the icon are read by AppKit and LaunchServices, not by
+  zcode. Finder's file URLs arrive through `on_open_urls` into a channel
+  the first window's code drains, so a document opened at launch doesn't
+  flash the welcome window. Cold launch, three alternating rounds of 10
+  against `master` (load average 18–25): the welcome window's first pixels
+  at 265.4, 266.8 and 262.8 ms against 263.4, 266.1 and 266.8 ms. The
+  binary grows by 0.1 MB (`objc2-service-management`).
 * Settings cost nothing measurable at startup: the user's settings,
   keymap and the theme they name are read and parsed on a thread of their
   own started at the top of `main()`, and the first window takes what it
@@ -408,6 +438,12 @@ src/
                     the agent panel's tokens
   instance.rs       the Unix socket: `zcode <path>` handed to the running zcode, `zcode mcp`'s connections;
                     the same user only
+  bundle.rs         the zcode.app this binary runs from (path, version from its Info.plist), a launch from the
+                    shell's `zcode` link handed to LaunchServices (`open -a`), Finder's file URLs
+  cli.rs            zcode ▸ Install CLI: the link in /usr/local/bin, an administrator prompt when needed
+  login_item.rs     zcode ▸ Open at Login: the bundle's LaunchAgent (`--background`) through SMAppService
+  updates.rs        zcode ▸ Check for Updates… and the daily check: the JSON feed, download, SHA-256,
+                    codesign, the swap into the bundle's place, Restart Now
   debugger/         DAP client, debugger model, breakpoints and their options, data tips (lldb-dap)
   terminal/         the integrated terminal: a PTY and its grid (alacritty_terminal), keystrokes and
                     mouse reports as bytes, links, theme colors, the view and how its grid is painted
@@ -449,6 +485,10 @@ scripts/
   fake_distribute.py  xcodebuild -exportArchive, notarytool and stapler for Distribute App's tests: exports
                     copy the app, uploads and notarization are pretended (nothing reaches Apple)
   appkit_floor.swift  minimal native AppKit app, the cold-launch reference
+  package.py        zcode as a Mac app: bundle (Info.plist, icon, the login item's agent), sign, notarize,
+                    zip, dmg, appcast, release; bundle/ holds the icon's drawing (make_icon.swift), the
+                    entitlements and the agent's plist
+  fake_update_feed.py  a release feed on a local port for the update check's tests (nothing reaches a server)
 ```
 
 The code editor is zcode's own crate, `crates/zcode-editor`. It started as
@@ -548,6 +588,17 @@ Canvas and Refresh Canvas through System Events (AppleScript, `osascript`);
 the canvas's key (⌥⌘↩) and menu names are Xcode 27's, read from its
 command definitions. Previews are found with `tree-sitter-swift` (MIT),
 already there for highlighting and tests. No new dependencies.
+The app bundle is made by `scripts/package.py` with macOS's own tools
+(`iconutil`, `codesign`, `notarytool`, `stapler`, `ditto`, `hdiutil`); the
+icon is drawn by `scripts/bundle/make_icon.swift`. Install CLI's link in
+`/usr/local/bin` with an administrator prompt, Open at Login and a daily
+update check follow Zed's public behavior (Zed's code is GPL; none of it
+was read), written from scratch; the login item uses macOS's
+ServiceManagement framework through `objc2-service-management` (Zlib OR
+Apache-2.0 OR MIT, like `objc2`), and the updater uses `ureq` (already
+there), CommonCrypto's SHA-256 (part of libSystem) and `codesign`. Sparkle
+(MIT) was considered and not used: it would add an Objective-C framework,
+its XPC services and EdDSA keys to the bundle for what those do here.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -752,6 +803,25 @@ themes or session. It covers:
   Xcode is never opened: `ZCODE_XCODE_COMMANDS` (set for every launch)
   records the commands, which the checks compare (`xed <project>`, the
   wait for its window, `xed --project … --line …`, the canvas step)
+* packaging: `scripts/package.py` builds and ad-hoc signs `zcode.app` in a
+  temporary folder, whose `Info.plist` (version, document types, the
+  login item's agent), icon and signature are checked, and the dry runs
+  of Developer ID signing and notarization (no Developer ID certificate
+  on the test Mac) print their commands without changing it; the cold
+  launch of the bundle's binary against the bare one, in alternating
+  rounds; then a copy of the bundle in a folder of its own: what Finder
+  hands over (a percent-encoded package URL) opens in a second window,
+  Install CLI links `zcode` into `ZCODE_CLI_DIR` and the link hands a
+  path to the running zcode or has LaunchServices start the app (`open
+  -a`, recorded by `ZCODE_XCODE_COMMANDS`), Open at Login toggles with a
+  file standing in for launchd (`ZCODE_LOGIN_ITEM_FILE`; no real login
+  item is ever registered), and Check for Updates… against
+  `scripts/fake_update_feed.py` fails a wrong checksum, installs the next
+  version (the same app with its version bumped, signed ad hoc) in the
+  bundle's place and relaunches it with Restart Now (recorded), after
+  which the installed app finds itself up to date. Nothing is installed
+  in `/Applications` or `/usr/local/bin`, and LaunchServices is never
+  told about the bundle
 * Archive and Distribute App on a copy of HelloClassic, in the run's own
   Archives folder (never `~/Library/Developer/Xcode/Archives`): a real
   `xcodebuild archive` for any Mac (Sign to Run Locally, so it signs on any
@@ -800,6 +870,17 @@ The control channel also takes window screenshots
 
 ## Known limitations
 
+* Packaging: Developer ID signing and notarization have only been
+  dry-run (this Mac has an Apple Development certificate, no Developer
+  ID), and the update feed's default URL is a placeholder until there's
+  a release server (`ZCODE_UPDATE_FEED` at build time sets it). An update
+  installs only when the bundle's folder is writable (otherwise Download
+  opens the zip); there are no delta updates, and the update replaces
+  the whole bundle. Finder's association was checked by inspecting
+  `Info.plist` and by opening documents through `open -a`, not by
+  registering the bundle as a default handler. Open at Login and the
+  CLI's hand-off to LaunchServices need the bundle; a bare
+  `target/release/zcode` says so.
 * Predictive completion has two providers, the Claude API and a language
   server's `textDocument/inlineCompletion` (which sourcekit-lsp doesn't
   offer yet); there's no on-device model like Xcode's. A prediction is
