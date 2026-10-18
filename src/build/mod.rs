@@ -760,6 +760,10 @@ impl BuildController {
         self.index_process = handle.clone();
         let cache_dir = self.cache_dir.clone();
         self._index_task = Some(cx.spawn(async move |this, cx| {
+            let clear_dir = cache_dir.clone();
+            if cx.background_spawn(async move { compiledb::clear_stale_build(&clear_dir) }).await {
+                ::log::info!("index build: no compilation database yet, so the earlier build's products were removed");
+            }
             let (tx, rx) = channel::unbounded::<String>();
             let process = cx.background_spawn(process::run_streaming(cmd, tx, handle));
             let collect = cx.background_spawn(async move {

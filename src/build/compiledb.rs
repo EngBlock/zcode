@@ -236,9 +236,42 @@ pub fn database_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join("compile_commands.json")
 }
 
+/// Before an index build while there's no database yet: removes the build
+/// products an earlier, interrupted index build left (quitting while it
+/// runs), so every file compiles again and its command is in the log. An
+/// incremental build would compile only what changed and leave the
+/// database without the rest, or not write it at all. Package checkouts
+/// and the index store stay. Blocking; returns whether anything was removed.
+pub fn clear_stale_build(cache_dir: &Path) -> bool {
+    if database_path(cache_dir).exists() {
+        return false;
+    }
+    let build = cache_dir.join("IndexDerivedData/Build");
+    build.exists() && std::fs::remove_dir_all(&build).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_index_build_without_a_database_starts_clean() {
+        let cache = std::env::temp_dir().join(format!("zcode-compiledb-{}", std::process::id()));
+        let build = cache.join("IndexDerivedData/Build/Intermediates.noindex");
+        let packages = cache.join("IndexDerivedData/SourcePackages/checkouts");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::write(build.join("App.o"), "").unwrap();
+        // An interrupted first build: its products go, the packages stay.
+        assert!(clear_stale_build(&cache));
+        assert!(!cache.join("IndexDerivedData/Build").exists() && packages.exists());
+        assert!(!clear_stale_build(&cache));
+        // With a database, later builds stay incremental.
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(database_path(&cache), "[]").unwrap();
+        assert!(!clear_stale_build(&cache) && build.exists());
+        std::fs::remove_dir_all(cache).ok();
+    }
 
     #[test]
     fn adds_resolved_paths() {
