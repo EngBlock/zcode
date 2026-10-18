@@ -98,7 +98,7 @@ update feed in one go (`--dry-run` prints what it would run).
 | | Symbolic (symbol and module), Swift Error and Exception (Objective-C, C++ or both, on throw or catch) breakpoints from the Breakpoint navigator's + menu or Debug ▸ Breakpoints; the navigator lists every breakpoint with its toggle and options. | ⌥⌘\\ |
 | | Pause/continue, step over/into/out, the stopped line highlighted in green, threads and frames in the Debug navigator, and an expandable Variables view next to the console, with Copy Value and Print Description. Hovering a variable while paused shows its value. | ⌃⌘Y, F6, F7, F8 |
 | | The LLDB console: an `(lldb)` prompt while paused takes `po`, `p`, `v`, `expr` and any other lldb command, with ↑/↓ history; an empty Return repeats the last command. | ⇧⌘C |
-| **Monitoring** | Memory is sampled every 2 s for the life of the app. The status bar shows zcode's footprint and the language servers' together (including sourcekit-lsp's `SourceKitService` XPC helpers and the processes the web's servers start, such as vtsls's tsserver), and turns orange above 1.5 GB idle for zcode or 4 GB for the language server. View ▸ Performance shows startup timings, the current and 30 s idle-baseline footprint, peak, and a history graph. `--perf-log <file>` (or `ZCODE_PERF_LOG`) appends every sample as a JSON line for long-term tracking. `zcode --startup-bench` prints startup and memory as JSON and quits. | — |
+| **Monitoring** | Memory is sampled every 2 s for the life of the app. The status bar shows zcode's footprint and the language servers' together (including sourcekit-lsp's `SourceKitService` XPC helpers and the processes the web's servers start, such as vtsls's tsserver), and turns orange above 1.5 GB idle for zcode or 4 GB for the language server. View ▸ Performance shows startup timings, the current and 30 s idle-baseline footprint, peak, and a history graph. `--perf-log <file>` (or `ZCODE_PERF_LOG`) appends every sample as a JSON line for long-term tracking. `zcode --startup-bench` prints startup and memory as JSON and quits. `scripts/bench.py` runs the scale benchmarks on firefox-ios, against a build of `master`, with gates (`docs/scale.md`). | — |
 | **The app** | `scripts/package.py` builds `zcode.app` (icon, `Info.plist` with the version from `Cargo.toml`, the document types for `.xcodeproj`, `.xcworkspace`, Swift sources, source code and folders as an alternate handler so Xcode stays the default), signs it (Developer ID with the hardened runtime, or ad hoc for local use), notarizes and staples it (`notarytool` with a keychain profile; nothing in the repo), and makes the zip, the dmg and the update feed. Finder opens projects in the running zcode or starts it. zcode ▸ Install CLI links `zcode` into `/usr/local/bin` (an administrator prompt when needed, as Zed's): `zcode <path>` hands the path to the running zcode in ~50 ms or starts the app through LaunchServices and returns. zcode ▸ Open at Login registers the bundle's LaunchAgent (`zcode --background`) with SMAppService, listed under zcode in System Settings ▸ Login Items. zcode ▸ Check for Updates… (and a daily check, `auto_update` in settings.json) reads a JSON feed, downloads the release, checks its SHA-256 and signature (the running app's team), swaps it into the bundle's place and offers Restart Now. | — |
 
 The full Xcode 27 menu and shortcut inventory this was matched against is in
@@ -231,6 +231,7 @@ if zcode is not faster.
 * **Always warm.** `zcode --background` starts the resident instance with no window. zcode ▸ Open at Login registers it as a login item (the bundle's LaunchAgent, through SMAppService), and even the first open of the day takes the warm path.
 * **The bundle costs ~15–25 ms more to launch.** `zcode.app/Contents/MacOS/zcode --startup-bench` is the same binary and the same startup, plus AppKit's own launch work for a bundled app: `finishLaunching` loads the Writing Tools UI library while it adds the text-input items to the Edit menu (seen with `sample`), which a bare binary without a bundle identifier skips. Three alternating rounds of 10 (load average 20–50): the bare binary's first pixels at 251.1, 260.1 and 259.4 ms, the bundle's at 287.3, 281.4 and 287.8 ms; on a calmer run (load average 18–25) 265.4, 266.8 and 262.8 ms against 281.6, 283.7 and 279.7 ms. The icon, the document types, the hardened runtime and the signature make no difference (each tried alone), nor do `NSAllowsWritingTools` or `NSMenuDoesNotAutomaticallyInsertWritingToolsItems` as `Info.plist` keys or defaults. The e2e suite times both in alternating rounds and holds the bundle to within 40 ms of the bare binary.
 * Resident memory at first frame is ~102 MB for the welcome window and ~120 MB with a project open.
+* **On a large app** (firefox-ios, 10,908 files; `scripts/bench.py`, `docs/scale.md`): the files are listed ~225 ms after `main()` (the scan takes ~75 ms in the background), an Open Quickly keystroke costs ~3 ms over every path, Find in Workspace reads every file in ~100 ms, a redraw with 5,000 results costs ~2 ms, typing in a 9,400-line file ~4 ms a keystroke, and zcode holds ~165–175 MB resident after opening and searching.
 * The first launch after each rebuild also includes macOS scanning the new binary.
 
 * Two startup fixes make zcode faster than a bare GPUI Kit window
@@ -474,8 +475,10 @@ src/
                     read and edited in place, read off the main thread at launch and polled for changes;
                     the theme in effect; Xcode's .xccolortheme themes and .idekeybindings key bindings
                     converted (plist/ reads XML, binary and old-style property lists)
-  perf.rs           startup timing and memory sampling (proc_pid_rusage)
-  debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR)
+  perf.rs           startup timing and memory sampling (proc_pid_rusage); how long the scan, the tree, a
+                    search and Open Quickly's matching took, for the scale benchmarks
+  debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR); `bench …` times inputs to the
+                    frame they cause and reports what scripts/bench.py polls
   screenshot.rs     zcode's own windows and simulators as PNGs (the control channel, startup bench, MCP)
 crates/
   zcode-editor/     the code editor: rope buffer, display map (soft wrap, folding), highlighting,
@@ -490,6 +493,8 @@ vendor/
   gpui-component/   gpui-component 0.7.3 plus small patches (ZCODE-PATCH.md)
 scripts/
   e2e.py            end-to-end UI tests
+  bench.py          scale benchmarks on firefox-ios (fetched into ~/Library/Caches/zcode-bench), gated against
+                    a build of master made there (docs/scale.md)
   fake_acp_agent.py a scripted ACP agent for the agent panel's tests (no network or account); it also
                     calls the MCP servers it's handed
   mcp_client.py     a stdio MCP client for the MCP server's tests and for trying it
@@ -630,6 +635,9 @@ JSX and Vue queries are zcode's. Emmet is written from Emmet's
 documentation of its abbreviation syntax and snippets (`crates/zcode-emmet`,
 no Emmet code); Expand Abbreviation, Wrap with Abbreviation and ⌃⌥E are
 zcode's choices (Xcode has no Emmet).
+The scale benchmarks (`scripts/bench.py`) run zcode on firefox-ios
+(Mozilla Public License 2.0), fetched at a pinned commit into a cache
+outside the repository and only read; nothing of it is copied into zcode.
 zcode doesn't use any GPL code from Zed.
 
 ## Testing
@@ -639,6 +647,7 @@ cargo test                          # unit tests (zcode and crates/zcode-editor)
 cargo test -- --ignored             # needs Xcode: sourcekit-lsp, lldb-dap, and xcodebuild on an edited project
                                     # (network_* tests need network access)
 cargo build --release && python3 scripts/e2e.py [--simulator] [--network] [--compare-apps]   # drives the real UI
+python3 scripts/bench.py [--rounds 3] [--skip-index]   # scale benchmarks on firefox-ios, against master (docs/scale.md)
 ```
 
 `scripts/e2e.py` launches zcode with `ZCODE_DEBUG_DIR` set and checks against
@@ -905,6 +914,11 @@ themes or session. It covers:
   keymap
 * memory monitoring: sampler history, language-server and `SourceKitService`
   memory, the status-bar label and the `--perf-log` file
+* the scale benchmarks' instrumentation on ZKit: the scan, tree, search
+  and Open Quickly timings in `dump` and `bench status`, `bench frame /
+  action / keys` and `type-latency`'s times to the frame drawn and the
+  frame's work (the benchmarks themselves, on firefox-ios, are
+  `scripts/bench.py`: `docs/scale.md`)
 * with `--simulator`: unit tests, one test and one suite from their diamonds,
   the Smoke test plan, and run (with the scheme's arguments and environment)
   and debug on an iOS simulator (with the LLDB console)
@@ -914,6 +928,19 @@ The control channel also takes window screenshots
 
 ## Known limitations
 
+* Scale: the benchmarks (`docs/scale.md`) run on one project, firefox-ios's
+  `Client.xcodeproj` (11,000 files); a monorepo of 100,000 files would
+  hit the scan's cap (`MAX_FILES`) and hasn't been measured. The app's
+  index build stops where firefox-ios needs its `bootstrap.sh` (a
+  downloaded tool), which the benchmark doesn't run, so the compilation
+  database covers the frameworks and packages but not the app's own
+  files. sourcekit-lsp then gives no semantic tokens for files the
+  database lacks, where without a database it answers from the file
+  alone. zcode opens with a project's first scheme in name order (a
+  library here), and the benchmark picks the app's. The relative gates
+  need a `master` with the benchmarks' control commands; an older one is
+  measured through `dump`, and only the cold open, memory, readiness and
+  keystroke-to-tick gates get a relative limit from it.
 * Packaging: Developer ID signing and notarization have only been
   dry-run (this Mac has an Apple Development certificate, no Developer
   ID), and the update feed's default URL is a placeholder until there's

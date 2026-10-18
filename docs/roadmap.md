@@ -81,6 +81,6 @@ in the same repository; editing it shouldn't need VS Code.
 1. Packaging: signed, notarized `.app`, updates, CLI install, `.xcodeproj`
    file association, login-item toggle for `--background`. ✅
 2. Scale benchmarks on a large open-source app (e.g. firefox-ios) with e2e
-   gates for indexing, scan, search latency and memory.
+   gates for indexing, scan, search latency and memory. ✅
 3. Built-in Build Server Protocol server for sourcekit-lsp instead of the
    scraped compilation database.
