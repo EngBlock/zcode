@@ -116,7 +116,9 @@ impl PickerDelegate for OpenQuicklyDelegate {
     fn update_matches(&mut self, query: String, _: &mut Window, cx: &mut Context<Picker<Self>>) {
         let (file_query, line) = split_line_suffix(&query);
         let file_query = file_query.trim().to_string();
+        let started = std::time::Instant::now();
         let found = fuzzy_match(&file_query, &self.labels, true, MAX_RESULTS);
+        crate::perf::Perf::record_timing(cx, "open_quickly", started.elapsed(), self.labels.len());
         self.items.clear();
         self.matches.clear();
         for m in found {

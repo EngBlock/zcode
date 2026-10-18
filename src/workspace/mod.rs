@@ -432,12 +432,18 @@ impl Workspace {
         let kind = self.project.kind.clone();
         let task = cx.spawn(async move |this, cx| {
             let scan_root = root.clone();
-            let (files, xcode_projects) = cx
-                .background_spawn(async move { (project::scan_files(&scan_root), project::xcode_projects(&kind)) })
+            let (files, xcode_projects, scanned) = cx
+                .background_spawn(async move {
+                    let started = std::time::Instant::now();
+                    (project::scan_files(&scan_root), project::xcode_projects(&kind), started.elapsed())
+                })
                 .await;
             this.update(cx, |this, cx| {
                 // Tree items are !Send, so they are built here (fast).
+                let started = std::time::Instant::now();
                 this.file_items = project::build_tree(&root, &files);
+                crate::perf::Perf::record_timing(cx, "scan", scanned, files.len());
+                crate::perf::Perf::record_timing(cx, "tree", started.elapsed(), this.file_items.len());
                 this.files = Arc::new(files);
                 if this.xcode_projects != xcode_projects {
                     this.xcode_projects = xcode_projects;
@@ -817,6 +823,7 @@ impl Workspace {
         let memory = serde_json::json!({
             "samples": perf.history.len(),
             "footprint_mb": crate::perf::mb(perf.current().footprint),
+            "resident_mb": crate::perf::mb(perf.current().resident),
             "baseline_footprint_mb": crate::perf::mb(perf.baseline_footprint()),
             "language_server_mb": perf.language_server.map(|(_, s)| crate::perf::mb(s.footprint)),
             "status_label": perf.status_label(),
@@ -874,6 +881,7 @@ impl Workspace {
         // The running program: the app lldb-dap launched or attached to on
         // this Mac, else what Run started (the app, simctl or devicectl).
         state["run_pid"] = self.debugger.read(cx).local_debuggee_pid().or(build.run_pid()).into();
+        state["timings"] = perf.timings_json();
         state["profile"] = self.profile_summary(cx);
         state["archives"] = self.archives_summary(cx);
         state["asset_catalog"] = self.asset_catalog_summary(cx);
@@ -909,6 +917,48 @@ impl Workspace {
         state["edit_scheme"] =
             serde_json::json!(self.edit_scheme_dialog.as_ref().and_then(|d| d.upgrade()).map(|d| d.read(cx).summary(cx)));
         state
+    }
+}
+
+impl Workspace {
+    /// The control channel's `bench status`: what the scale benchmarks
+    /// (`scripts/bench.py`) poll, a few lines however big the project.
+    pub fn bench_status(&self, cx: &App) -> serde_json::Value {
+        let perf = crate::perf::Perf::global(cx);
+        let build = self.build.read(cx);
+        let memory = perf.current();
+        let active = self.active_item().zip(self.active_buffer());
+        serde_json::json!({
+            "files": self.files.len(),
+            "timings": perf.timings_json(),
+            "memory": {
+                "footprint_mb": crate::perf::mb(memory.footprint),
+                "resident_mb": crate::perf::mb(memory.resident),
+                "baseline_footprint_mb": crate::perf::mb(perf.baseline_footprint()),
+                "peak_footprint_mb": crate::perf::mb(perf.peak_footprint.max(memory.lifetime_peak)),
+                "language_server_mb": perf.language_server.map(|(_, s)| crate::perf::mb(s.footprint)),
+                "language_server_resident_mb": perf.language_server.map(|(_, s)| crate::perf::mb(s.resident)),
+            },
+            // The active file's language server, as in `dump`.
+            "lsp": format!("{:?}", self.lsp.read(cx).status_for(active.map(|(item, _)| item.path.as_path()))),
+            "lsp_progress": self.lsp.read(cx).progress_message(),
+            "scheme": build.scheme,
+            "destination": build.destination.as_ref().map(|d| d.name.clone()),
+            "indexing": build.indexing,
+            "compile_database": crate::build::compiledb::database_path(&self.cache_dir).exists(),
+            "find_results": self.find.results.iter().map(|f| f.matches.len()).sum::<usize>(),
+            "find_files": self.find.results.len(),
+            "find_searching": self.find.searching,
+            "buffers": self.buffers.len(),
+            "active": active.map(|(_, b)| serde_json::json!({
+                "path": b.path,
+                "dirty": b.dirty,
+                "lines": zcode_editor::RopeExt::lines_len(b.editor.read(cx).text()),
+                "semantic_tokens": b.tokens.count,
+            })),
+            "navigator": format!("{:?}", self.navigator),
+            "modal_open": self.modal.is_some(),
+        })
     }
 }
 

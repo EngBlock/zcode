@@ -39,7 +39,13 @@
 //!   reveal <path>              reveal a file in the project navigator, package sources included
 //!   variable <name> copy|describe  the Variables view's Copy Value / Print Description
 //!   hover                      log the editor's hover (Quick Help or a data tip) at the cursor
-//!   type-latency <text>        type `text`, logging keystroke-to-frame times as JSON
+//!   type-latency <text>        type `text`, logging keystroke-to-frame times as JSON: to the next frame's
+//!                              start, `drawn_*` to that frame on screen, and `work_*`, the keystroke's
+//!                              handling plus the frame's draw (what zcode did, whatever the display's cadence)
+//!   bench <command>            the scale benchmarks (scripts/bench.py): status (files, timings, memory, the
+//!                              language server and the index build, the search, in a few lines), frame
+//!                              (a redraw's time to the next frame, to it drawn, and its work), action <Name>
+//!                              / keys <keystrokes> (dispatched and timed the same way)
 //!   editor <probe>             the editor's extension points (see `Workspace::editor_probe`)
 //!   hierarchy <command>        the call or type hierarchy in the Find navigator: kind callers|callees|
 //!                              supertypes|subtypes, expand / collapse / open / reroot <row>, close
@@ -121,6 +127,7 @@ pub fn start(cx: &mut App, workspaces: impl Fn(&mut App) -> Vec<Entity<Workspace
                         Ok(String::new())
                     }
                     "type-latency" => type_latency(&arg, cx).await,
+                    "bench" if arg != "status" => bench_frame(&arg, cx).await,
                     "file-drop" => file_drop(&arg, cx).await,
                     "hover" => match cx.update(|cx| start_hover(&workspaces, cx)) {
                         Ok(task) => task.await.map_err(|e| format!("{e:#}")).map(|hover| hover_text(hover.as_ref())),
@@ -148,33 +155,113 @@ pub fn start(cx: &mut App, workspaces: impl Fn(&mut App) -> Vec<Entity<Workspace
 /// display. Logs the median, 95th percentile and maximum in milliseconds.
 async fn type_latency(text: &str, cx: &mut AsyncApp) -> Result<String, String> {
     let mut samples = vec![];
+    let mut drawn = vec![];
+    let mut work = vec![];
     for ch in text.chars() {
         let key = if ch == ' ' { "space".to_string() } else { ch.to_string() };
         let mut keystroke = Keystroke::parse(&key).map_err(|e| e.to_string())?;
         keystroke.key_char = Some(ch.to_string());
-        let (tx, rx) = futures::channel::oneshot::channel();
-        let start = std::time::Instant::now();
-        cx.update(|cx| {
-            let window = front_window(cx).ok_or("no window")?;
-            window
-                .update(cx, |_, window, cx| {
-                    window.on_next_frame(move |_, _| {
-                        tx.send(std::time::Instant::now()).ok();
-                    });
-                    window.dispatch_keystroke(keystroke, cx);
-                })
-                .map_err(|e| e.to_string())
-        })?;
-        if let Ok(end) = rx.await {
-            samples.push((end - start).as_secs_f64() * 1000.);
-        }
+        let frame = timed_frame(cx, move |window, cx| {
+            window.dispatch_keystroke(keystroke, cx);
+        })
+        .await?;
+        samples.push(frame.to_frame_ms);
+        drawn.push(frame.drawn_ms);
+        work.push(frame.work_ms());
     }
     if samples.is_empty() {
         return Err("no frames".into());
     }
     samples.sort_by(f64::total_cmp);
-    let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
-    Ok(serde_json::json!({ "keys": samples.len(), "median_ms": at(0.5), "p95_ms": at(0.95), "max_ms": at(1.0) }).to_string())
+    drawn.sort_by(f64::total_cmp);
+    work.sort_by(f64::total_cmp);
+    let at = |s: &[f64], q: f64| s[((s.len() - 1) as f64 * q).round() as usize];
+    Ok(serde_json::json!({
+        "keys": samples.len(),
+        "median_ms": at(&samples, 0.5), "p95_ms": at(&samples, 0.95), "max_ms": at(&samples, 1.0),
+        "drawn_median_ms": at(&drawn, 0.5), "drawn_p95_ms": at(&drawn, 0.95), "drawn_max_ms": at(&drawn, 1.0),
+        "work_median_ms": at(&work, 0.5), "work_p95_ms": at(&work, 0.95), "work_max_ms": at(&work, 1.0),
+    })
+    .to_string())
+}
+
+/// What one input cost: its handling, the time to the start of the next
+/// frame, and to that frame drawn and on screen.
+struct FrameTiming {
+    handled_ms: f64,
+    to_frame_ms: f64,
+    drawn_ms: f64,
+}
+
+impl FrameTiming {
+    /// The input's handling plus the frame's draw and present: what zcode
+    /// did for it, whatever the display's cadence (a loaded machine's ticks
+    /// come at 30 Hz, which `to_frame_ms` and `drawn_ms` include).
+    fn work_ms(&self) -> f64 {
+        self.handled_ms + (self.drawn_ms - self.to_frame_ms)
+    }
+}
+
+/// Runs `input` in the front window and times the frame it causes. Frame
+/// callbacks run at the start of a display tick, before the draw, so a
+/// task queued from there runs once the draw and present are done.
+async fn timed_frame(
+    cx: &mut AsyncApp,
+    input: impl FnOnce(&mut Window, &mut App) + 'static,
+) -> Result<FrameTiming, String> {
+    let (frame_tx, frame_rx) = futures::channel::oneshot::channel();
+    let (drawn_tx, drawn_rx) = futures::channel::oneshot::channel();
+    let start = std::time::Instant::now();
+    let handled = cx.update(|cx| {
+        let window = front_window(cx).ok_or("no window")?;
+        window
+            .update(cx, |_, window, cx| {
+                window.on_next_frame(move |_, cx| {
+                    frame_tx.send(std::time::Instant::now()).ok();
+                    cx.spawn(async move |_| {
+                        drawn_tx.send(std::time::Instant::now()).ok();
+                    })
+                    .detach();
+                });
+                input(window, cx);
+                std::time::Instant::now()
+            })
+            .map_err(|e| e.to_string())
+    })?;
+    let ms = |end: std::time::Instant| (end - start).as_secs_f64() * 1000.;
+    let handled_ms = ms(handled);
+    let to_frame_ms = frame_rx.await.map(ms).map_err(|_| "no frame")?;
+    let drawn_ms = drawn_rx.await.map(ms).map_err(|_| "frame not drawn")?;
+    Ok(FrameTiming { handled_ms, to_frame_ms, drawn_ms })
+}
+
+/// `bench frame|action <Name>|keys <keystrokes>`: the input and the frame
+/// it causes, timed; `bench status` is read in `run_command`.
+async fn bench_frame(arg: &str, cx: &mut AsyncApp) -> Result<String, String> {
+    let (what, rest) = arg.split_once(' ').unwrap_or((arg, ""));
+    let rest = rest.trim().to_string();
+    let frame = match what {
+        "frame" => timed_frame(cx, |window, _| window.refresh()).await?,
+        "action" => {
+            let action = cx.update(|cx| cx.build_action(&rest, None)).map_err(|e| e.to_string())?;
+            timed_frame(cx, move |window, cx| window.dispatch_action(action, cx)).await?
+        }
+        "keys" => {
+            let keystrokes = rest
+                .split_whitespace()
+                .map(Keystroke::parse)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            timed_frame(cx, move |window, cx| {
+                for keystroke in keystrokes {
+                    window.dispatch_keystroke(keystroke, cx);
+                }
+            })
+            .await?
+        }
+        _ => return Err("usage: bench status|frame|action <Name>|keys <keystrokes>".into()),
+    };
+    Ok(serde_json::json!({ "to_frame_ms": frame.to_frame_ms, "drawn_ms": frame.drawn_ms, "work_ms": frame.work_ms() }).to_string())
 }
 
 /// Files dragged in from Finder and dropped at a point, as the platform
@@ -709,6 +796,12 @@ fn run_command(
             window
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.debug_state(window, cx)).to_string())
                 .map_err(|e| e.to_string())
+        }
+        // `bench status`: the few fields the benchmarks poll, cheap on a
+        // project whose `dump` runs to hundreds of kilobytes.
+        "bench" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            Ok(workspace.update(cx, |ws, cx| ws.bench_status(cx)).to_string())
         }
         other => Err(format!("unknown command {other}")),
     }

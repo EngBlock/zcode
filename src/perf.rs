@@ -189,10 +189,24 @@ pub fn watch_first_pixels(number: u32, main_started: Instant) {
     });
 }
 
+/// How long one of the operations that grow with a project took last
+/// time (`Perf::note`): the file scan, the tree, a search, Open Quickly's
+/// matching. Reported by the control channel's `dump` for the scale
+/// benchmarks (`scripts/bench.py`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Timing {
+    pub ms: f64,
+    /// What it covered: files scanned, matches found, candidates scored.
+    pub count: usize,
+    /// When it finished, in ms since `main()`.
+    pub at_ms: f64,
+}
+
 /// App-wide performance state.
 pub struct Perf {
     main_started: Instant,
     pub startup: StartupTimings,
+    pub timings: std::collections::BTreeMap<&'static str, Timing>,
     pub history: VecDeque<MemorySample>,
     pub peak_footprint: u64,
     /// The language servers' footprint together (the first one's pid).
@@ -223,6 +237,7 @@ impl Perf {
                 exec_to_main,
                 ..Default::default()
             },
+            timings: Default::default(),
             history: VecDeque::with_capacity(HISTORY_LEN),
             peak_footprint: 0,
             language_server: None,
@@ -245,6 +260,30 @@ impl Perf {
 
     pub fn mark_window_opened(&mut self) {
         self.startup.main_to_window = Some(self.main_started.elapsed());
+    }
+
+    /// Records how long `key` took, replacing the last measurement.
+    pub fn note(&mut self, key: &'static str, elapsed: Duration, count: usize) {
+        let timing = Timing {
+            ms: elapsed.as_secs_f64() * 1000.0,
+            count,
+            at_ms: self.main_started.elapsed().as_secs_f64() * 1000.0,
+        };
+        self.timings.insert(key, timing);
+    }
+
+    /// `note` through the app, from code that has a `cx`.
+    pub fn record_timing(cx: &mut App, key: &'static str, elapsed: Duration, count: usize) {
+        cx.global_mut::<Perf>().note(key, elapsed, count);
+    }
+
+    /// The timings as JSON: `{ "scan": { "ms": …, "count": …, "at_ms": … }, … }`.
+    pub fn timings_json(&self) -> serde_json::Value {
+        self.timings
+            .iter()
+            .map(|(key, t)| (key.to_string(), serde_json::json!({ "ms": t.ms, "count": t.count, "at_ms": t.at_ms })))
+            .collect::<serde_json::Map<_, _>>()
+            .into()
     }
 
     pub fn mark_first_frame(&mut self) {
@@ -376,4 +415,23 @@ pub fn start_sampler(cx: &mut App) {
         }
     })
     .detach();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timings_keep_the_last_measurement_per_key() {
+        let mut perf = Perf::new(Instant::now());
+        perf.note("scan", Duration::from_millis(120), 10_000);
+        perf.note("scan", Duration::from_micros(2500), 10_001);
+        perf.note("find", Duration::from_millis(3), 250);
+        let json = perf.timings_json();
+        assert_eq!(json["scan"]["ms"], 2.5);
+        assert_eq!(json["scan"]["count"], 10_001);
+        assert_eq!(json["find"]["count"], 250);
+        assert!(json["find"]["at_ms"].as_f64().unwrap() >= 0.0);
+        assert!(json.get("tree").is_none());
+    }
 }

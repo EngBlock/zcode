@@ -62,11 +62,14 @@ impl Workspace {
         self.find.cancel = cancel.clone();
         let root = self.project.root.clone();
         let files = self.files.clone();
+        let started = std::time::Instant::now();
         self.find._task = Some(cx.spawn(async move |this, cx| {
             let results = cx
                 .background_spawn(async move { crate::search::search(&root, &files, &regex, &cancel) })
                 .await;
             this.update(cx, |this, cx| {
+                let matches = results.iter().map(|f| f.matches.len()).sum();
+                crate::perf::Perf::record_timing(cx, "find", started.elapsed(), matches);
                 this.find.results = Arc::new(results);
                 this.find.searching = false;
                 cx.notify();
