@@ -297,6 +297,16 @@ fn module_context(commands: &[CompileCommand]) -> Vec<String> {
     out
 }
 
+/// `args` with the pairs of `context` it doesn't have yet.
+fn with_context(mut args: Vec<String>, context: &[String]) -> Vec<String> {
+    for pair in context.chunks(2) {
+        if !args.windows(2).any(|w| w == pair) {
+            args.extend(pair.iter().cloned());
+        }
+    }
+    args
+}
+
 /// A list-valued build setting's items (`"a b" c`).
 fn list(settings: &HashMap<String, String>, key: &str) -> Vec<String> {
     settings
@@ -549,7 +559,10 @@ impl BuildGraph {
             });
             let logged_swift = log.iter().find(|c| is_swift(Path::new(&c.file))).map(|c| c.arguments.clone());
             let (swift, origin) = match (index_swift, logged_swift) {
-                (Some(args), _) => (Some(crate::build::compiledb::clean_arguments(&args)), Some(Origin::IndexSettings)),
+                // Xcode's point at the index build's products; modules a
+                // build made elsewhere (⌘B, after packages were added) are
+                // reached through the log's search paths too.
+                (Some(args), _) => (Some(with_context(crate::build::compiledb::clean_arguments(&args), &context)), Some(Origin::IndexSettings)),
                 (None, Some(args)) => (Some(args), Some(Origin::BuildLog)),
                 (None, None) => match settings.and_then(|s| swift_from_settings(s, &context)) {
                     Some(mut args) => {
@@ -868,6 +881,8 @@ mod tests {
         assert_eq!(app.swift_origin, Some(Origin::IndexSettings));
         let args = graph.options(&app.id, Path::new("/p/App/A.swift"), Some("swift")).unwrap().arguments;
         assert!(args.contains(&"-DINDEX".to_string()) && !args.contains(&"-c".to_string()) && !args.contains(&"-j16".to_string()), "{args:?}");
+        // With the modules the logged builds made, once.
+        assert_eq!(args.windows(2).filter(|w| *w == ["-I", "/dd/Build/Products/Debug-iphonesimulator"]).count(), 1, "{args:?}");
         std::fs::remove_dir_all(dir).ok();
     }
 
