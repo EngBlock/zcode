@@ -305,11 +305,12 @@ impl CompletionProvider for DocumentProviders {
             return true;
         }
         // The servers' own (`<` and `/` in HTML, `:` in CSS); never a space,
-        // which would open the menu all through a line.
+        // which would open the menu all through a line, or `(`, where
+        // sourcekit-lsp's argument labels would cover the signature help.
         let Some(store) = self.store.upgrade() else { return false };
         let store = store.read(cx);
         let typed = ch.to_string();
-        ch != ' ' && store.document_features(&self.path).iter().any(|f| f.completion_triggers.contains(&typed))
+        ch != ' ' && ch != '(' && store.document_features(&self.path).iter().any(|f| f.completion_triggers.contains(&typed))
     }
 
     /// Resolves the item for its additional edits (an import vtsls adds
