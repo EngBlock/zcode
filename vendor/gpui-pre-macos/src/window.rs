@@ -655,6 +655,11 @@ unsafe fn apply_simple_fullscreen_plan(
     }
 }
 
+/// zcode patch: frame requests in a row with no frame demand before a
+/// window's frame source pauses (~25 ms at 120 Hz). The frame that served the
+/// last demand counts as the first.
+const IDLE_FRAMES_BEFORE_PAUSE: u32 = 4;
+
 struct MacWindowState {
     handle: AnyWindowHandle,
     foreground_executor: ForegroundExecutor,
@@ -666,6 +671,10 @@ struct MacWindowState {
     cursor_style: CursorStyle,
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
+    // zcode patch: frame requests since the last frame demand (GPUI's frame
+    // waker), and whether the frame source was paused for want of any.
+    idle_frames: u32,
+    paused_while_idle: bool,
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
     event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
@@ -835,6 +844,7 @@ impl MacWindowState {
 
     fn start_display_link(&mut self) {
         self.stop_display_link();
+        self.idle_frames = 0;
         unsafe {
             if !self
                 .native_window
@@ -856,8 +866,44 @@ impl MacWindowState {
     }
 
     fn stop_display_link(&mut self) {
+        self.paused_while_idle = false;
         if let Some(frame_source) = self.frame_source.as_mut() {
             frame_source.stop();
+        }
+    }
+
+    /// zcode patch: counts a frame request, and pauses the frame source once
+    /// `IDLE_FRAMES_BEFORE_PAUSE` have come without any frame demand, so an
+    /// idle window stops waking the main thread on every display refresh.
+    fn note_frame_request(&mut self) {
+        self.idle_frames = self.idle_frames.saturating_add(1);
+        if self.idle_frames >= IDLE_FRAMES_BEFORE_PAUSE
+            && self
+                .frame_source
+                .as_ref()
+                .is_some_and(WindowFrameSource::is_running)
+        {
+            self.stop_display_link();
+            self.paused_while_idle = true;
+        }
+    }
+
+    /// zcode patch: frame demand (a view notified, the window refreshed, a
+    /// next-frame callback or animation frame asked for). Restarts a paused
+    /// frame source and asks for a frame at once; a source stopped for
+    /// occlusion stays stopped until the window is visible again.
+    fn frame_demanded(&mut self) {
+        self.idle_frames = 0;
+        if !self.paused_while_idle {
+            return;
+        }
+        self.start_display_link();
+        if let Some(frame_source) = self
+            .frame_source
+            .as_ref()
+            .filter(|frame_source| frame_source.is_running())
+        {
+            frame_source.request_frame();
         }
     }
 
@@ -1100,6 +1146,8 @@ impl MacWindow {
                 cursor_style: CursorStyle::Arrow,
                 cursor_visible,
                 frame_source: None,
+                idle_frames: 0,
+                paused_while_idle: false,
                 renderer: renderer::new_renderer(
                     renderer_context,
                     native_window as *mut _,
@@ -2020,6 +2068,27 @@ impl PlatformWindow for MacWindow {
 
     fn on_request_frame(&self, callback: Box<dyn FnMut(RequestFrameOptions)>) {
         self.0.as_ref().lock().request_frame_callback = Some(callback);
+    }
+
+    // zcode patch: GPUI calls this whenever a window gains frame demand, which
+    // resumes a frame source paused while the window was idle.
+    fn frame_waker(&self) -> Option<Rc<dyn Fn()>> {
+        let state = Arc::downgrade(&self.0);
+        let executor = self.0.lock().foreground_executor.clone();
+        Some(Rc::new(move || {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            // GPUI wakes from app code, never while the window's state is
+            // locked; should that change, resume once the holder is done.
+            if let Some(mut lock) = state.try_lock() {
+                lock.frame_demanded();
+            } else {
+                executor
+                    .spawn(async move { state.lock().frame_demanded() })
+                    .detach();
+            }
+        }))
     }
 
     fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>) {
@@ -3359,7 +3428,9 @@ extern "C" fn step(view: *mut c_void) {
             signal_source,
             ..Default::default()
         });
-        window_state.lock().request_frame_callback = Some(callback);
+        let mut lock = window_state.lock();
+        lock.request_frame_callback = Some(callback);
+        lock.note_frame_request();
     }
 }
 

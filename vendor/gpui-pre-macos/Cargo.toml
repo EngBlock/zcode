@@ -50,6 +50,11 @@ test-support = [
     "gpui_apple/test-support",
 ]
 
+# zcode patch: as a path dependency this crate's lints are no longer capped
+# the way a registry crate's are; upstream's Zed workspace allows these.
+[lints.rust]
+deprecated = "allow"
+
 [lib]
 name = "gpui_macos"
 path = "src/gpui_macos.rs"

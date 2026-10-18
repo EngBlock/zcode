@@ -333,6 +333,22 @@ impl WindowFrameSource {
         Ok(())
     }
 
+    /// Whether the source is subscribed to its display's link.
+    ///
+    /// zcode patch: windows pause their source while idle.
+    pub fn is_running(&self) -> bool {
+        self.registration.is_some()
+    }
+
+    /// Asks for one frame on the main queue now, as a tick of the display's
+    /// link would (ticks coalesce with it).
+    ///
+    /// zcode patch: a paused window resumes with a frame at once instead of
+    /// waiting for the restarted link's first tick.
+    pub fn request_frame(&self) {
+        self.frame_requests.merge_data(1);
+    }
+
     pub fn take_signal(&self) -> Option<(Instant, FrameRequestSource)> {
         self.signal.take()
     }
