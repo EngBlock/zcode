@@ -45,7 +45,8 @@
 //!   bench <command>            the scale benchmarks (scripts/bench.py): status (files, timings, memory, the
 //!                              language server and the index build, the search, in a few lines), frame
 //!                              (a redraw's time to the next frame, to it drawn, and its work), action <Name>
-//!                              / keys <keystrokes> (dispatched and timed the same way)
+//!                              / keys <keystrokes> (dispatched and timed the same way), index (the index
+//!                              build for the chosen scheme and destination, then the status)
 //!   editor <probe>             the editor's extension points (see `Workspace::editor_probe`)
 //!   hierarchy <command>        the call or type hierarchy in the Find navigator: kind callers|callees|
 //!                              supertypes|subtypes, expand / collapse / open / reroot <row>, close
@@ -127,7 +128,7 @@ pub fn start(cx: &mut App, workspaces: impl Fn(&mut App) -> Vec<Entity<Workspace
                         Ok(String::new())
                     }
                     "type-latency" => type_latency(&arg, cx).await,
-                    "bench" if arg != "status" => bench_frame(&arg, cx).await,
+                    "bench" if !matches!(arg.as_str(), "status" | "index") => bench_frame(&arg, cx).await,
                     "file-drop" => file_drop(&arg, cx).await,
                     "hover" => match cx.update(|cx| start_hover(&workspaces, cx)) {
                         Ok(task) => task.await.map_err(|e| format!("{e:#}")).map(|hover| hover_text(hover.as_ref())),
@@ -236,7 +237,7 @@ async fn timed_frame(
 }
 
 /// `bench frame|action <Name>|keys <keystrokes>`: the input and the frame
-/// it causes, timed; `bench status` is read in `run_command`.
+/// it causes, timed; `bench status` and `bench index` are run in `run_command`.
 async fn bench_frame(arg: &str, cx: &mut AsyncApp) -> Result<String, String> {
     let (what, rest) = arg.split_once(' ').unwrap_or((arg, ""));
     let rest = rest.trim().to_string();
@@ -259,7 +260,7 @@ async fn bench_frame(arg: &str, cx: &mut AsyncApp) -> Result<String, String> {
             })
             .await?
         }
-        _ => return Err("usage: bench status|frame|action <Name>|keys <keystrokes>".into()),
+        _ => return Err("usage: bench status|index|frame|action <Name>|keys <keystrokes>".into()),
     };
     Ok(serde_json::json!({ "to_frame_ms": frame.to_frame_ms, "drawn_ms": frame.drawn_ms, "work_ms": frame.work_ms() }).to_string())
 }
@@ -801,6 +802,9 @@ fn run_command(
         // project whose `dump` runs to hundreds of kilobytes.
         "bench" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            if arg == "index" {
+                workspace.update(cx, |ws, cx| ws.start_index_build(cx));
+            }
             Ok(workspace.update(cx, |ws, cx| ws.bench_status(cx)).to_string())
         }
         other => Err(format!("unknown command {other}")),

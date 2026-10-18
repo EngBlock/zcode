@@ -711,6 +711,12 @@ impl BuildController {
         if self.index_attempted || db.exists() {
             return;
         }
+        // `ZCODE_INDEX_BUILD=0`: none when the project opens, for the scale
+        // benchmarks (scripts/bench.py), so a big app's build doesn't load
+        // the machine while they measure; they start it themselves.
+        if std::env::var_os("ZCODE_INDEX_BUILD").is_some_and(|v| v == "0") {
+            return;
+        }
         self.start_index_build(cx);
     }
 

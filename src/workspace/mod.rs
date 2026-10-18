@@ -923,6 +923,12 @@ impl Workspace {
 }
 
 impl Workspace {
+    /// The control channel's `bench index`: the index build for the
+    /// scheme and destination chosen now, as a save would start it.
+    pub fn start_index_build(&mut self, cx: &mut Context<Self>) {
+        self.build.update(cx, |build, cx| build.refresh_index(cx));
+    }
+
     /// The control channel's `bench status`: what the scale benchmarks
     /// (`scripts/bench.py`) poll, a few lines however big the project.
     pub fn bench_status(&self, cx: &App) -> serde_json::Value {
@@ -947,7 +953,8 @@ impl Workspace {
             "scheme": build.scheme,
             "destination": build.destination.as_ref().map(|d| d.name.clone()),
             "indexing": build.indexing,
-            "compile_database": crate::build::compiledb::database_path(&self.cache_dir).exists(),
+            // Where the index build's compilation database is, once written.
+            "compile_database": Some(crate::build::compiledb::database_path(&self.cache_dir)).filter(|p| p.exists()),
             "find_results": self.find.results.iter().map(|f| f.matches.len()).sum::<usize>(),
             "find_files": self.find.results.len(),
             "find_searching": self.find.searching,
