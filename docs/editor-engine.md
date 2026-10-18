@@ -514,9 +514,24 @@ editor.set_read_only_ranges(vec![separator], cx);
 redo, and `set_value` as one whole-text edit). Read-only ranges refuse the
 user's edits that replace any of them or insert strictly inside them;
 inserting at their edges works, and like read-only mode they don't limit
-undo or the programmatic APIs. Both are what a multibuffer needs, and
-`BufferEdit` is also what incremental LSP sync needs (zcode still sends
-whole documents).
+undo or the programmatic APIs. Both are what a multibuffer needs.
+
+```rust
+let journal = editor.update(cx, |state, _| state.edit_journal());  // starts recording
+journal.revision();                     // edits so far
+journal.edits_between(from, to);        // Option<Vec<BufferEdit>>: None once dropped
+journal.forget_through(revision);       // the reader has them
+```
+
+An `EditJournal` (`EditorState::edit_journal`) records the same edits,
+numbered, as each is applied.
+Events arrive after the update that made them, but zcode's language
+client syncs a document from inside the providers the editor calls
+mid-update (completion as a key is typed), so it reads the edits since the
+text it last sent from the journal (`src/lsp/sync.rs`), checks they make
+the current text and sends them as ranged changes. A journal keeps at most
+4,096 edits and 4 MB of inserted text when nobody reads it; a reader asking
+for dropped edits gets `None` and compares the texts instead.
 
 ### Linked views: one buffer in several editors (`linked.rs`)
 
@@ -637,6 +652,7 @@ against 5.1–5.2 ms in the same file's own tab; the first page of a
 | Minimap (later) | an element beside the editor reading the rope and the highlight styles; the display map already gives row ↔ offset |
 | Read-only views (package sources, generated interfaces) | `set_read_only`, or read-only ranges for parts of a file |
 | Split panes (2.2, done) | linked views: an editor per pane, one text, history and anchor table |
+| Incremental language-server sync (performance batch 1) | `EditJournal`, the edits as they're applied (see above); `prepare_highlighting(language)` compiles a language's shared highlight queries ahead of the first editor that shows it, from any thread |
 
 ## Performance
 

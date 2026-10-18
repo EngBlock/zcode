@@ -44,6 +44,8 @@ folder, and drives it through the control channel (`bench …` in
 | `lsp_ready_s`, `tokens_s` | From opening the view controller to sourcekit-lsp ready and to the file's first semantic tokens |
 | `typing_ms`, `typing_big_ms` | A keystroke's work (below) while typing a line in the view controller and in the strings table |
 | `typing_tick_ms`, `typing_big_tick_ms` | Keystroke to the start of the next frame, wall-clock |
+| `typing_huge_ms` | A keystroke's work typing a line near the end of a 50,000-line Swift file (generated into the cache, `huge/Huge.swift`, opened next to the project) |
+| `pagedown_json_ms` | The work of five Page Downs in a 15 MB JSON file (`huge/huge.json`), median of 5 |
 | `lsp_footprint_mb` | sourcekit-lsp with its `SourceKitService` helpers at the end |
 
 **Work, not ticks.** Frames are gated on their *work*: the input's
@@ -224,6 +226,64 @@ lacks a file (the app's files here), sourcekit-lsp returned no semantic
 tokens for it; without a database it answered from the file alone. Any
 project whose index build stops partway hit this. zcode's build server
 (`src/bsp`) now gives every file of a target its arguments; see below.
+
+## Performance batch 1
+
+Four fixes from a profile of a `master` release build, each measured
+against that build in alternating launches (M4 Max, macOS 27.2; the load
+average beside each, as other work shares the machine). The drivers are
+the control channel's `bench keys`, `type-latency` and `--startup-bench`.
+
+| | `master` | Now | How measured |
+|---|---|---|---|
+| Five Page Downs in a 15 MB JSON file, work | 31 ms (23 ms in `bench.py`) | 19 ms (15 ms) | median of 4 launches × 5, load 5–12 |
+| CPU to open 30 firefox-ios Swift files | 1.39–1.46 s | 0.99–1.04 s | 3 launches each, load 3–9 |
+| ZKit with 4 Swift tabs restored, first frame / first pixels | 218 / 264 ms | 201 / 246 ms | median of 15, load 9–20 |
+| Welcome window, first frame / first pixels | 198.0 / 233.9 ms | 195.4 / 232.5 ms | median of 15, load 2–5 |
+| Typing near the end of a 50,000-line Swift file, work per keystroke | 7.8 ms (6.7 ms in `bench.py`) | 1.85 ms (2.9 ms) | median of 3 launches × 3, load 4–7 |
+| Typing near its start | 8.4 ms | 3.1 ms | median of 4 launches × 3, load 4–7 |
+| Typing in the 9,427-line strings table (`bench.py`) | 4.7 ms | 3.2 ms | 1 round, load 2–3 |
+| `devicectl list devices` runs in 60 s, idle HelloZ window | 12 | 1 | 2 launches each, load 2–10 |
+
+* **Fold lookups scanned every fold.** The gutter asks, for each visible
+  row on every frame, whether a fold starts there and whether it's folded;
+  both were linear scans of the candidates (hundreds of thousands in a large
+  JSON file). Both lists are kept sorted by start line, so they're binary
+  searches now, as are folding and unfolding.
+* **Every editor compiled its language's queries.** gpui-component's
+  `SyntaxHighlighter` compiled the highlight, injection and locals queries
+  (~13 ms of CPU for Swift) for each editor, and each parse with injections
+  recompiled the injected languages' highlights. A patch shares one
+  compiled copy per language (`vendor/gpui-component/ZCODE-PATCH.md`), and a
+  project's restored tabs' languages are compiled on a background thread
+  while its window is created: the shown tab's editor builds its
+  highlighter before the window appears, and that took ~12.6 ms of the
+  main thread, 3 µs now. Inactive restored tabs never built highlighters
+  (they're made at an editor's first render), so the gain at launch is the
+  one shown tab's.
+* **A keystroke diffed the whole file.** Completion syncs the document
+  before asking, and the change sent was found by comparing the text
+  last sent with the current one byte by byte (ropey's `Bytes` iterator):
+  ~3 ms a keystroke in a 1.2 MB file. The change is now the editor's own
+  edits since the server's text, from an `EditJournal` the editor fills as
+  each edit is applied (events come too late, after the provider runs),
+  checked to make the current text; when they don't, the comparison runs by
+  chunk, skipping the ones both ropes share (an edited rope keeps the
+  chunks it didn't touch). Edits that run into each other (typing a word)
+  are merged; two cursors' edits stay two small changes instead of one
+  range spanning everything between them.
+* **An edit's fold candidates walked the whole top level.** After each
+  edit the editor asks the syntax tree for the folds in the edited range,
+  and the walk visited every child of the root to check it against the
+  range (20,000 in the generated file). It's one tree-cursor descent now,
+  entering each level at the first child reaching the edit and leaving
+  after the last one starting in it.
+* **Devices were listed every 5 s.** Each `devicectl list devices` costs
+  ~60 ms of CPU and wakes CoreDevice. Devices are now listed when an Apple
+  USB device attaches or detaches (IOKit notifications, `src/build/usb.rs`),
+  when the window becomes active, when the destination menu or Choose
+  Destination opens, and otherwise once a minute. No device was plugged in
+  during testing; the notifications were seen to register.
 
 ## About the memory numbers
 

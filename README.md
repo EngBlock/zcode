@@ -77,7 +77,7 @@ update feed in one go (`--dry-run` prints what it would run).
 | | Integrate ▸ Commit…: the changed files with a checkbox for staged, the selected file's staged and unstaged changes with Stage / Unstage on each, the message (kept while the sheet is closed) and Amend. Push… (to the upstream or a new remote branch, Include tags) and Pull… (Rebase local changes onto upstream changes), Fetch Changes, Stage / Unstage / Discard All Changes, Switch Branch… and New Branch… (also from the status bar's branch). Open files without edits reload after a checkout or pull. git runs off the main thread and never prompts: credentials come from git's helpers or an SSH agent. | ⌥⌘C, ⌥⌘X |
 | **Bookmarks** | Edit ▸ Bookmark Line and Bookmark File (⌥ adds a dialog for the description); a bookmark's description starts as the selection or the line's text. Bookmarked lines get an orange ribbon left of the line numbers (right-click for its menu) and follow edits, undo, renames and Move to Trash, as breakpoints do (undoing the deletion of a bookmarked line brings its bookmark back, in its place). Jump to Next / Previous Bookmark in the file, or In Workspace in the navigator's order. | ⌃⌘' ⌃⇧⌘' ⌃⌥⌘' ⌃⌥⇧⌘', ⌃; ⌃: ⌃⌥; ⌃⌥: |
 | | The Bookmarks navigator lists them grouped by file: click to open, double-click (or Edit Description) to edit the description in place, Mark as Complete, drag to reorder bookmarks within a file or whole files, delete, Sort By Name / Type / Completion Status, Delete All Completed Items, a filter and Show only incomplete items. From the Find navigator, Bookmark Line on a result, Bookmark File on a file, and the whole query with its results (its bookmark button, or Bookmark Line while the Find navigator has focus) as a group that Find Again refreshes. Saved per project. | ⌘3 |
-| **Build & run** | Scheme, configuration and run destination pickers. Destinations are grouped as in Xcode: My Mac, connected iOS, iPadOS, watchOS, tvOS and visionOS devices (from `devicectl`, with how they're connected or why they can't be used: not paired, Developer Mode disabled, unavailable), Any iOS Device (arm64) for building, then every available simulator, filtered by the scheme's `SUPPORTED_PLATFORMS`. Devices appear and disappear as they connect, without a refresh. | ⌃0, ⌃⇧0 |
+| **Build & run** | Scheme, configuration and run destination pickers. Destinations are grouped as in Xcode: My Mac, connected iOS, iPadOS, watchOS, tvOS and visionOS devices (from `devicectl`, with how they're connected or why they can't be used: not paired, Developer Mode disabled, unavailable), Any iOS Device (arm64) for building, then every available simulator, filtered by the scheme's `SUPPORTED_PLATFORMS`. Devices plugged in or out over USB appear and disappear at once; devices on the network when the destination menu opens, the window becomes active, or within a minute. | ⌃0, ⌃⇧0 |
 | | Build, Run, Test, Stop and Clean. Files are saved first. Stop ends the app however it was started (on its own, under lldb-dap, which can leave it to launchd, or by a recording), and so do quitting zcode and closing the window. | ⌘B, ⌘R, ⌘U, ⌘., ⇧⌘K |
 | | Profile: builds with the scheme's Profile action's configuration (Release unless the scheme says otherwise), then records the app under Instruments with `xctrace record --launch`, on the Mac, a simulator (booted and installed first) or a device (installed with `devicectl`), with the Run action's arguments and environment (or the Profile action's own). A template chooser lists `xctrace list templates` (Time Profiler, Allocations, Leaks, Animation Hitches, SwiftUI and App Launch first, then the rest and your own), unless the scheme's Profile action names its instrument; Profile… asks either way. The app's output streams into the console while it records. Stop ends the recording (xctrace saves the trace; a second Stop ends it outright), as does `profiling.time_limit` in `settings.json`; the trace opens in Instruments, and for Time Profiler the console lists the functions with the most samples, with their self and total share, from `xctrace export`. Profile Without Building and Build For ▸ Profiling too. Traces are kept in `~/Library/Caches/zcode/Traces` (the newest 20). | ⌘I, ⌥⌘I, ⌃⌘I, ⇧⌘I |
 | | Archive: builds with the scheme's Archive action's configuration (Release unless the scheme says otherwise) for a generic device of the run destination's platform (Any iOS Device for an iOS simulator, any Mac for My Mac, or the first platform the scheme supports), signing with automatic provisioning as Xcode does, into Xcode's own Archives folder (`~/Library/Developer/Xcode/Archives/<date>/<Scheme> <date>, <time>.xcarchive`), so Xcode's Organizer lists zcode's archives and the other way around. The output goes to the build log and the Reports navigator; a signing error says to choose the team in the target's Signing & Capabilities tab. Then the Organizer opens on the new archive (unless the scheme's Reveal Archive in Organizer is off). | Product ▸ Archive |
@@ -231,7 +231,7 @@ if zcode is not faster.
 * **Always warm.** `zcode --background` starts the resident instance with no window. zcode ▸ Open at Login registers it as a login item (the bundle's LaunchAgent, through SMAppService), and even the first open of the day takes the warm path.
 * **The bundle costs ~15–25 ms more to launch.** `zcode.app/Contents/MacOS/zcode --startup-bench` is the same binary and the same startup, plus AppKit's own launch work for a bundled app: `finishLaunching` loads the Writing Tools UI library while it adds the text-input items to the Edit menu (seen with `sample`), which a bare binary without a bundle identifier skips. Three alternating rounds of 10 (load average 20–50): the bare binary's first pixels at 251.1, 260.1 and 259.4 ms, the bundle's at 287.3, 281.4 and 287.8 ms; on a calmer run (load average 18–25) 265.4, 266.8 and 262.8 ms against 281.6, 283.7 and 279.7 ms. The icon, the document types, the hardened runtime and the signature make no difference (each tried alone), nor do `NSAllowsWritingTools` or `NSMenuDoesNotAutomaticallyInsertWritingToolsItems` as `Info.plist` keys or defaults. The e2e suite times both in alternating rounds and holds the bundle to within 40 ms of the bare binary.
 * Resident memory at first frame is ~102 MB for the welcome window and ~120 MB with a project open.
-* **On a large app** (firefox-ios, 10,908 files; `scripts/bench.py`, `docs/scale.md`): the files are listed ~225 ms after `main()` (the scan takes ~75 ms in the background), an Open Quickly keystroke costs ~3 ms over every path, Find in Workspace reads every file in ~100 ms, a redraw with 5,000 results costs ~2 ms, typing in a 9,400-line file ~4 ms a keystroke, and zcode holds ~165–175 MB resident after opening and searching. The app's own files, which its index build can't compile without firefox-ios's bootstrap, get semantic highlighting through the build server (~8 s after opening one, once the index build has run; never with the compilation database alone).
+* **On a large app** (firefox-ios, 10,908 files; `scripts/bench.py`, `docs/scale.md`): the files are listed ~225 ms after `main()` (the scan takes ~75 ms in the background), an Open Quickly keystroke costs ~3 ms over every path, Find in Workspace reads every file in ~100 ms, a redraw with 5,000 results costs ~2 ms, typing in a 9,400-line file ~3 ms a keystroke, and zcode holds ~165–175 MB resident after opening and searching. The app's own files, which its index build can't compile without firefox-ios's bootstrap, get semantic highlighting through the build server (~8 s after opening one, once the index build has run; never with the compilation database alone).
 * The first launch after each rebuild also includes macOS scanning the new binary.
 
 * Two startup fixes make zcode faster than a bare GPUI Kit window
@@ -262,8 +262,13 @@ if zcode is not faster.
   poll of a few files' times); change bars come from a diff of the editor's
   text run in the background 30 ms after the last keystroke, so typing
   latency doesn't change (median keystroke to frame in a 6,000-line file:
-  5.3 ms on this branch, 5.4 ms on `master`). Devices are listed again every 5 s, only while the project's
-  window is active and its scheme builds for a device platform.
+  5.3 ms on this branch, 5.4 ms on `master`). Devices are listed again when
+  an Apple USB device attaches or detaches (IOKit's notifications, on a
+  thread of their own), when the project's window becomes active and when
+  the destination menu or Choose Destination opens, and otherwise once a
+  minute while the window is active, only if its scheme builds for a device
+  platform: an idle iOS project's window runs `devicectl list devices`
+  (~60 ms of CPU, plus CoreDevice's work) once a minute instead of 12 times.
 * Semantic tokens and inlay hints are asked for after typing pauses (300
   and 400 ms), a file's tokens whole and each pane's hints for its visible
   rows and a screen either side; a newer request cancels the one before and
@@ -382,8 +387,28 @@ if zcode is not faster.
   265.2 ms against 262.7 ms (median of 12).
 * Swift highlighting uses a compact tree-sitter query
   (`src/languages/swift-highlights.scm`) that compiles in ~11 ms. The upstream
-  query takes ~185 ms, and the editor pays that cost for every Swift file it
-  opens (`cargo run --release --example query_bench`).
+  query takes ~185 ms (`cargo run --release --example query_bench`). A
+  language's queries are compiled once and shared by every editor (a patch
+  to gpui-component's highlighter; upstream compiles them for each editor,
+  and an injected language's on every parse): opening 30 firefox-ios Swift
+  files costs 1.0 s of CPU against 1.4 s on `master`. When a project opens,
+  its restored tabs' languages are compiled on a background thread while
+  the window is created, so the shown tab's highlighter no longer compiles
+  them on the main thread: ZKit with four Swift tabs restored shows its
+  first frame at 201 ms against 218 ms on `master` (median of 15,
+  alternating, load average 9–20); the welcome window is unchanged
+  (232.5 ms against 233.9 ms to its first pixels, median of 15).
+* Big files: an edit costs what it touches. The gutter finds a row's fold
+  by binary search, not a scan of every fold (Page Down ×5 in a 15 MB JSON
+  file: 15–19 ms of work against 23–31 ms on `master`); an edit's fold
+  candidates come from the syntax tree's nodes around it, not from every
+  node at the top level; and a language server is sent the editor's own
+  edits (`EditJournal`, recorded as each edit is applied), checked against
+  the text, with a rope comparison that skips the chunks both texts share
+  when they don't add up. Typing near the end of a 50,000-line Swift file:
+  1.9–2.9 ms of work per keystroke against 6.7–7.8 ms on `master`
+  (`scripts/bench.py`'s `typing_huge_ms` and `pagedown_json_ms`;
+  `docs/scale.md`).
 * **About memory:** while a GPUI window is frontmost and redrawing (for
   example while the caret blinks), macOS attributes about 220 MB of transient
   compositor/GPU memory to the process (the "Owned physical footprint
@@ -421,14 +446,16 @@ src/
                     (inputs.rs), connections answered on threads of their own (server.rs), the graph kept
                     current as the project, the database, the scheme and destination change (model.rs)
   lsp/              JSON-RPC client; the store of a project's servers (one per kind and folder) keeping
-                    documents in sync with ranged changes, pushed and pulled diagnostics; which server
+                    documents in sync with ranged changes (sync.rs: the editor's own edits, or where the
+                    texts differ), pushed and pulled diagnostics; which server
                     serves which files and folders, and what each is told (servers.rs); finding and
                     installing their programs (install.rs); editor provider adapters merging several
                     servers' answers; Prettier; inlay hints, semantic tokens and call/type hierarchies
                     converted for the editor
   languages/        grammar registrations (Swift's query, JSX's tags, TSX, Vue's blocks), editing rules
                     for markup and CSS (tags closed as typed), Emmet in the editor (emmet.rs)
-  build/            xcodebuild/swift/simctl/devicectl queries, streaming runner (programs started with
+  build/            xcodebuild/swift/simctl/devicectl queries, USB devices attaching and detaching (usb.rs,
+                    IOKit's notifications), streaming runner (programs started with
                     no signals blocked, ended by Stop wherever they ended up), log/issue/test parsing,
                     compilation-database extraction; profile/: Product ▸ Profile (xctrace's templates and
                     recording, opening Instruments, a Time Profiler export's heaviest functions); archive/:
@@ -488,7 +515,8 @@ src/
   screenshot.rs     zcode's own windows and simulators as PNGs (the control channel, startup bench, MCP)
 crates/
   zcode-editor/     the code editor: rope buffer, display map (soft wrap, folding), highlighting,
-                    undo, multiple cursors, linked views of one buffer, multibuffers (excerpts of many
+                    undo, multiple cursors, edit events and a journal of edits as they're applied,
+                    linked views of one buffer, multibuffers (excerpts of many
                     buffers, one undo step across them), Vim mode (a keystroke interceptor with
                     motions, text objects, operators, registers, search and `:` commands), edit
                     predictions as ghost text on inlays and blocks, LSP popovers, find panel
@@ -528,9 +556,11 @@ across files were written from the public description of Zed's (Zed's
 editor is GPL; none of its code was read). The workspace's panes, items and split tree follow
 the model Zed describes publicly (a pane of items, a tree of splits), written
 from scratch. The rest of `gpui-component` (widgets, theme,
-tree-sitter highlighter) is vendored with a startup patch and a visibility
-patch for the highlighter, both described in
-`vendor/gpui-component/ZCODE-PATCH.md`.
+tree-sitter highlighter) is vendored with a startup patch, a visibility
+patch for the highlighter and one that compiles each language's queries
+once, all described in `vendor/gpui-component/ZCODE-PATCH.md`.
+USB devices attaching are noticed through IOKit's notifications, Apple's
+framework called directly (no new dependency).
 Source control runs the `git` command line; line diffs come from the
 `similar` crate (Apache-2.0). Inline blame and hollow staged change bars
 follow Zed's public behavior, implemented from scratch, as do inlay
@@ -725,7 +755,9 @@ themes or session. It covers:
   ancestor, descendent and conforming types; typing latency with both on.
   Then through `scripts/lsp_proxy.py` (the real server behind
   `ZCODE_SOURCEKIT_LSP`, logging what zcode asks): the requests typing and
-  scrolling cost, and a server with these capabilities hidden (nothing
+  scrolling cost, what the server was sent rebuilding the editor's text
+  (typing, and two cursors 21 lines apart sent as two one-letter changes),
+  and a server with these capabilities hidden (nothing
   asked for, ⌃⇧⌘H says so, completion still works)
 * web languages on a copy of `samples/HelloWeb` (a Swift package with a
   Vite app in `web/`), against the real servers, installed by zcode with
@@ -1236,7 +1268,9 @@ The control channel also takes window screenshots
   isn't inserted on devices. Run, debugging, tests and signing were verified
   on an iPhone connected over the network; USB connections and iPad, Apple
   Watch, Apple TV and Vision Pro hardware were only exercised against
-  recorded `devicectl` output and a fake `devicectl`.
+  recorded `devicectl` output and a fake `devicectl`. The USB attach and
+  detach notifications that list devices again were seen to register, but
+  no device was plugged in while testing them.
 * Edit Scheme covers the Run and Test actions only (not Build, Profile,
   Analyze or Archive, nor pre- and post-actions; Profile and Archive read
   their actions from the file), and doesn't create,
