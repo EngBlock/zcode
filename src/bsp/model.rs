@@ -126,28 +126,29 @@ impl BuildServer {
         let cache_dir = self.cache_dir.clone();
         let queried = self.queried.clone();
         let shared = self.shared.clone();
+        // A rebuild started since supersedes this one: its graph is the one
+        // installed (this task is dropped before it gets that far).
         self.rebuild_task = Some(cx.spawn(async move |this, cx| {
-            let (synchronized, elapsed, changed) = cx
+            let (graph, synchronized, elapsed) = cx
                 .background_spawn(async move {
                     let started = Instant::now();
                     let store = compiledb::index_store_path(&cache_dir);
-                    // Where the compilation database had it, next to the store.
                     let inputs = Inputs {
                         root,
                         model: inputs::model_targets(&projects),
                         commands: compiledb::read(&compiledb::database_path(&cache_dir)),
                         index_settings: queried.index_settings.clone(),
                         build_settings: queried.build_settings.clone(),
+                        // Where the compilation database had it, next to the store.
                         index_database: store.parent().map(|p| p.join("IndexDatabase")).unwrap_or_default(),
                         index_store: store,
                         default_sdk: inputs::default_sdk(),
                     };
-                    let graph = BuildGraph::build(&inputs);
-                    let changed = shared.set_graph(graph);
-                    (inputs::synchronized_folders(&projects), started.elapsed(), changed)
+                    (BuildGraph::build(&inputs), inputs::synchronized_folders(&projects), started.elapsed())
                 })
                 .await;
             this.update(cx, |this, cx| {
+                let changed = shared.set_graph(graph);
                 this.graphs += 1;
                 this.last_graph = Some(elapsed);
                 this.synchronized = Arc::new(synchronized);
