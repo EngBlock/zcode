@@ -133,6 +133,15 @@ pub fn file_type_for(path: &Path, is_dir: bool) -> &'static str {
 /// Folders Xcode treats as single files (bundles, catalogs) rather than
 /// groups to recurse into. `.lproj` folders are added as folder references so
 /// their localized resources keep their folder in the built bundle.
+/// Swift and the C family, and their headers: what a language server needs
+/// build settings for.
+pub fn is_compiled(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).unwrap_or(""),
+        "swift" | "c" | "m" | "mm" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "hh"
+    )
+}
+
 fn is_opaque_folder(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()).unwrap_or(""),
@@ -275,6 +284,9 @@ pub struct ProjectFiles {
     /// Item IDs by folder or file, in navigator order.
     by_path: HashMap<PathBuf, Vec<String>>,
     synchronized_roots: Vec<String>,
+    /// A synchronized folder's files left out of a target's membership:
+    /// folder ID → (target ID, paths relative to the folder).
+    pub membership_exceptions: HashMap<String, Vec<(String, Vec<String>)>>,
 }
 
 impl ProjectFiles {
@@ -380,7 +392,15 @@ impl ProjectFiles {
                 by_path.entry(resolved.clone()).or_default().push(id.clone());
             }
         }
-        let synchronized_roots = order.iter().filter(|id| items[*id].isa == SYNCHRONIZED_GROUP).cloned().collect();
+        let synchronized_roots: Vec<String> = order.iter().filter(|id| items[*id].isa == SYNCHRONIZED_GROUP).cloned().collect();
+        let mut membership_exceptions: HashMap<String, Vec<(String, Vec<String>)>> = HashMap::new();
+        for root in &synchronized_roots {
+            for set in ids(objects.get(root.as_str()).and_then(|node| node.get("exceptions"))) {
+                let Some(set) = objects.get(set.as_str()).filter(|set| set.get_str("isa") == Some(EXCEPTION_SET)) else { continue };
+                let Some(target) = set.get_str("target") else { continue };
+                membership_exceptions.entry(root.clone()).or_default().push((target.to_string(), ids(set.get("membershipExceptions"))));
+            }
+        }
         Ok(Self {
             project_dir,
             main_group,
@@ -391,6 +411,7 @@ impl ProjectFiles {
             build_files,
             by_path,
             synchronized_roots,
+            membership_exceptions,
         })
     }
 
@@ -454,6 +475,51 @@ impl ProjectFiles {
                 .find_map(|p| p.parent().map(Path::to_path_buf))
         };
         synchronized.or_else(named).or_else(sources).unwrap_or_else(|| self.project_dir.clone())
+    }
+
+    /// The files `target` compiles (and the headers it has): its Sources
+    /// and Headers phases' files, and the source files in its synchronized
+    /// folders other than the ones it leaves out. Reads those folders.
+    pub fn compiled_files(&self, target: &Target) -> Vec<PathBuf> {
+        let mut out = vec![];
+        for phase in [PhaseKind::Sources, PhaseKind::Headers] {
+            let Some(phase) = target.phase(phase) else { continue };
+            for build_file in &phase.files {
+                let resolved = self.build_files.get(build_file).and_then(|r| self.items.get(r)).and_then(|i| i.resolved.clone());
+                out.extend(resolved.filter(|p| is_compiled(p)));
+            }
+        }
+        for root in target.synchronized_groups.iter().filter_map(|id| self.items.get(id)) {
+            let Some(folder) = &root.resolved else { continue };
+            let left_out: Vec<PathBuf> = self
+                .membership_exceptions
+                .get(&root.id)
+                .into_iter()
+                .flatten()
+                .filter(|(t, _)| *t == target.id)
+                .flat_map(|(_, paths)| paths.iter().map(|p| folder.join(p)))
+                .collect();
+            let mut stack = vec![folder.clone()];
+            while let Some(dir) = stack.pop() {
+                let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if entry.file_name().to_string_lossy().starts_with('.') || left_out.iter().any(|l| path.starts_with(l)) {
+                        continue;
+                    }
+                    if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                        if !is_opaque_folder(&path) {
+                            stack.push(path);
+                        }
+                    } else if is_compiled(&path) {
+                        out.push(path);
+                    }
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// Whether `path` belongs in this project's group tree: under its folder
@@ -1240,6 +1306,28 @@ mod tests {
         let files = ProjectFiles::parse(&synced.join("HelloZ.xcodeproj"), SYNCED).unwrap();
         assert_eq!(files.target_folder("A10000000000000000000006"), synced.join("HelloZ"));
         assert_eq!(files.target_folder("A10000000000000000000016"), synced.join("HelloZTests"));
+    }
+
+    #[test]
+    fn lists_what_a_target_compiles() {
+        let (proj, dir) = classic();
+        let files = ProjectFiles::parse(&proj, CLASSIC).unwrap();
+        let app = files.compiled_files(files.target(APP).unwrap());
+        assert!(app.contains(&dir.join("HelloClassic/ContentView.swift")) && app.contains(&dir.join("HelloClassic/HelloClassicApp.swift")), "{app:?}");
+        assert!(!app.iter().any(|p| p.starts_with(dir.join("HelloClassicTests"))), "{app:?}");
+        // A synchronized folder's files, but not the ones a target leaves out.
+        let synced = sample("HelloZ");
+        let proj = synced.join("HelloZ.xcodeproj");
+        let app = "A10000000000000000000006";
+        let files = ProjectFiles::parse(&proj, SYNCED).unwrap();
+        let names = |files: &ProjectFiles| -> Vec<String> {
+            files.compiled_files(files.target(app).unwrap()).iter().map(|p| p.strip_prefix(&synced).unwrap().display().to_string()).collect()
+        };
+        assert_eq!(names(&files), ["HelloZ/ContentView.swift", "HelloZ/Counter.swift", "HelloZ/HelloZApp.swift"]);
+        let counter = synced.join("HelloZ/Counter.swift");
+        let excluded = add_target_file(&proj, SYNCED, &counter, app, true).unwrap().unwrap();
+        let files = ProjectFiles::parse(&proj, &excluded).unwrap();
+        assert_eq!(names(&files), ["HelloZ/ContentView.swift", "HelloZ/HelloZApp.swift"]);
     }
 
     #[test]

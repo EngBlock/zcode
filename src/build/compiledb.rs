@@ -13,6 +13,21 @@ pub struct CompileCommand {
     pub directory: String,
     pub file: String,
     pub arguments: Vec<String>,
+    /// The target and project the log says it was compiled for, which the
+    /// build server (`crate::bsp`) groups commands by. Other readers of the
+    /// database ignore them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+/// The target and project in a task header's `(in target 'App' from project 'App')`.
+fn target_of(header: &str) -> (Option<String>, Option<String>) {
+    let Some(rest) = header.rsplit_once("(in target '").map(|(_, rest)| rest) else { return (None, None) };
+    let Some((target, rest)) = rest.split_once('\'') else { return (None, None) };
+    let project = rest.strip_prefix(" from project '").and_then(|p| p.split_once('\'')).map(|(p, _)| p.to_string());
+    (Some(target.to_string()), project)
 }
 
 /// Flags that only matter for producing build outputs, or that make
@@ -55,7 +70,8 @@ const DROP_WITH_VALUE: &[&str] = &[
     "--serialize-diagnostics",
 ];
 
-fn clean_swift_args(args: &[String]) -> Vec<String> {
+/// A command line without what only matters for producing build outputs.
+pub fn clean_arguments(args: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     let mut i = 0;
     while i < args.len() {
@@ -121,6 +137,7 @@ pub fn extract(log: &str) -> Vec<CompileCommand> {
             i += 1;
             continue;
         }
+        let (target, project) = target_of(line);
         // The task header is followed by indented "cd" and command lines.
         let mut directory = String::new();
         let mut j = i + 1;
@@ -131,12 +148,14 @@ pub fn extract(log: &str) -> Vec<CompileCommand> {
             } else if is_swift && let Some(cmd) = body.split_once("builtin-SwiftDriver -- ") {
                 if let Some(args) = shlex::split(cmd.1) {
                     let (args, sources) = expand_response_files(args);
-                    let args = clean_swift_args(&args);
+                    let args = clean_arguments(&args);
                     for source in sources {
                         commands.push(CompileCommand {
                             directory: directory.clone(),
                             file: source,
                             arguments: args.clone(),
+                            target: target.clone(),
+                            project: project.clone(),
                         });
                     }
                 }
@@ -153,7 +172,9 @@ pub fn extract(log: &str) -> Vec<CompileCommand> {
                     commands.push(CompileCommand {
                         directory: directory.clone(),
                         file,
-                        arguments: clean_swift_args(&args),
+                        arguments: clean_arguments(&args),
+                        target: target.clone(),
+                        project: project.clone(),
                     });
                 }
             }
@@ -210,10 +231,7 @@ pub fn merge_into(path: &Path, commands: Vec<CompileCommand>) -> Result<bool> {
     if commands.is_empty() {
         return Ok(false);
     }
-    let mut by_file: BTreeMap<String, CompileCommand> = std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Vec<CompileCommand>>(&bytes).ok())
-        .unwrap_or_default()
+    let mut by_file: BTreeMap<String, CompileCommand> = read(path)
         .into_iter()
         .map(|c| (c.file.clone(), c))
         .collect();
@@ -230,6 +248,11 @@ pub fn merge_into(path: &Path, commands: Vec<CompileCommand>) -> Result<bool> {
     let all: Vec<_> = by_file.into_values().collect();
     std::fs::write(path, serde_json::to_vec(&all)?)?;
     Ok(true)
+}
+
+/// The database at `path`; empty when there's none (or it can't be read).
+pub fn read(path: &Path) -> Vec<CompileCommand> {
+    std::fs::read(path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
 }
 
 pub fn database_path(cache_dir: &Path) -> PathBuf {
@@ -286,6 +309,8 @@ mod tests {
             directory: "/".into(),
             file: via_link.clone(),
             arguments: vec![],
+            target: None,
+            project: None,
         }]);
         let files: Vec<_> = out.iter().map(|c| c.file.clone()).collect();
         assert!(files.contains(&via_link));
@@ -299,6 +324,8 @@ mod tests {
             directory: "/p".into(),
             file: "/p/A.swift".into(),
             arguments: vec!["swiftc".into(), "-index-store-path".into(), "/old".into()],
+            target: None,
+            project: None,
         }];
         let out = with_index_store(commands, Path::new("/new"));
         assert_eq!(out[0].arguments, vec!["swiftc", "-index-store-path", "/new"]);
@@ -318,6 +345,7 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].file, "/p/App/A.swift");
         assert_eq!(commands[1].file, "/p/App/B C.swift");
+        assert_eq!((commands[0].target.as_deref(), commands[0].project.as_deref()), (Some("App"), Some("App")));
         let args = &commands[0].arguments;
         assert!(args.contains(&"-module-name".to_string()));
         assert!(args.contains(&"/p/App/B C.swift".to_string()));
