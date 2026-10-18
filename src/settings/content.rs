@@ -50,6 +50,8 @@ pub struct Settings {
     /// Distribute App notarizes Developer ID apps with this keychain
     /// profile (`xcrun notarytool store-credentials <name>`).
     pub notary_keychain_profile: String,
+    /// A daily check for a new zcode (`crate::updates`), as Zed's.
+    pub auto_update: bool,
 }
 
 /// Predictive code completion (`crate::predictions`).
@@ -166,6 +168,7 @@ impl Default for Settings {
             edit_predictions: EditPredictionSettings::default(),
             profiling_time_limit: None,
             notary_keychain_profile: String::new(),
+            auto_update: true,
         }
     }
 }
@@ -254,6 +257,7 @@ pub struct SettingsContent {
     pub edit_predictions: Option<EditPredictionsContent>,
     pub profiling: Option<ProfilingContent>,
     pub distribution: Option<DistributionContent>,
+    pub auto_update: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -349,6 +353,7 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("edit_predictions", &["provider", "automatic", "debounce_ms", "disabled_globs", "claude"]),
     ("profiling", &["time_limit"]),
     ("distribution", &["notary_keychain_profile"]),
+    ("auto_update", &[]),
 ];
 
 /// Settings a project's file can't change: they're the app's, not a window's.
@@ -405,6 +410,7 @@ impl Settings {
         if !project {
             take!(theme);
             take!(vim_mode);
+            take!(auto_update);
             if let Some(servers) = &content.agent_servers {
                 self.agent_servers = crate::acp::agents::resolve(servers);
             }

@@ -131,5 +131,8 @@
     // with `xcrun notarytool store-credentials <name>` in a terminal.
     // Distribute App fills it in and remembers what you type there.
     "notary_keychain_profile": ""
-  }
+  },
+  // Check for a new zcode once a day (zcode ▸ Check for Updates… always
+  // does). Yours only.
+  "auto_update": true
 }
