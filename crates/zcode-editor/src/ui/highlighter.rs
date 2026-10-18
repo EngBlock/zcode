@@ -234,29 +234,99 @@ fn extract_fold_ranges_in_range(
     tree: &tree_sitter::Tree,
     byte_range: Range<usize>,
 ) -> Vec<FoldRange> {
-    fn collect(node: tree_sitter::Node, bytes: &Range<usize>, ranges: &mut Vec<FoldRange>) {
-        if node.end_byte() <= bytes.start || node.start_byte() >= bytes.end {
+    // A fold is a named node spanning three lines or more; its children can
+    // only be one if it is. Only the nodes that overlap `byte_range` are
+    // visited: an edit asks for its region and the nodes around it, and a
+    // file's top level can have tens of thousands of nodes, so each level is
+    // entered at the first child reaching the range and left after the last
+    // one starting in it.
+    fn collect(cursor: &mut tree_sitter::TreeCursor, bytes: &Range<usize>, ranges: &mut Vec<FoldRange>) {
+        if cursor.goto_first_child_for_byte(bytes.start).is_none() {
             return;
         }
-        let start = node.start_position().row;
-        let end = node.end_position().row;
-        if end.saturating_sub(start) < 2 {
-            return;
+        loop {
+            let node = cursor.node();
+            if node.start_byte() >= bytes.end {
+                break;
+            }
+            if node.is_named() && node.end_byte() > bytes.start {
+                let start = node.start_position().row;
+                let end = node.end_position().row;
+                if end.saturating_sub(start) >= 2 {
+                    ranges.push(FoldRange::new(start, end));
+                    collect(cursor, bytes, ranges);
+                }
+            }
+            if !cursor.goto_next_sibling() {
+                break;
+            }
         }
-        ranges.push(FoldRange::new(start, end));
-        let mut cursor = node.walk();
-        for child in node.named_children(&mut cursor) {
-            collect(child, bytes, ranges);
-        }
+        cursor.goto_parent();
     }
 
-    let root = tree.root_node();
     let mut ranges = Vec::new();
-    let mut cursor = root.walk();
-    for child in root.named_children(&mut cursor) {
-        collect(child, &byte_range, &mut ranges);
-    }
+    collect(&mut tree.walk(), &byte_range, &mut ranges);
     ranges.sort_by_key(|range| range.start_line);
     ranges.dedup_by_key(|range| range.start_line);
     ranges
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fold walk as it was: every node from the root, each checked
+    /// against the range.
+    fn fold_ranges_by_scan(tree: &tree_sitter::Tree, bytes: Range<usize>) -> Vec<FoldRange> {
+        fn collect(node: tree_sitter::Node, bytes: &Range<usize>, ranges: &mut Vec<FoldRange>) {
+            if node.end_byte() <= bytes.start || node.start_byte() >= bytes.end {
+                return;
+            }
+            let (start, end) = (node.start_position().row, node.end_position().row);
+            if end.saturating_sub(start) < 2 {
+                return;
+            }
+            ranges.push(FoldRange::new(start, end));
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                collect(child, bytes, ranges);
+            }
+        }
+        let root = tree.root_node();
+        let mut ranges = Vec::new();
+        let mut cursor = root.walk();
+        for child in root.named_children(&mut cursor) {
+            collect(child, &bytes, &mut ranges);
+        }
+        ranges.sort_by_key(|range| range.start_line);
+        ranges.dedup_by_key(|range| range.start_line);
+        ranges
+    }
+
+    fn rust_tree(source: &str) -> tree_sitter::Tree {
+        let (mut parser, grammar) = LanguageRegistry::singleton().parser("rust").unwrap();
+        parser.set_language(&grammar).unwrap();
+        parser.parse(source, None).unwrap()
+    }
+
+    #[test]
+    fn an_edits_folds_are_the_nodes_around_it() {
+        let block = "fn f() {\n    if x {\n        a();\n        b();\n    }\n}\n\nstruct S {\n    a: u8,\n    b: u8,\n}\n\n";
+        let source = block.repeat(40);
+        let tree = rust_tree(&source);
+        assert_eq!(extract_fold_ranges(&tree), fold_ranges_by_scan(&tree, 0..usize::MAX));
+        assert_eq!(extract_fold_ranges(&tree).len(), 120);
+        // Every range an edit can ask for, including empty ones (a deletion)
+        // and ones at node edges.
+        for start in (0..source.len()).step_by(7).chain([0, source.len()]) {
+            for len in [0, 1, 9, 40, 300] {
+                let bytes = start..(start + len).min(source.len());
+                assert_eq!(
+                    extract_fold_ranges_in_range(&tree, bytes.clone()),
+                    fold_ranges_by_scan(&tree, bytes.clone()),
+                    "{bytes:?}"
+                );
+            }
+        }
+    }
 }
