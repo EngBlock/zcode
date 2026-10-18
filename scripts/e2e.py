@@ -654,6 +654,135 @@ def xcode_project_checks(z, samples, sim):
         check("Debug on iOS Simulator (breakpoint stop, LLDB console)", debug_on_simulator)
 
 
+FRESH_SWIFT = """func fresh() -> Int {
+    var counter = Counter()
+    counter.increment(by: 2)
+    return counter.count
+}
+
+#if ZCODE_BSP
+let flagged: Int = "not a number"
+#endif
+"""
+
+
+def build_server_checks(samples):
+    """zcode's build server (`zcode bsp`) on a copy of HelloZ: sourcekit-lsp
+    finds it through zcode's own connection file and asks it for every
+    file's arguments; a file added to the synchronized folder works before
+    any build has seen it; a build setting edited in project.pbxproj (as
+    Xcode would) reaches the open file; a membership exception takes a file
+    out of its target; "compilation_database" goes back to the old path."""
+    project = os.path.join(WORK, "BspHello")
+    shutil.copytree(os.path.join(samples, "HelloZ"), project)
+    app = os.path.join(project, "HelloZ")
+    content, fresh = os.path.join(app, "ContentView.swift"), os.path.join(app, "Fresh.swift")
+    pbxproj = os.path.join(project, "HelloZ.xcodeproj", "project.pbxproj")
+    z = Zcode(project)
+
+    def status():
+        return json.loads(z.run("bsp status")[-1])
+
+    def options(path):
+        return json.loads(z.run(f"bsp options {path}")[-1])
+
+    def wait_options(path, predicate, timeout=60):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            o = options(path)
+            if predicate(o):
+                return o
+            time.sleep(0.5)
+        raise TimeoutError(f"bsp options {path}: {o}")
+
+    def fresh_issues(s):
+        return [i for i in s["issues"] if "Fresh.swift" in i]
+
+    def connects():
+        z.run(f"open {content}")
+        s = z.wait_for(lambda s: s["lsp"] == "Ready" and s["build_server"]["connections"]["open"] >= 1, timeout=120)
+        b = s["build_server"]
+        assert b["through_build_server"] and b["setting"] == "build_server", b
+        assert b["targets"] >= 2 and b["active"], b
+        # sourcekit-lsp asked for the open file's arguments.
+        b = z.wait_for(lambda s: s["build_server"]["connections"]["requests"].get("textDocument/sourceKitOptions"), timeout=60)["build_server"]
+        assert b["connections"]["last_options"][0] == os.path.realpath(content), b
+        # Xcode's own arguments for indexing, once asked.
+        z.wait_for(lambda s: not s["build_server"]["querying"] and s["build_server"]["swift_arguments"]["index-settings"] >= 1, timeout=120)
+        o = options(content)
+        assert o["targets"][0] == "HelloZ" and o["origin"] == "index-settings" and "-module-name" in o["arguments"], o
+        # Nothing written into the project.
+        assert not os.path.exists(os.path.join(project, "buildServer.json")) and not os.path.exists(os.path.join(project, ".bsp"))
+
+    def new_file_without_a_build():
+        changes = status()["connections"]["changes_sent"]
+        with open(fresh, "w") as f:
+            f.write(FRESH_SWIFT)
+        # The synchronized folder changed: the next look has it in the target.
+        o = wait_options(fresh, lambda o: o["targets"] == ["HelloZ"])
+        assert os.path.realpath(fresh) in o["arguments"] and os.path.realpath(content) in o["arguments"], o
+        z.wait_for(lambda s: s["build_server"]["connections"]["changes_sent"] > changes, timeout=30)
+        line = line_of(fresh, "Counter()")
+        for _ in range(10):
+            z.run(f"open {fresh}:{line}", "wait 300", keys_right(column_of(fresh, "Counter()", 2)), "keys ctrl-cmd-j")
+            try:
+                s = z.wait_for(lambda s: s["active"]["path"].endswith("Counter.swift"), timeout=5, interval=0.5)
+                break
+            except TimeoutError:
+                continue
+        assert s["active"]["path"].endswith("Counter.swift"), s["active"]["path"]
+        assert not fresh_issues(z.dump()), "ZCODE_BSP isn't set yet"
+
+    def build_setting_reaches_the_open_file():
+        z.run(f"open {fresh}")
+        text = open(pbxproj).read()
+        edited = text.replace('SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";',
+                              'SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG ZCODE_BSP $(inherited)";', 1)
+        assert edited != text
+        with open(pbxproj, "w") as f:
+            f.write(edited)
+        # Xcode is asked again; sourcekit-lsp gets the flag and type-checks
+        # the block it guards, with nothing built.
+        wait_options(fresh, lambda o: "-DZCODE_BSP" in (o["arguments"] or []), timeout=120)
+        s = z.wait_for(lambda s: fresh_issues(s), timeout=60, interval=0.5)
+        assert any(f"Fresh.swift:{line_of(fresh, 'flagged')}" in i for i in fresh_issues(s)), fresh_issues(s)
+
+    def membership_exception():
+        text = open(pbxproj).read()
+        exception = ('/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */\n'
+                     '\t\tA1000000000000000000BB01 /* Exceptions for "HelloZ" folder in "HelloZ" target */ = {\n'
+                     '\t\t\tisa = PBXFileSystemSynchronizedBuildFileExceptionSet;\n'
+                     '\t\t\tmembershipExceptions = (\n\t\t\t\tFresh.swift,\n\t\t\t);\n'
+                     '\t\t\ttarget = A10000000000000000000006 /* HelloZ */;\n\t\t};\n'
+                     '/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */\n\n')
+        edited = text.replace("/* Begin PBXFileSystemSynchronizedRootGroup section */", exception + "/* Begin PBXFileSystemSynchronizedRootGroup section */", 1)
+        edited = edited.replace("\t\tA10000000000000000000002 /* HelloZ */ = {\n\t\t\tisa = PBXFileSystemSynchronizedRootGroup;\n",
+                                "\t\tA10000000000000000000002 /* HelloZ */ = {\n\t\t\tisa = PBXFileSystemSynchronizedRootGroup;\n"
+                                "\t\t\texceptions = (\n\t\t\t\tA1000000000000000000BB01 /* Exceptions for \"HelloZ\" folder in \"HelloZ\" target */,\n\t\t\t);\n", 1)
+        assert edited.count("A1000000000000000000BB01") == 2, "exception set added"
+        with open(pbxproj, "w") as f:
+            f.write(edited)
+        wait_options(fresh, lambda o: o["targets"] == [])
+        o = options(content)
+        assert os.path.realpath(fresh) not in o["arguments"], o
+
+    def compilation_database_setting():
+        z.run('settings set sourcekit_build_settings "compilation_database"')
+        s = z.wait_for(lambda s: not s["build_server"]["through_build_server"] and s["lsp"] == "Ready", timeout=120)
+        z.run('settings set sourcekit_build_settings "build_server"')
+        s = z.wait_for(lambda s: s["build_server"]["through_build_server"] and s["lsp"] == "Ready"
+                       and s["build_server"]["connections"]["connections"] >= 2, timeout=120)
+
+    try:
+        check("Build server: sourcekit-lsp connects through zcode's connection file and asks it for arguments (Xcode's for indexing)", connects)
+        check("Build server: a file added to a synchronized folder, never built, gets its target's arguments (⌃⌘J across files)", new_file_without_a_build)
+        check("Build server: a build setting edited in project.pbxproj reaches the open file without a build", build_setting_reaches_the_open_file)
+        check("Build server: a membership exception takes the file out of its target", membership_exception)
+        check("Build server: \"compilation_database\" restarts sourcekit-lsp on the database, and back", compilation_database_setting)
+    finally:
+        z.quit()
+
+
 def available_simulator_udid():
     """An available iOS simulator, which the fake devices pretend to be so
     xcodebuild can really build for them."""
@@ -6643,6 +6772,9 @@ def main():
         xcode_project_checks(z, samples, sim)
     finally:
         z.quit()
+
+    print("Build server (a copy of samples/HelloZ, sourcekit-lsp through `zcode bsp`):")
+    build_server_checks(samples)
 
     print("Physical devices (fake devicectl):")
     device_checks(samples)

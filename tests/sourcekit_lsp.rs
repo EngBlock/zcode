@@ -189,3 +189,103 @@ fn language_features_on_a_swift_package() {
     });
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// zcode's build server, as sourcekit-lsp finds it: a connection file in
+/// `$XDG_DATA_HOME/bsp/` naming `zcode bsp` (here answering from a saved
+/// graph). A file added to HelloZ's synchronized folder, never built, gets
+/// its target's arguments: Jump to Definition reaches another file of the
+/// module.
+#[test]
+#[ignore]
+fn build_server_serves_a_file_never_built() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use zcode::bsp::graph::{BuildGraph, Inputs, Origin};
+    use zcode::bsp::inputs;
+
+    let work = std::env::temp_dir().join(format!("zcode-it-bsp-{}", std::process::id()));
+    std::fs::remove_dir_all(&work).ok();
+    std::fs::create_dir_all(&work).unwrap();
+    let root = work.join("HelloZ");
+    let copied = Command::new("/bin/cp").arg("-R").arg(sample_root()).arg(&root).status().unwrap();
+    assert!(copied.success());
+    let root = root.canonicalize().unwrap();
+    let fresh = root.join("HelloZ/Fresh.swift");
+    let source = "func fresh() -> Int {\n    var counter = Counter()\n    counter.increment(by: 2)\n    return counter.count\n}\n";
+    std::fs::write(&fresh, source).unwrap();
+
+    // Xcode's arguments for indexing, as zcode asks for them.
+    let derived = work.join("dd");
+    let output = Command::new("/usr/bin/xcodebuild")
+        .current_dir(&root)
+        .args(["-showBuildSettingsForIndex", "-json", "-scheme", "HelloZ", "-destination", "generic/platform=iOS Simulator"])
+        .arg("-derivedDataPath")
+        .arg(&derived)
+        .output()
+        .expect("xcodebuild runs");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value = serde_json::from_str(&stdout[stdout.find('{').unwrap()..]).unwrap();
+    let store = derived.join("Index.noindex/DataStore");
+    let graph = BuildGraph::build(&Inputs {
+        root: root.clone(),
+        model: inputs::model_targets(&[root.join("HelloZ.xcodeproj")]),
+        index_settings: Arc::new(inputs::parse_index_settings(&value)),
+        build_settings: Arc::new(HashMap::new()),
+        index_database: derived.join("Index.noindex/IndexDatabase"),
+        index_store: store,
+        ..Default::default()
+    });
+    let app = graph.targets.iter().find(|t| t.name == "HelloZ").expect("the app target");
+    assert!(app.files.contains(&fresh), "{:?}", app.files);
+    assert_eq!(app.swift_origin, Some(Origin::IndexSettings));
+
+    let graph_file = work.join("graph.json");
+    std::fs::write(&graph_file, serde_json::to_vec(&graph).unwrap()).unwrap();
+    let xdg = work.join("xdg");
+    std::fs::create_dir_all(xdg.join("bsp")).unwrap();
+    let mut connection = zcode::bsp::connection_file(std::path::Path::new(env!("CARGO_BIN_EXE_zcode")));
+    connection["argv"].as_array_mut().unwrap().extend([json!("--graph"), json!(graph_file)]);
+    std::fs::write(xdg.join("bsp/zcode.json"), connection.to_string()).unwrap();
+
+    let binary = zcode::toolchain::find_tool("sourcekit-lsp").unwrap();
+    let (tx, _rx) = smol::channel::unbounded();
+    let env = [("XDG_DATA_HOME".to_string(), xdg.display().to_string())];
+    let server = LanguageServer::spawn("sourcekit-lsp", &binary, &[], &env, &root, None, tx).unwrap();
+    smol::block_on(async {
+        server.initialize(&root, json!({}), false).await.unwrap();
+        let uri = path_to_uri(&fresh);
+        server.notify_raw(
+            "textDocument/didOpen",
+            json!({ "textDocument": { "uri": uri.as_str(), "languageId": "swift", "version": 1, "text": source } }),
+        );
+        let line = 1;
+        let character = source.lines().nth(line).unwrap().find("Counter()").unwrap() + 2;
+        let mut found = None;
+        for _ in 0..40 {
+            let result = server
+                .request_raw(
+                    "textDocument/definition",
+                    json!({ "textDocument": { "uri": uri.as_str() }, "position": { "line": line, "character": character } }),
+                )
+                .await
+                .unwrap();
+            if result.to_string().contains("Counter.swift") {
+                found = Some(result);
+                break;
+            }
+            smol::Timer::after(Duration::from_millis(500)).await;
+        }
+        assert!(found.is_some(), "Counter resolves to Counter.swift through the build server");
+        // sourcekit-lsp reports the arguments it got, and from whom.
+        let options = server
+            .request_raw("workspace/_sourceKitOptions", json!({ "textDocument": { "uri": uri.as_str() }, "prepareTarget": false, "allowFallbackSettings": false }))
+            .await;
+        if let Ok(options) = options {
+            let text = options.to_string();
+            assert!(text.contains("Fresh.swift") && text.contains("-module-name"), "{text}");
+        }
+        server.shutdown().await;
+    });
+    std::fs::remove_dir_all(&work).ok();
+}
