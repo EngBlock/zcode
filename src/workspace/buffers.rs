@@ -134,7 +134,7 @@ impl Workspace {
         });
     }
 
-    pub(super) fn language_for(path: &Path) -> &'static str {
+    pub(crate) fn language_for(path: &Path) -> &'static str {
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         match (name, ext) {

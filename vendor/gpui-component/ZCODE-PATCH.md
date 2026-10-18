@@ -24,14 +24,30 @@ injection_parse_data, compute_injection_layers, apply_background_tree}`, the
 `LanguageRegistry::{parser, has_parser, grammar, editing_language_name}`.
 Each is marked `// zcode patch`. Re-apply by making the same items `pub`.
 
+**Shared compiled queries (`src/highlighter/highlighter.rs`):** upstream
+compiles a language's highlight, injection and locals queries
+(`Query::new`) for every `SyntaxHighlighter`, that is for every editor
+that shows a file, and recompiles the highlights query of each injected
+language on every parse that has injections. That's ~13 ms of CPU per
+opened Swift file. The patch compiles them once per language: upstream's
+query compilation moved unchanged into `CompiledQueries::compile`, and two
+`QueryCache`s (`HIGHLIGHT_QUERIES`, `INJECTED_HIGHLIGHTS`) hold the results,
+keyed by language name and checked against the grammar and the query text,
+so a language registered again with other queries recompiles.
+`SyntaxHighlighter::query` is an `Arc<Query>`. Each piece is marked
+`// zcode patch`. Re-apply by moving the query compilation out of
+`build_for_language` the same way.
+
 (The editor popover padding patch that used to live in `src/input/popovers/`
 moved into `crates/zcode-editor` with the editor, so this crate's input module
 is upstream again.)
 
 **Updating:** when gpui-kit moves to a newer gpui-component, check whether
 `src/theme/mono_font.rs` still enumerates fonts. If it does, re-apply the diff
-below to the new version; if it doesn't, drop this directory and the
-`[patch.crates-io]` entry.
+below to the new version. Likewise re-apply the highlighter changes above
+while upstream keeps those items private or compiles queries per
+highlighter. Drop this directory and the `[patch.crates-io]` entry only
+when none of them is needed.
 
 ```diff
 diff -ru a/src/theme/mono_font.rs b/src/theme/mono_font.rs

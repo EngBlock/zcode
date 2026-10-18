@@ -27,6 +27,17 @@ pub(crate) fn input_highlighter_factory() -> InputHighlighterFactory {
     })
 }
 
+/// Compiles `language`'s highlight queries on the calling thread, so the
+/// first editor to show it doesn't. Every highlighter of a language shares one
+/// compiled copy, which costs milliseconds to make (~13 ms for Swift); call
+/// this from a background thread while a window that will show the language
+/// is being created.
+pub fn prepare_highlighting(language: &str) {
+    if LanguageRegistry::singleton().has_parser(language) {
+        drop(SyntaxHighlighter::new(language));
+    }
+}
+
 const SYNC_PARSE_TIMEOUT: Duration = Duration::from_millis(2);
 const SYNC_PARSE_MAX_BYTES: usize = 256 * 1024;
 const PARSE_DEBOUNCE: Duration = Duration::from_millis(150);

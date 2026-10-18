@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use gpui::{HighlightStyle, SharedString};
 use gpui_base::input::RopeExt as _;
 use ropey::{ChunkCursor, Rope};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use std::{
     collections::{BTreeSet, HashMap},
@@ -30,7 +30,8 @@ const INJECTION_PARSE_TIMEOUT: Duration = Duration::from_millis(20);
 #[allow(unused)]
 pub struct SyntaxHighlighter {
     language: SharedString,
-    query: Option<Query>,
+    // zcode patch: shared with the language's other highlighters (`QueryCache`).
+    query: Option<Arc<Query>>,
     /// The full injections query. This is used to build injection layers during parsing.
     injections_query: Option<Arc<Query>>,
 
@@ -378,6 +379,173 @@ impl<'a> sum_tree::Dimension<'a, HighlightSummary> for Range<usize> {
     }
 }
 
+/// zcode patch: what compiling a language's highlight queries gives, shared
+/// by every highlighter for the language through [`HIGHLIGHT_QUERIES`].
+#[derive(Clone)]
+struct CompiledQueries {
+    query: Arc<Query>,
+    injections_query: Option<Arc<Query>>,
+    locals_pattern_index: usize,
+    highlights_pattern_index: usize,
+    non_local_variable_patterns: Vec<bool>,
+    injection_content_capture_index: Option<u32>,
+    injection_language_capture_index: Option<u32>,
+    local_scope_capture_index: Option<u32>,
+    local_def_capture_index: Option<u32>,
+    local_def_value_capture_index: Option<u32>,
+    local_ref_capture_index: Option<u32>,
+}
+
+impl CompiledQueries {
+    /// Compiles `config`'s injections, locals and highlights queries for
+    /// `grammar` (upstream's `SyntaxHighlighter::build_for_language`).
+    fn compile(grammar: &tree_sitter::Language, config: &super::registry::GrammarConfig) -> Result<Self> {
+        // Concatenate the query strings, keeping track of the start offset of each section.
+        let mut query_source = String::new();
+        query_source.push_str(&config.injections);
+        let locals_query_offset = query_source.len();
+        query_source.push_str(&config.locals);
+        let highlights_query_offset = query_source.len();
+        query_source.push_str(&config.highlights);
+
+        // Construct a single query by concatenating the three query strings, but record the
+        // range of pattern indices that belong to each individual string.
+        let mut query = Query::new(grammar, &query_source).context("new query")?;
+
+        let mut locals_pattern_index = 0;
+        let mut highlights_pattern_index = 0;
+        for i in 0..(query.pattern_count()) {
+            let pattern_offset = query.start_byte_for_pattern(i);
+            if pattern_offset < highlights_query_offset {
+                if pattern_offset < highlights_query_offset {
+                    highlights_pattern_index += 1;
+                }
+                if pattern_offset < locals_query_offset {
+                    locals_pattern_index += 1;
+                }
+            }
+        }
+
+        let injections_query = if !config.injections.is_empty() {
+            Query::new(grammar, &config.injections).ok().map(Arc::new)
+        } else {
+            None
+        };
+
+        // Injection layers are computed separately during parsing, so do not
+        // emit injection captures from the main highlight query.
+        for pattern_index in 0..locals_pattern_index {
+            query.disable_pattern(pattern_index);
+        }
+
+        // Find all of the highlighting patterns that are disabled for nodes that
+        // have been identified as local variables.
+        let non_local_variable_patterns = (0..query.pattern_count())
+            .map(|i| {
+                query
+                    .property_predicates(i)
+                    .iter()
+                    .any(|(prop, positive)| !*positive && prop.key.as_ref() == "local")
+            })
+            .collect();
+
+        // Store the numeric ids for all of the special captures.
+        let injection_content_capture_index = injections_query.as_ref().and_then(|q| {
+            q.capture_names()
+                .iter()
+                .position(|name| *name == "injection.content")
+                .map(|i| i as u32)
+        });
+        let injection_language_capture_index = injections_query.as_ref().and_then(|q| {
+            q.capture_names()
+                .iter()
+                .position(|name| *name == "injection.language")
+                .map(|i| i as u32)
+        });
+        let mut local_def_capture_index = None;
+        let mut local_def_value_capture_index = None;
+        let mut local_ref_capture_index = None;
+        let mut local_scope_capture_index = None;
+        for (i, name) in query.capture_names().iter().enumerate() {
+            let i = Some(i as u32);
+            match *name {
+                "local.definition" => local_def_capture_index = i,
+                "local.definition-value" => local_def_value_capture_index = i,
+                "local.reference" => local_ref_capture_index = i,
+                "local.scope" => local_scope_capture_index = i,
+                _ => {}
+            }
+        }
+
+        Ok(Self {
+            query: Arc::new(query),
+            injections_query,
+            locals_pattern_index,
+            highlights_pattern_index,
+            non_local_variable_patterns,
+            injection_content_capture_index,
+            injection_language_capture_index,
+            local_scope_capture_index,
+            local_def_capture_index,
+            local_def_value_capture_index,
+            local_ref_capture_index,
+        })
+    }
+}
+
+/// zcode patch: compiled queries, one entry per language.
+///
+/// Compiling a language's queries takes milliseconds (~13 ms of CPU for
+/// Swift's) and an editor builds a highlighter for every file it opens, and
+/// each background parse resolves the highlights of the languages injected
+/// into it. The compiled queries are immutable, so every highlighter and parse
+/// shares them. An entry is keyed by the grammar and the query text, and
+/// replaced when a language is registered again with others.
+struct QueryCache<V> {
+    entries: Mutex<HashMap<SharedString, (tree_sitter::Language, Vec<SharedString>, V)>>,
+}
+
+impl<V: Clone> QueryCache<V> {
+    fn new() -> Self {
+        Self { entries: Mutex::new(HashMap::new()) }
+    }
+
+    /// `language`'s compiled `sources` for `grammar`, compiling them with
+    /// `compile` the first time.
+    fn get_or_compile(
+        &self,
+        language: &SharedString,
+        grammar: &tree_sitter::Language,
+        sources: &[&SharedString],
+        compile: impl FnOnce() -> Result<V>,
+    ) -> Result<V> {
+        let matches = |(cached_grammar, cached_sources, _): &(tree_sitter::Language, Vec<SharedString>, V)| {
+            cached_grammar == grammar
+                && cached_sources.len() == sources.len()
+                && cached_sources.iter().zip(sources).all(|(a, b)| a == *b)
+        };
+        if let Some((_, _, value)) = self.entries.lock().unwrap().get(language).filter(|e| matches(e)) {
+            return Ok(value.clone());
+        }
+        // Compiled outside the lock: a slow or failing compile doesn't hold up
+        // (or poison) the other languages.
+        let value = compile()?;
+        let sources = sources.iter().map(|source| (*source).clone()).collect();
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(language.clone(), (grammar.clone(), sources, value.clone()));
+        Ok(value)
+    }
+}
+
+/// zcode patch: each language's highlighter queries.
+static HIGHLIGHT_QUERIES: LazyLock<QueryCache<CompiledQueries>> = LazyLock::new(QueryCache::new);
+
+/// zcode patch: each language's highlights query, for the layers of the
+/// languages injected into others.
+static INJECTED_HIGHLIGHTS: LazyLock<QueryCache<Arc<Query>>> = LazyLock::new(QueryCache::new);
+
 impl SyntaxHighlighter {
     /// Create a new SyntaxHighlighter for the given language.
     pub fn new(lang: &str) -> Self {
@@ -439,82 +607,26 @@ impl SyntaxHighlighter {
             .set_language(&grammar)
             .context("parse set_language")?;
 
-        // Concatenate the query strings, keeping track of the start offset of each section.
-        let mut query_source = String::new();
-        query_source.push_str(&config.injections);
-        let locals_query_offset = query_source.len();
-        query_source.push_str(&config.locals);
-        let highlights_query_offset = query_source.len();
-        query_source.push_str(&config.highlights);
-
-        // Construct a single query by concatenating the three query strings, but record the
-        // range of pattern indices that belong to each individual string.
-        let mut query = Query::new(&grammar, &query_source).context("new query")?;
-
-        let mut locals_pattern_index = 0;
-        let mut highlights_pattern_index = 0;
-        for i in 0..(query.pattern_count()) {
-            let pattern_offset = query.start_byte_for_pattern(i);
-            if pattern_offset < highlights_query_offset {
-                if pattern_offset < highlights_query_offset {
-                    highlights_pattern_index += 1;
-                }
-                if pattern_offset < locals_query_offset {
-                    locals_pattern_index += 1;
-                }
-            }
-        }
-
-        let injections_query = if !config.injections.is_empty() {
-            Query::new(&grammar, &config.injections).ok().map(Arc::new)
-        } else {
-            None
-        };
-
-        // Injection layers are computed separately during parsing, so do not
-        // emit injection captures from the main highlight query.
-        for pattern_index in 0..locals_pattern_index {
-            query.disable_pattern(pattern_index);
-        }
-
-        // Find all of the highlighting patterns that are disabled for nodes that
-        // have been identified as local variables.
-        let non_local_variable_patterns = (0..query.pattern_count())
-            .map(|i| {
-                query
-                    .property_predicates(i)
-                    .iter()
-                    .any(|(prop, positive)| !*positive && prop.key.as_ref() == "local")
-            })
-            .collect();
-
-        // Store the numeric ids for all of the special captures.
-        let injection_content_capture_index = injections_query.as_ref().and_then(|q| {
-            q.capture_names()
-                .iter()
-                .position(|name| *name == "injection.content")
-                .map(|i| i as u32)
-        });
-        let injection_language_capture_index = injections_query.as_ref().and_then(|q| {
-            q.capture_names()
-                .iter()
-                .position(|name| *name == "injection.language")
-                .map(|i| i as u32)
-        });
-        let mut local_def_capture_index = None;
-        let mut local_def_value_capture_index = None;
-        let mut local_ref_capture_index = None;
-        let mut local_scope_capture_index = None;
-        for (i, name) in query.capture_names().iter().enumerate() {
-            let i = Some(i as u32);
-            match *name {
-                "local.definition" => local_def_capture_index = i,
-                "local.definition-value" => local_def_value_capture_index = i,
-                "local.reference" => local_ref_capture_index = i,
-                "local.scope" => local_scope_capture_index = i,
-                _ => {}
-            }
-        }
+        // zcode patch: compiled once per language, not per highlighter.
+        let compiled = HIGHLIGHT_QUERIES.get_or_compile(
+            &config.name,
+            &grammar,
+            &[&config.injections, &config.locals, &config.highlights],
+            || CompiledQueries::compile(&grammar, &config),
+        )?;
+        let CompiledQueries {
+            query,
+            injections_query,
+            locals_pattern_index,
+            highlights_pattern_index,
+            non_local_variable_patterns,
+            injection_content_capture_index,
+            injection_language_capture_index,
+            local_scope_capture_index,
+            local_def_capture_index,
+            local_def_value_capture_index,
+            local_ref_capture_index,
+        } = compiled;
 
         // let highlight_indices = vec![None; query.capture_names().len()];
 
@@ -768,8 +880,14 @@ impl SyntaxHighlighter {
             }
 
             let grammar = LanguageRegistry::singleton().grammar(language_name).ok()?;
-            let query = match Query::new(&grammar, &config.highlights) {
-                Ok(query) => Arc::new(query),
+            // zcode patch: compiled once per language, not per parse.
+            let query = match INJECTED_HIGHLIGHTS.get_or_compile(
+                &config.name,
+                &grammar,
+                &[&config.highlights],
+                || Ok(Arc::new(Query::new(&grammar, &config.highlights)?)),
+            ) {
+                Ok(query) => query,
                 Err(error) => {
                     tracing::error!(
                         "failed to build injection query for {:?}: {:?}",

@@ -14,6 +14,7 @@ mod search;
 mod syntax_context;
 
 pub use element::Editor;
+pub use highlighter::prepare_highlighting;
 
 pub(crate) fn init(cx: &mut gpui::App) {
     language_config::init(cx);

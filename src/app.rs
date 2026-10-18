@@ -156,6 +156,8 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
         return;
     }
 
+    prepare_restored_languages(info.root.clone(), cx);
+
     let title = info.name.clone();
     let opened = path.clone();
     let result = gpui_kit::open_window(
@@ -202,6 +204,33 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
 
 /// Shows a notification in the window in front (a project's or the
 /// welcome window): what app-wide commands say when they're done.
+/// Compiles the highlight queries of the languages the project's restored
+/// tabs are in, on a background thread while its window is created: the shown
+/// tab's editor builds its highlighter in the window's first frame, and a
+/// language's queries are compiled once and shared (~13 ms for Swift's).
+fn prepare_restored_languages(root: PathBuf, cx: &App) {
+    cx.background_spawn(async move {
+        let saved = crate::session::Session::load().project(&root);
+        let files: Vec<PathBuf> = match &saved.panes {
+            Some(layout) => {
+                let panes = layout.panes();
+                let shown = panes.iter().filter_map(|pane| pane.active.clone());
+                shown.chain(panes.iter().flat_map(|pane| pane.files.clone())).collect()
+            }
+            None => saved.active_file.iter().chain(&saved.open_files).cloned().collect(),
+        };
+        let mut prepared = vec![];
+        for file in files {
+            let language = Workspace::language_for(&file);
+            if !prepared.contains(&language) {
+                prepared.push(language);
+                zcode_editor::prepare_highlighting(language);
+            }
+        }
+    })
+    .detach();
+}
+
 pub fn notify(notification: gpui_kit::component::notification::Notification, cx: &mut App) {
     use gpui_kit::component::WindowExt as _;
     let Some(window) = cx.active_window().or_else(|| cx.windows().first().copied()) else {
