@@ -725,27 +725,31 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx: &mut Context<Self>,
     ) {
         match &mut self.mode {
-            LayoutMode::CodeEditor {
-                language,
-                highlighter,
-                ..
-            } => {
+            LayoutMode::CodeEditor { language, .. } => {
                 language.set_name(new_language.into());
-                *highlighter.borrow_mut() = None;
             }
             _ => {}
         }
+        self.mode.reset_highlighter();
         self.refresh(cx);
     }
 
     fn reset_highlighter(&mut self, cx: &mut Context<Self>) {
-        match &mut self.mode {
-            LayoutMode::CodeEditor { highlighter, .. } => {
-                *highlighter.borrow_mut() = None;
-            }
-            _ => {}
-        }
+        self.mode.reset_highlighter();
         cx.notify();
+    }
+
+    /// Why the text has no syntax tree (and so no syntax colors or folds):
+    /// it's too large, or minified. `None` while it has one, or before the
+    /// editor first renders it.
+    pub fn no_syntax_tree(&self) -> Option<crate::NoSyntaxTree> {
+        self.mode.no_syntax_tree()
+    }
+
+    /// How many places the text could fold (from its syntax tree). For the
+    /// control channel's checks.
+    pub fn fold_candidate_count(&self) -> usize {
+        self.display_map.fold_candidates().len()
     }
 
     /// Install the parser/highlighter adapter used by code-editor mode.
@@ -11018,15 +11022,10 @@ impl InputBaseState<crate::EditorMode> {
     ///
     /// See [`Self::set_highlighter`] to change it after construction.
     pub fn language(mut self, language: impl Into<SharedString>) -> Self {
-        if let LayoutMode::CodeEditor {
-            language: l,
-            highlighter,
-            ..
-        } = &mut self.mode
-        {
+        if let LayoutMode::CodeEditor { language: l, .. } = &mut self.mode {
             l.set_name(language.into());
-            *highlighter.borrow_mut() = None;
         }
+        self.mode.reset_highlighter();
         self
     }
 

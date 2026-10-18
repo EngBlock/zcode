@@ -137,7 +137,12 @@ thread_local! {
 }
 
 /// Parses Swift with this thread's parser (previews are found with it too).
+/// A file too large for the editor's syntax tree isn't parsed here either:
+/// its tree would cost tens of times the file.
 pub fn parse_swift(text: &str) -> Option<tree_sitter::Tree> {
+    if text.len() > zcode_editor::SYNTAX_TREE_MAX_BYTES {
+        return None;
+    }
     SWIFT_PARSER.with(|cell| {
         let mut cell = cell.borrow_mut();
         let parser = cell.get_or_insert_with(|| {

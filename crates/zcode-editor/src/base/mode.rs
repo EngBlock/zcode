@@ -1,11 +1,15 @@
 use crate::InputModeKind;
 use std::rc::Rc;
-use std::{cell::RefCell, ops::Range};
+use std::{
+    cell::{Cell, RefCell},
+    ops::Range,
+};
 
 use gpui::{Context, Window};
 use ropey::Rope;
 
 use super::DisplayMap;
+use crate::large_file::NoSyntaxTree;
 use crate::{
     DiagnosticSet, EditorLanguage, InputEdit, InputHighlighter, InputHighlighterFactory,
     LanguageConfig, RopeExt as _, TabSize,
@@ -18,6 +22,17 @@ pub(crate) struct HighlighterUpdate<'a> {
     pub(super) new_text: &'a Rope,
     pub(super) change_text: &'a str,
     pub(super) force: bool,
+}
+
+/// Whether a code editor's text has a syntax tree: decided for the text it
+/// has when its highlighter would first be made, and again once the
+/// highlighter is reset (a new language, or the whole text replaced).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum SyntaxTree {
+    #[default]
+    Undecided,
+    Built,
+    Skipped(NoSyntaxTree),
 }
 
 /// How the input lays its text out: rows, growth, and the code-editor extras.
@@ -46,6 +61,7 @@ pub(crate) enum LayoutMode {
         folding: bool,
         highlighter: Rc<RefCell<Option<Box<dyn InputHighlighter>>>>,
         highlighter_factory: Option<InputHighlighterFactory>,
+        syntax_tree: Rc<Cell<SyntaxTree>>,
         diagnostics: DiagnosticSet,
         /// Automatic delimiter ranges, adjusted with document edits.
         auto_closed_pairs: super::auto_close::AutoClosedPairs,
@@ -80,6 +96,7 @@ impl LayoutMode {
             language: Box::new(language),
             highlighter: Rc::new(RefCell::new(None)),
             highlighter_factory: None,
+            syntax_tree: Default::default(),
             line_number: true,
             indent_guides: true,
             folding: true,
@@ -122,8 +139,39 @@ impl LayoutMode {
         offset: usize,
     ) -> crate::SyntaxContext {
         match self {
+            // Without a tree, the provider's parse of the whole text would
+            // only run out of its budget.
+            Self::CodeEditor { syntax_tree, .. }
+                if matches!(syntax_tree.get(), SyntaxTree::Skipped(_)) =>
+            {
+                crate::SyntaxContext::Code
+            }
             Self::CodeEditor { language, .. } => language.context_at(text, offset),
             _ => crate::SyntaxContext::Code,
+        }
+    }
+
+    /// Why the text has no syntax tree, once that's decided.
+    pub(super) fn no_syntax_tree(&self) -> Option<NoSyntaxTree> {
+        match self {
+            Self::CodeEditor { syntax_tree, .. } => match syntax_tree.get() {
+                SyntaxTree::Skipped(reason) => Some(reason),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Forgets the highlighter, and whether the text gets a tree.
+    pub(super) fn reset_highlighter(&mut self) {
+        if let Self::CodeEditor {
+            highlighter,
+            syntax_tree,
+            ..
+        } = self
+        {
+            *highlighter.borrow_mut() = None;
+            syntax_tree.set(SyntaxTree::Undecided);
         }
     }
 
@@ -282,13 +330,20 @@ impl LayoutMode {
                 language,
                 highlighter,
                 highlighter_factory,
+                syntax_tree,
                 folding,
                 ..
             } => {
                 if !update.force && highlighter.borrow().is_some() {
                     return;
                 }
-                if !ensure_highlighter(highlighter, highlighter_factory.as_ref(), language) {
+                if !ensure_highlighter(
+                    highlighter,
+                    highlighter_factory.as_ref(),
+                    language,
+                    syntax_tree,
+                    update.new_text,
+                ) {
                     return;
                 }
 
@@ -316,13 +371,23 @@ impl LayoutMode {
             language,
             highlighter,
             highlighter_factory,
+            syntax_tree,
             folding,
             ..
         } = &self
         else {
             return;
         };
-        if !ensure_highlighter(highlighter, highlighter_factory.as_ref(), language) {
+        let Some((_, text)) = edits.last() else {
+            return;
+        };
+        if !ensure_highlighter(
+            highlighter,
+            highlighter_factory.as_ref(),
+            language,
+            syntax_tree,
+            text,
+        ) {
             return;
         }
         M::drive_highlighter_batch(highlighter, edits, *folding, window, cx);
@@ -355,11 +420,13 @@ impl LayoutMode {
         if let LayoutMode::CodeEditor {
             highlighter_factory,
             highlighter,
+            syntax_tree,
             ..
         } = self
         {
             *highlighter_factory = Some(factory);
             *highlighter.borrow_mut() = None;
+            syntax_tree.set(SyntaxTree::Undecided);
         }
     }
 
@@ -376,17 +443,28 @@ impl LayoutMode {
     }
 }
 
-/// Create the highlighter from the factory if there is none yet. Returns
-/// whether one is installed.
+/// Create the highlighter from the factory if there is none yet, unless
+/// `text` is too large for a syntax tree. Returns whether one is installed.
 fn ensure_highlighter(
     highlighter: &RefCell<Option<Box<dyn InputHighlighter>>>,
     highlighter_factory: Option<&InputHighlighterFactory>,
     language: &EditorLanguage,
+    syntax_tree: &Cell<SyntaxTree>,
+    text: &Rope,
 ) -> bool {
     let mut highlighter = highlighter.borrow_mut();
     if highlighter.is_none()
         && let Some(factory) = highlighter_factory
     {
+        if syntax_tree.get() == SyntaxTree::Undecided {
+            syntax_tree.set(match NoSyntaxTree::for_text(text) {
+                Some(reason) => SyntaxTree::Skipped(reason),
+                None => SyntaxTree::Built,
+            });
+        }
+        if let SyntaxTree::Skipped(_) = syntax_tree.get() {
+            return false;
+        }
         *highlighter = factory(&language.name());
     }
     highlighter.is_some()
@@ -455,6 +533,7 @@ mod tests {
             language: Box::default(),
             highlighter: Default::default(),
             highlighter_factory: None,
+            syntax_tree: Default::default(),
             diagnostics: DiagnosticSet::new(&Rope::new()),
             auto_closed_pairs: Default::default(),
             auto_close: false,

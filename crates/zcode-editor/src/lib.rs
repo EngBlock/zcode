@@ -58,6 +58,8 @@ mod kind;
 mod language;
 #[path = "editor/language_config.rs"]
 pub mod language_config;
+#[path = "base/large_file.rs"]
+mod large_file;
 #[path = "base/layout.rs"]
 mod layout;
 #[path = "base/long_lines.rs"]
@@ -170,6 +172,7 @@ pub use lsp::{
 pub use lsp_types::Position;
 pub use mask_pattern::MaskPattern;
 pub use native::{NativeMenu, NativeMenuItem};
+pub use large_file::{MINIFIED_LINE_BYTES, MINIFIED_MIN_BYTES, NoSyntaxTree, SYNTAX_TREE_MAX_BYTES};
 pub use rope_ext::{InputEdit, Point, RopeExt, RopeLines};
 pub use ropey::Rope;
 pub use search::{SearchMatcher, SearchSession};

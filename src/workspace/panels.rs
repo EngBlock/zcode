@@ -718,7 +718,7 @@ impl Workspace {
             let state = editor.read(cx);
             let pos = state.cursor_position();
             let selected = state.selected_range().len();
-            (pos.line + 1, pos.character + 1, selected, language)
+            (pos.line + 1, pos.character + 1, selected, language, state.no_syntax_tree())
         });
         let vim = self.vim_status(window, cx);
         let prediction = self.prediction_indicator(cx);
@@ -792,13 +792,26 @@ impl Workspace {
                         })),
                 )
             })
-            .when_some(cursor, |el, (line, col, selected, language)| {
+            .when_some(cursor, |el, (line, col, selected, language, no_syntax_tree)| {
                 el.child(if selected > 0 {
                     format!("Ln {line}, Col {col} ({selected} selected)")
                 } else {
                     format!("Ln {line}, Col {col}")
                 })
                 .child(language.to_string())
+                // A file too large (or too minified) for a syntax tree says so.
+                .when_some(no_syntax_tree, |el, reason| {
+                    let explanation = reason.explanation();
+                    el.child(
+                        h_flex()
+                            .id("no-syntax-tree")
+                            .gap_1()
+                            .text_color(theme.warning)
+                            .child(Icon::new(IconName::Info).xsmall())
+                            .child(reason.label())
+                            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(explanation.clone()).build(window, cx)),
+                    )
+                })
                 .child(if self.settings.current.hard_tabs {
                     format!("Tab Width: {}", self.settings.current.tab_size)
                 } else {
