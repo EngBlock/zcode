@@ -104,6 +104,8 @@ GATES = [
     ("typing_big_tick_ms", "ms", 50, 1.5, 5),
     ("typing_huge_ms", "ms", 16, 1.5, 3),
     ("pagedown_json_ms", "ms", 50, 1.5, 5),
+    ("typing_minified_ms", "ms", 16, 1.5, 3),
+    ("pagedown_minified_ms", "ms", 50, 1.5, 5),
     ("lsp_footprint_mb", "MB", 2000, None, None),
 ]
 # Reported beside the gates, never gated.
@@ -263,6 +265,16 @@ def huge_files():
         with open(data, "w") as f:
             json.dump({"records": records}, f, indent=2)
     return swift, data
+
+
+def minified_file():
+    """A 3.3 MB minified script on one line, in the cache (made once)."""
+    path = os.path.join(CACHE, "huge", "min.js")
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(";".join(f"var a{i}=function(b){{return b*{i}+Math.sqrt({i})}}" for i in range(60_000)))
+    return path
 
 
 def frames(z, n=5):
@@ -425,6 +437,17 @@ def session(binary, project, index_cap=None):
         z.run("keys cmd-w", "wait 300", f"open {huge_json}", "wait 3000")
         pages = [timed(z, "bench keys pagedown pagedown pagedown pagedown pagedown") for _ in range(5)]
         r["pagedown_json_ms"] = None if None in pages else statistics.median(p["work_ms"] for p in pages)
+        z.run("keys cmd-w", "wait 300")
+
+        # A minified script, one 3.3 MB line: typing at its end and Page
+        # Down, which shape only what's on screen (docs/scale.md).
+        z.run(f"open {minified_file()}", "wait 2000", "keys cmd-down")
+        typed = json.loads(z.run(f"type-latency {TYPED}", timeout=240)[-1])
+        r["typing_minified_ms"] = typed.get("work_median_ms")
+        undo_all(z, status)
+        z.run("keys cmd-up")
+        pages = [timed(z, "bench keys pagedown pagedown pagedown pagedown pagedown") for _ in range(5)]
+        r["pagedown_minified_ms"] = None if None in pages else statistics.median(p["work_ms"] for p in pages)
         z.run("keys cmd-w", "wait 300")
 
         if index_cap:

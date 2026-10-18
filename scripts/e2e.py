@@ -17,6 +17,7 @@ import os
 import plistlib
 import socket
 import stat
+import statistics
 import shutil
 import subprocess
 import sys
@@ -4593,6 +4594,83 @@ VIM_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+def long_line_checks():
+    """A minified script, one ~430 KB line, in a folder of its own: typing at
+    its end and Page Down cost about what a short file's do, a frame shapes
+    only what's on screen, soft wrap wraps it within the same budgets, and
+    the text stays right throughout (docs/scale.md, Performance batch 2)."""
+    project = os.path.realpath(os.path.join(WORK, "LongLines"))
+    os.makedirs(project, exist_ok=True)
+    minified = os.path.join(project, "min.js")
+    short = os.path.join(project, "short.js")
+    line = ";".join(f"var a{i}=function(b){{return b*{i}+Math.sqrt({i})}}" for i in range(8000))
+    with open(minified, "w") as f:
+        f.write(line)
+    with open(short, "w") as f:
+        f.write("".join(f"var x{i} = function(b) {{ return b * {i}; }};\n" for i in range(200)))
+    z = Zcode(project)
+
+    def undo_all():
+        for _ in range(50):
+            if not z.dump()["active"]["dirty"]:
+                return
+            z.run("keys cmd-z", "wait 50")
+        raise AssertionError("still dirty after 50 undos")
+
+    def pages():
+        frames = [json.loads(z.run("bench keys pagedown pagedown pagedown pagedown pagedown")[-1]) for _ in range(3)]
+        return statistics.median(f["work_ms"] for f in frames)
+
+    baseline = {}
+
+    def typing_and_page_down():
+        z.run(f"open {short}:100", "wait 800", "keys end")
+        baseline["typing"] = json.loads(z.run("type-latency abcdefghij")[-1])["work_median_ms"]
+        undo_all()
+        z.run("keys cmd-up")
+        baseline["pages"] = pages()
+        z.run(f"open {minified}", "wait 1500", "keys cmd-down", "wait 200")
+        s = z.dump()
+        assert s["active"]["column"] == len(line) + 1, s["active"]["column"]
+        # The caret's end of the line is on screen, and little of it shaped.
+        assert 0 < s["active"]["laid_out_bytes"] < 20_000, s["active"]["laid_out_bytes"]
+        typed = json.loads(z.run("type-latency abcdefghij")[-1])
+        s = z.dump()
+        assert s["active"]["line_text"] == line + "abcdefghij" and s["active"]["column"] == len(line) + 11, s["active"]["column"]
+        assert typed["work_median_ms"] < baseline["typing"] * 3 + 5, (typed, baseline)
+        undo_all()
+        z.run("keys cmd-up")
+        paged = pages()
+        assert paged < baseline["pages"] * 3 + 10, (paged, baseline)
+        assert z.dump()["active"]["laid_out_bytes"] < 20_000
+        print(f"    typing {typed['work_median_ms']:.1f} ms of work a key (short file {baseline['typing']:.1f}), five Page Downs {paged:.1f} ms ({baseline['pages']:.1f})")
+
+    def soft_wrap():
+        z.run(f"open {minified}", "wait 300")
+        toggled = json.loads(z.run("bench action zcode::ToggleSoftWrap")[-1])
+        assert toggled["drawn_ms"] < 2000, toggled
+        z.run("wait 300", "keys cmd-down", "wait 200")
+        s = z.dump()
+        # Only the rows on screen and around the caret are shaped.
+        assert 0 < s["active"]["laid_out_bytes"] < 60_000, s["active"]["laid_out_bytes"]
+        typed = json.loads(z.run("type-latency abcdefghij")[-1])
+        assert z.dump()["active"]["line_text"] == line + "abcdefghij"
+        assert typed["work_median_ms"] < baseline.get("typing", 3) * 3 + 8, (typed, baseline)
+        # Up a row stays in the line, a row's width to the left.
+        z.run("keys up", "wait 100")
+        s = z.dump()
+        assert s["active"]["line"] == 1 and len(line) - 400 < s["active"]["column"] < len(line), s["active"]["column"]
+        undo_all()
+        z.run("action zcode::ToggleSoftWrap", "wait 200")
+        print(f"    soft wrap on: {toggled['drawn_ms']:.0f} ms to the frame on screen, typing {typed['work_median_ms']:.1f} ms of work a key")
+
+    try:
+        check("Long lines: typing at the end of a minified line and Page Down cost about what a short file's do, and only what's on screen is shaped", typing_and_page_down)
+        check("Long lines: soft wrap on a minified line, the rows on screen shaped, typing and moving up a row", soft_wrap)
+    finally:
+        z.quit()
+
+
 def vim_checks(samples):
     """Editor ▸ Vim Mode on a copy of ZKit: off by default and turned on for
     every tab; normal, insert and visual mode editing a Swift file through
@@ -6928,6 +7006,9 @@ def main():
 
     print("Vim mode (a copy of samples/ZKit):")
     vim_checks(samples)
+
+    print("Long lines (a folder with a minified script):")
+    long_line_checks()
 
     print("Settings, key bindings and themes (a copy of samples/ZKit):")
     settings_checks(samples)

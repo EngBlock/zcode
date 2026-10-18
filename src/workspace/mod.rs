@@ -829,6 +829,7 @@ impl Workspace {
                 "selection": state.selected_text().to_string(),
                 "text": (state.text().len() < 8000).then(|| state.text().to_string()),
                 "line_text": zcode_editor::RopeExt::slice_line(state.text(), pos.line as usize).to_string(),
+                "laid_out_bytes": state.laid_out_bytes(),
                 "diagnostics": state.diagnostics().map(|d| d.len()).unwrap_or(0),
                 "completion_menu_open": state.completion_menu_state().open,
                 "completion_items": state.completion_menu_state().items.iter().take(5).map(|i| i.label.clone()).collect::<Vec<_>>(),

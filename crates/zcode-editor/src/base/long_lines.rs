@@ -150,6 +150,24 @@ fn plan_rows(
     laid_out
 }
 
+impl<M: InputModeKind> InputBaseState<M> {
+    /// The bytes the last frame shaped: every visible ordinary line's, a
+    /// long line's laid-out pieces. For the control channel's checks.
+    pub fn laid_out_bytes(&self) -> usize {
+        let Some(layout) = &self.last_layout else {
+            return 0;
+        };
+        layout
+            .lines
+            .iter()
+            .map(|line| match line.laid_out_ranges() {
+                Some(pieces) => pieces.iter().map(|piece| piece.len()).sum(),
+                None => line.len(),
+            })
+            .sum()
+    }
+}
+
 /// The runs a piece of a line (`range`, line-relative) is shaped with.
 struct PieceRuns<'a> {
     runs: &'a [TextRun],
