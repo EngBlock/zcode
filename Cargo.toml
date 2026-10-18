@@ -8,7 +8,7 @@ license = "Apache-2.0"
 [workspace]
 members = ["crates/zcode-editor", "crates/zcode-emmet"]
 default-members = [".", "crates/zcode-editor", "crates/zcode-emmet"]
-exclude = ["vendor/gpui-component"]
+exclude = ["vendor/gpui-component", "vendor/gpui-pre-macos"]
 
 [dependencies]
 zcode-editor = { path = "crates/zcode-editor" }
@@ -103,3 +103,6 @@ opt-level = 2
 # See vendor/gpui-component/ZCODE-PATCH.md.
 [patch.crates-io]
 gpui-component = { path = "vendor/gpui-component" }
+# gpui-pre-macos 0.3.9 (GPUI's macOS backend) with the display link paused
+# while a window has nothing to draw. See vendor/gpui-pre-macos/ZCODE-PATCH.md.
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
