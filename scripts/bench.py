@@ -317,6 +317,13 @@ def session(binary, project, index_cap=None):
         else:
             raise TimeoutError(f"no files after {time.time() - started:.0f} s")
         r["files"] = s["files"]
+        # zcode keeps a project's compilation database in ~/Library/Caches/zcode
+        # whatever its configuration folder; the index phase removes the one
+        # it writes, so the rounds open the project without one.
+        r["compile_database_at_open"] = bool(s["compile_database"])
+        if r["compile_database_at_open"]:
+            print(f"    warning: {s['compile_database']} was there at open (an interrupted index phase?); "
+                  "sourcekit-lsp's numbers are with it", flush=True)
         r["scan_ms"] = timing("scan")
         r["tree_ms"] = timing("tree")
         r["listed_at_ms"] = timing("tree", "at_ms")
@@ -397,6 +404,10 @@ def session(binary, project, index_cap=None):
             else:
                 raise TimeoutError(f"scheme {INDEX_SCHEME} with a simulator: {s['scheme']}, {s['destination']}")
             r["index_scheme"], r["index_destination"] = s["scheme"], s["destination"]
+            # A first build, every time: without a database zcode clears an
+            # earlier build's products (src/build/compiledb.rs).
+            if s["compile_database"]:
+                os.remove(s["compile_database"])
             z.run("bench index")
             started = time.time()
             began = None
@@ -412,8 +423,9 @@ def session(binary, project, index_cap=None):
             r["index_s"] = round(time.time() - started, 1)
             r["index_done"] = began is not None and not s["indexing"]
             r["compile_database"] = bool(s["compile_database"])
-            if s["compile_database"]:
-                with open(s["compile_database"]) as f:
+            database = s["compile_database"]
+            if database:
+                with open(database) as f:
                     commands = json.load(f)
                 r["compile_database_files"] = len(commands)
                 r["compile_database_has_client"] = any(c["file"].endswith(VIEW_CONTROLLER) for c in commands)
@@ -430,6 +442,8 @@ def session(binary, project, index_cap=None):
                     time.sleep(0.5)
                 r["lsp_ready_with_database_s"] = round(time.time() - again, 1)
                 r["lsp_footprint_with_database_mb"] = status()["memory"]["language_server_mb"]
+            if database:
+                os.remove(database)
     finally:
         if stopper:
             stopper.stop()

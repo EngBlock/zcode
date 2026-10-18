@@ -67,6 +67,14 @@ During the rounds no index build runs when the project opens
 (`ZCODE_INDEX_BUILD=0`), so it doesn't load the machine while they
 measure.
 
+zcode keeps a project's compilation database and derived data in
+`~/Library/Caches/zcode/projects`, whatever its configuration folder. So
+the index phase removes any database it finds before building, which
+makes each run's build a first one. It also removes the database it
+wrote once it's measured, so the next run's rounds open the project
+without one. A round that finds one anyway (after an interrupted run)
+says so, since sourcekit-lsp's numbers then differ.
+
 ## Gates and noise
 
 The machine these run on is often loaded by other work, with load averages
