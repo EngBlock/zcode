@@ -30,7 +30,9 @@ SAMPLES = os.path.normpath(os.path.join(ROOT, "samples"))
 # other work in the repo can't leak in (and test edits never touch the repo).
 WORK = tempfile.mkdtemp(prefix="zcode-e2e-samples-")
 PERF_LOG = os.path.join(WORK, "perf.jsonl")
-BINARY = os.path.join(ROOT, "target", "release", "zcode")
+# The zcode under test: this checkout's release build, or `ZCODE_E2E_BINARY`
+# (another build, for a comparison).
+BINARY = os.environ.get("ZCODE_E2E_BINARY") or os.path.join(ROOT, "target", "release", "zcode")
 DEBUG_DIR = tempfile.mkdtemp(prefix="zcode-e2e-")
 # Settings, key bindings, themes and the session live in a folder of the
 # run's own (ZCODE_CONFIG_DIR), so the suite never reads or changes the
@@ -2265,6 +2267,35 @@ def package_checks(z, samples):
             with open(xctests, "w") as f:
                 f.write(original)
 
+    def scale_instrumentation():
+        # What scripts/bench.py reads on a big project, checked here on a small one.
+        s = z.wait_for(lambda s: s["timings"].get("tree"), timeout=30, interval=0.3)
+        t = s["timings"]
+        assert t["scan"]["count"] == s["files"] > 0 and 0 < t["scan"]["ms"] < 1000 and t["tree"]["at_ms"] > t["scan"]["ms"], t
+        status = lambda: json.loads(z.run("bench status")[-1])
+        b = status()
+        assert b["files"] == s["files"] and b["memory"]["resident_mb"] > 0 and b["timings"]["scan"] == t["scan"], b
+        frame = json.loads(z.run("bench frame")[-1])
+        assert 0 < frame["to_frame_ms"] < frame["drawn_ms"] < 1000 and 0 < frame["work_ms"] <= frame["drawn_ms"], frame
+        # Open Quickly shown and typed into, its matching timed over every file.
+        shown = json.loads(z.run("bench action zcode::OpenQuickly")[-1])
+        assert shown["drawn_ms"] > 0 and status()["modal_open"], (shown, status())
+        typed = json.loads(z.run("type-latency Gre")[-1])
+        assert typed["keys"] == 3 and typed["median_ms"] <= typed["drawn_median_ms"] and typed["drawn_p95_ms"] <= typed["drawn_max_ms"], typed
+        assert 0 < typed["work_median_ms"] <= typed["work_max_ms"] < 1000, typed
+        assert status()["timings"]["open_quickly"]["count"] == s["files"], status()["timings"]
+        z.run("keys escape", "wait 200")
+        # A search timed with its matches counted; the navigator's rows laid out only on screen.
+        keys = json.loads(z.run("bench keys cmd-shift-f")[-1])
+        assert keys["drawn_ms"] > 0 and status()["navigator"] == "Find", (keys, status())
+        z.run("type greeting", "keys enter")
+        b = z.wait_for(lambda s: s["find_results"] > 0 and s["timings"].get("find"), timeout=20, interval=0.3)
+        assert b["timings"]["find"]["count"] == b["find_results"] >= 4 and b["timings"]["find"]["ms"] < 1000, b["timings"]
+        assert json.loads(z.run("bench frame")[-1])["drawn_ms"] < 1000
+        print(f"    scan {t['scan']['ms']:.1f} ms for {s['files']} files, tree {t['tree']['ms']:.1f} ms, search {b['timings']['find']['ms']:.1f} ms, a frame's work {frame['work_ms']:.1f} ms")
+        z.run("keys cmd-1", "wait 200")
+
+    check("Scale instrumentation: scan, tree, search and Open Quickly timings in dump and bench status; bench frame / action / keys; type-latency's drawn times", scale_instrumentation)
     check("Swift package: a test from the gutter and an XCTest class (swift test --filter)", package_single_tests)
     check("Swift package: re-run failed tests", rerun_failed)
     check("Swift package: Run on My Mac (⌘R)", run_package)
