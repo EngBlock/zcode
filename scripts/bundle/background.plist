@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- zcode ▸ Open at Login registers this agent with SMAppService
+	     (src/login_item.rs): the resident instance, started at login with
+	     no window, so the first open of the day is a warm one. -->
+	<key>Label</key>
+	<string>dev.zcode.zcode.background</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/zcode</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>Contents/MacOS/zcode</string>
+		<string>--background</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>ZCODE_LAUNCHED_AT_LOGIN</key>
+		<string>1</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>dev.zcode.zcode</string>
+	</array>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>

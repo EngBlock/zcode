@@ -6,6 +6,7 @@ pub mod assets;
 pub mod app;
 pub mod bookmarks;
 pub mod build;
+pub mod bundle;
 pub mod debug;
 pub mod debugger;
 pub mod fuzzy;

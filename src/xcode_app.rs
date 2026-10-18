@@ -18,7 +18,8 @@
 //!
 //! `ZCODE_XCODE_COMMANDS=<file>` records each command as a JSON line (its
 //! arguments) instead of running it, so the e2e suite never opens Xcode on
-//! the screen.
+//! the screen (nor zcode's own bundle: `crate::bundle` records its `open`
+//! commands the same way).
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -197,8 +198,10 @@ pub fn canvas_command(file: &Path) -> Vec<String> {
 }
 
 /// Appends `args` to the `ZCODE_XCODE_COMMANDS` file when it's set; `false`
-/// when the command should run.
-fn record(args: &[String]) -> bool {
+/// when the command should run. Every command that starts or drives another
+/// app goes through here (`open` for the bundle too, `crate::bundle`), so
+/// the e2e suite never launches anything on the screen.
+pub fn record(args: &[String]) -> bool {
     let Some(path) = std::env::var_os(COMMANDS_ENV) else { return false };
     let line = serde_json::to_string(args).unwrap_or_default();
     match std::fs::OpenOptions::new().create(true).append(true).open(&path) {

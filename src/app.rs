@@ -21,6 +21,26 @@ struct Args {
     perf_log: Option<PathBuf>,
 }
 
+impl Args {
+    /// The arguments a launch through LaunchServices passes on, the path
+    /// made absolute since the app won't share this shell's folder.
+    fn for_launch(&self) -> Vec<String> {
+        let mut args = vec![];
+        if let Some(path) = &self.path {
+            let absolute = std::path::absolute(path).unwrap_or_else(|_| path.clone());
+            args.push(absolute.display().to_string());
+        }
+        if self.background {
+            args.push("--background".into());
+        }
+        if let Some(log) = &self.perf_log {
+            args.push("--perf-log".into());
+            args.push(log.display().to_string());
+        }
+        args
+    }
+}
+
 fn parse_args() -> Args {
     let mut args = Args::default();
     let mut argv = std::env::args().skip(1);
@@ -180,6 +200,21 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
     }
 }
 
+/// Opens what Finder (or `app open-url` on the control channel) handed
+/// over: each path its project, and the app comes forward.
+pub fn open_paths(paths: Vec<PathBuf>, cx: &mut App) {
+    for path in paths {
+        match path.exists() {
+            true => open_project(path, cx),
+            false => log::warn!("{} does not exist", path.display()),
+        }
+    }
+    if cx.windows().is_empty() {
+        open_welcome(cx);
+    }
+    cx.activate(true);
+}
+
 fn prewarm_hidden_window(cx: &mut App) {
     // Shown (so the compositor and renderer are set up) but off-screen and
     // without focus; it closes after its first frames.
@@ -293,6 +328,18 @@ pub fn run() {
     if single_instance && crate::instance::forward(args.path.as_deref()) {
         return;
     }
+    // `zcode …` typed in a shell (the link Install CLI makes) with no zcode
+    // running starts the app the way Finder would and gives the prompt back,
+    // when there's an app to start; a bare binary runs here.
+    if single_instance
+        && crate::bundle::launched_through_cli()
+        && let Some(bundle) = crate::bundle::app_bundle()
+    {
+        match crate::bundle::launch(bundle, &args.for_launch()) {
+            Ok(()) => return,
+            Err(err) => eprintln!("zcode: couldn’t open {}: {err}", bundle.display()),
+        }
+    }
 
     // Settings, key bindings and the theme they name are read on a thread
     // of their own while AppKit starts.
@@ -309,6 +356,13 @@ pub fn run() {
         if cx.windows().is_empty() {
             open_welcome(cx);
         }
+    });
+    // Finder (a double-clicked .xcodeproj, Open With…, a folder dropped on
+    // the Dock icon) hands paths over as URLs, before the app has finished
+    // launching or to a running one.
+    let (urls_tx, urls_rx) = smol::channel::unbounded::<Vec<String>>();
+    app.on_open_urls(move |urls| {
+        urls_tx.send_blocking(urls).ok();
     });
     app
         .with_assets(crate::assets::Assets)
@@ -355,6 +409,10 @@ pub fn run() {
             if let Some(path) = args.perf_log.clone() {
                 cx.global_mut::<Perf>().log_path = Some(path);
             }
+            let mut from_finder = vec![];
+            while let Ok(urls) = urls_rx.try_recv() {
+                from_finder.extend(urls.iter().filter_map(|url| crate::bundle::path_of_file_url(url)));
+            }
             match args.path.clone() {
                 _ if args.background && single_instance => {}
                 Some(path) if path.exists() => open_project(path, cx),
@@ -362,8 +420,16 @@ pub fn run() {
                     eprintln!("zcode: {} does not exist", path.display());
                     open_welcome(cx);
                 }
+                None if !from_finder.is_empty() => open_paths(from_finder, cx),
                 None => open_welcome(cx),
             }
+            cx.spawn(async move |cx| {
+                while let Ok(urls) = urls_rx.recv().await {
+                    let paths = urls.iter().filter_map(|url| crate::bundle::path_of_file_url(url)).collect();
+                    cx.update(|cx| open_paths(paths, cx));
+                }
+            })
+            .detach();
             mark("window opened");
             cx.global_mut::<Perf>().mark_window_opened();
 
