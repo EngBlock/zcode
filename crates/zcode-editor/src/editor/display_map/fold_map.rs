@@ -167,11 +167,9 @@ impl FoldMap {
         self.candidates = candidates;
 
         // Remove any folded ranges that are no longer in candidates
-        self.folded.retain(|fold| {
-            self.candidates
-                .iter()
-                .any(|c| c.start_line == fold.start_line)
-        });
+        let candidates = &self.candidates;
+        self.folded
+            .retain(|fold| find_line(candidates, fold.start_line).is_ok());
     }
 
     /// Merge new candidates extracted from an edited region into existing candidates.
@@ -199,17 +197,18 @@ impl FoldMap {
     pub(super) fn set_folded(&mut self, start_line: usize, folded: bool) {
         if folded {
             // Find the candidate range for this start_line
-            if let Some(candidate) = self.candidates.iter().find(|c| c.start_line == start_line) {
+            if let Ok(candidate) = find_line(&self.candidates, start_line) {
                 // Add to folded if not already present
-                if !self.folded.iter().any(|f| f.start_line == start_line) {
-                    self.folded.push(*candidate);
-                    self.folded.sort_by_key(|r| r.start_line);
+                if let Err(index) = find_line(&self.folded, start_line) {
+                    self.folded.insert(index, self.candidates[candidate]);
                     self.needs_rebuild = true;
                 }
             }
         } else {
             // Remove from folded
-            self.folded.retain(|f| f.start_line != start_line);
+            if let Ok(index) = find_line(&self.folded, start_line) {
+                self.folded.remove(index);
+            }
             self.needs_rebuild = true;
         }
     }
@@ -222,12 +221,12 @@ impl FoldMap {
 
     /// Check if a line is currently folded
     pub(super) fn is_folded_at(&self, start_line: usize) -> bool {
-        self.folded.iter().any(|f| f.start_line == start_line)
+        find_line(&self.folded, start_line).is_ok()
     }
 
     /// Check if a line is a fold candidate
     pub(super) fn is_fold_candidate(&self, start_line: usize) -> bool {
-        self.candidates.iter().any(|c| c.start_line == start_line)
+        find_line(&self.candidates, start_line).is_ok()
     }
 
     /// Get all fold candidates
@@ -288,6 +287,16 @@ impl FoldMap {
                         c.end_line = (c.end_line as isize + line_delta).max(0) as usize;
                     }
                 }
+            }
+        }
+
+        // The lookups are binary searches. Shifting the ranges after the
+        // edit keeps them in order unless the line range given doesn't
+        // match the delta, in which case they're put back in order.
+        for ranges in [&mut self.folded, &mut self.candidates] {
+            if !ranges.is_sorted_by(|a, b| a.start_line < b.start_line) {
+                ranges.sort_by_key(|r| r.start_line);
+                ranges.dedup_by_key(|r| r.start_line);
             }
         }
 
@@ -375,6 +384,15 @@ impl FoldMap {
     }
 }
 
+/// Where the range starting at `start_line` is in `ranges` (sorted by start
+/// line, one per line), or where it would go.
+///
+/// The gutter asks for each visible line on every frame, so this must not
+/// scan: a large JSON file has hundreds of thousands of candidates.
+fn find_line(ranges: &[FoldRange], start_line: usize) -> Result<usize, usize> {
+    ranges.binary_search_by_key(&start_line, |r| r.start_line)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +460,69 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The lookups as the linear scans they replaced.
+    fn assert_lookups(fold_map: &FoldMap, lines: usize) {
+        for line in 0..lines {
+            assert_eq!(
+                fold_map.is_fold_candidate(line),
+                fold_map.candidates.iter().any(|c| c.start_line == line),
+                "candidate at {line}"
+            );
+            assert_eq!(
+                fold_map.is_folded_at(line),
+                fold_map.folded.iter().any(|f| f.start_line == line),
+                "folded at {line}"
+            );
+        }
+        for ranges in [&fold_map.candidates, &fold_map.folded] {
+            assert!(ranges.is_sorted_by(|a, b| a.start_line < b.start_line));
+        }
+    }
+
+    #[test]
+    fn fold_lookups_follow_folding_and_edits() {
+        let mut fold_map = FoldMap::new();
+        let candidates = [(40, 60), (2, 10), (12, 30), (2, 8), (14, 20), (70, 90)];
+        fold_map.set_candidates(candidates.map(|(s, e)| FoldRange::new(s, e)).to_vec());
+        assert_eq!(fold_map.fold_candidates().len(), 5);
+        assert_lookups(&fold_map, 100);
+
+        // Folding needs a candidate, and twice is once.
+        for line in [40, 2, 13, 14, 40] {
+            fold_map.set_folded(line, true);
+        }
+        let folded: Vec<usize> = fold_map.folded_ranges().iter().map(|f| f.start_line).collect();
+        assert_eq!(folded, [2, 14, 40]);
+        assert_lookups(&fold_map, 100);
+        fold_map.toggle_fold(14);
+        fold_map.set_folded(5, false);
+        assert_lookups(&fold_map, 100);
+        assert!(!fold_map.is_folded_at(14) && fold_map.is_fold_candidate(14));
+
+        // Three lines inserted at line 35 move what's below; deleting lines
+        // 11 to 13 drops the ranges across them and moves the rest up.
+        fold_map.adjust_folds_for_edit(35, 35, 3);
+        assert_lookups(&fold_map, 100);
+        assert!(fold_map.is_folded_at(43) && fold_map.is_fold_candidate(73));
+        fold_map.adjust_folds_for_edit(11, 13, -2);
+        assert_lookups(&fold_map, 100);
+        assert!(fold_map.is_fold_candidate(12) && !fold_map.is_fold_candidate(14));
+        assert!(fold_map.is_folded_at(41) && fold_map.is_folded_at(2));
+
+        // A delta that runs ranges into earlier ones still leaves them in order.
+        fold_map.adjust_folds_for_edit(50, 50, -45);
+        assert_lookups(&fold_map, 100);
+
+        // New candidates from an edited region join the rest in order; a
+        // fold whose candidate is gone goes with it.
+        fold_map.merge_candidates_for_edit(20, 25, vec![FoldRange::new(22, 24), FoldRange::new(21, 29)]);
+        assert_lookups(&fold_map, 100);
+        assert!(fold_map.is_fold_candidate(21) && fold_map.is_fold_candidate(22));
+        fold_map.set_folded(2, true);
+        fold_map.set_candidates(vec![FoldRange::new(3, 9)]);
+        assert!(fold_map.folded_ranges().is_empty());
+        assert_lookups(&fold_map, 100);
     }
 }

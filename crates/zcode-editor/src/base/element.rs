@@ -827,7 +827,7 @@ impl<M: InputModeKind> TextElement<M> {
                 * (state.display_map.buffer_line_to_display_row(row) + state.block_rows_before(row));
             let line_origin = point(px(0.), top);
 
-            if let Some(vi) = visible_buffer_lines.iter().position(|&bl| bl == row) {
+            if let Ok(vi) = visible_buffer_lines.binary_search(&row) {
                 let line = &lines[vi];
                 let line_start = last_layout.visible_line_byte_offsets[vi];
                 let local = offset.saturating_sub(line_start);
