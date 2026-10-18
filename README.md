@@ -224,7 +224,7 @@ if zcode is not faster.
 
 * **Single instance.** zcode keeps running when its last window closes, as Xcode and other Mac document apps do. `zcode <path>` hands the path to the running instance over a Unix socket and exits, and the warm instance opens the project window in ~50–75 ms. `ZCODE_NEW_INSTANCE=1` forces a separate process.
 * **Always warm.** `zcode --background` starts the resident instance with no window. zcode ▸ Open at Login registers it as a login item (the bundle's LaunchAgent, through SMAppService), and even the first open of the day takes the warm path.
-* **The bundle costs ~12 ms more to launch.** `zcode.app/Contents/MacOS/zcode --startup-bench` is the same binary and the same startup, plus AppKit's own launch work for a bundled app: `finishLaunching` loads the Writing Tools UI library while it adds the text-input items to the Edit menu (seen with `sample`), which a bare binary without a bundle identifier skips. Three alternating rounds of 10 (load average 18–25): the bare binary's first pixels at 265.4, 266.8 and 262.8 ms, the bundle's at 281.6, 283.7 and 279.7 ms; the icon, the document types, the hardened runtime and the signature make no difference (each tried alone), nor do `NSAllowsWritingTools` or `NSMenuDoesNotAutomaticallyInsertWritingToolsItems` as `Info.plist` keys or defaults. The e2e suite times both and holds the bundle to the same reference as the bare binary.
+* **The bundle costs ~15–25 ms more to launch.** `zcode.app/Contents/MacOS/zcode --startup-bench` is the same binary and the same startup, plus AppKit's own launch work for a bundled app: `finishLaunching` loads the Writing Tools UI library while it adds the text-input items to the Edit menu (seen with `sample`), which a bare binary without a bundle identifier skips. Three alternating rounds of 10 (load average 20–50): the bare binary's first pixels at 251.1, 260.1 and 259.4 ms, the bundle's at 287.3, 281.4 and 287.8 ms; on a calmer run (load average 18–25) 265.4, 266.8 and 262.8 ms against 281.6, 283.7 and 279.7 ms. The icon, the document types, the hardened runtime and the signature make no difference (each tried alone), nor do `NSAllowsWritingTools` or `NSMenuDoesNotAutomaticallyInsertWritingToolsItems` as `Info.plist` keys or defaults. The e2e suite times both and holds the bundle to the same reference as the bare binary.
 * Resident memory at first frame is ~102 MB for the welcome window and ~120 MB with a project open.
 * The first launch after each rebuild also includes macOS scanning the new binary.
 
@@ -356,9 +356,9 @@ if zcode is not faster.
   zcode. Finder's file URLs arrive through `on_open_urls` into a channel
   the first window's code drains, so a document opened at launch doesn't
   flash the welcome window. Cold launch, three alternating rounds of 10
-  against `master` (load average 18–25): the welcome window's first pixels
-  at 265.4, 266.8 and 262.8 ms against 263.4, 266.1 and 266.8 ms. The
-  binary grows by 0.1 MB (`objc2-service-management`).
+  against a build of `master`'s commit (load average 20–50): the welcome
+  window's first pixels at 251.1, 260.1 and 259.4 ms against 269.9, 269.0
+  and 261.8 ms. The binary grows by 0.05 MB (`objc2-service-management`).
 * Settings cost nothing measurable at startup: the user's settings,
   keymap and the theme they name are read and parsed on a thread of their
   own started at the top of `main()`, and the first window takes what it
