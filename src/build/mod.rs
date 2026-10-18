@@ -181,6 +181,9 @@ pub struct BuildController {
     pub indexing: bool,
     index_process: ProcessHandle,
     index_attempted: bool,
+    /// A build of the user's stopped the index build, which starts again
+    /// when that build is done.
+    index_superseded: bool,
     _index_task: Option<Task<()>>,
     run_target: Option<RunTarget>,
     /// Whether the current run should attach the debugger.
@@ -256,6 +259,7 @@ impl BuildController {
             indexing: false,
             index_process: ProcessHandle::default(),
             index_attempted: false,
+            index_superseded: false,
             _index_task: None,
             run_target: None,
             debug_run: false,
@@ -279,6 +283,19 @@ impl BuildController {
         };
         this.reload(cx);
         this.poll_devices(cx);
+        // The user's build writes its own derived data, not the index build's
+        // products and index store, which sourcekit-lsp reads through the
+        // build server: indexing goes on once it's done, as in Xcode.
+        cx.subscribe_self(|this, event: &BuildEvent, cx| {
+            if let BuildEvent::PhaseChanged = event
+                && this.index_superseded
+                && !this.phase.is_busy()
+            {
+                this.index_superseded = false;
+                this.start_index_build(cx);
+            }
+        })
+        .detach();
         this
     }
 
@@ -898,9 +915,10 @@ impl BuildController {
         }
         let tests = (action == BuildAction::Test).then(|| tests.unwrap_or_default());
         if self.indexing {
-            // The user's build supersedes (and will produce) the index data.
+            // The user's build goes first; the index build starts again after.
             self.index_process.terminate();
             self.indexing = false;
+            self.index_superseded = true;
             self._index_task = None;
         }
         if self.phase.is_busy() {
