@@ -28,7 +28,8 @@ rounds on `firefox-ios/Client.xcodeproj` (~11,000 files, ~2,100 Swift files):
   time to the next tick
 * files far larger than the app's, generated into the cache: typing near
   the end of a 50,000-line Swift file, and five Page Downs in a 15 MB JSON
-  file (a keystroke's and the Page Downs' work)
+  file (a keystroke's and the Page Downs' work); typing at the end of a
+  3.3 MB minified script (one line) and five Page Downs in it
 * the index build: the app's scheme (Fennec) chosen in ⌃0's picker, its
   background build for the simulator zcode picks (`bench index`, as a save
   starts it) until it ends or `--index-cap` seconds, then sourcekit-lsp

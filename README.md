@@ -409,6 +409,25 @@ if zcode is not faster.
   1.9–2.9 ms of work per keystroke against 6.7–7.8 ms on `master`
   (`scripts/bench.py`'s `typing_huge_ms` and `pagedown_json_ms`;
   `docs/scale.md`).
+* Long lines are laid out only where they're seen. A line over 4 KB (a
+  minified script, a JSON or log record) gets the x of a checkpoint every
+  ~1 KB, summed from the editor font's width for each character and
+  shifted rather than measured again after an edit; a frame shapes only
+  the 256-byte tiles across the text area and around the caret (with soft
+  wrap, the rows on screen and around it) and styles only those bytes, and
+  carets, selections, clicks and vertical movement measure from the
+  checkpoints. Soft wrap wraps such a line by the same widths and re-wraps
+  an edit only until its rows meet the old ones. Lines over 10,000 bytes
+  get no syntax colors (VS Code stops at 20,000), and long lines leave out
+  inlay hints. In a 3.3 MB one-line minified script (alternating launches
+  against `master`, load average 3–5): typing 3.2 ms of work a keystroke
+  at its start and 7.0 ms at its end against 37 and 63 ms, five Page Downs
+  12.8 ms against 61.5 ms, turning soft wrap on 58 ms to the frame on
+  screen against 5.5 s, typing at the end with it on 7.0 ms against 2.8 s,
+  and the same file as plain text adds 14.5 MB of resident memory against
+  225 MB. LSP positions and the status bar's column come from the rope's
+  UTF-16 and character counts rather than a walk of the line
+  (`docs/scale.md`, Performance batch 2).
 * **About memory:** while a GPUI window is frontmost and redrawing (for
   example while the caret blinks), macOS attributes about 220 MB of transient
   compositor/GPU memory to the process (the "Owned physical footprint
@@ -514,7 +533,9 @@ src/
                     frame they cause and reports what scripts/bench.py polls
   screenshot.rs     zcode's own windows and simulators as PNGs (the control channel, startup bench, MCP)
 crates/
-  zcode-editor/     the code editor: rope buffer, display map (soft wrap, folding), highlighting,
+  zcode-editor/     the code editor: rope buffer, display map (soft wrap, folding; lines over 4 KB
+                    measured per character and laid out only where visible: long_line.rs,
+                    base/long_lines.rs), highlighting,
                     undo, multiple cursors, edit events and a journal of edits as they're applied,
                     linked views of one buffer, multibuffers (excerpts of many
                     buffers, one undo step across them), Vim mode (a keystroke interceptor with
@@ -561,6 +582,11 @@ patch for the highlighter and one that compiles each language's queries
 once, all described in `vendor/gpui-component/ZCODE-PATCH.md`.
 USB devices attaching are noticed through IOKit's notifications, Apple's
 framework called directly (no new dependency).
+Long lines are measured from each character's width and laid out in pieces
+by code of zcode's own (the soft wrap of a long line uses
+`unicode-linebreak`, already a dependency); the idea of shaping only what's
+visible, and of plain text past a length, is VS Code's documented behavior,
+none of its code used.
 Source control runs the `git` command line; line diffs come from the
 `similar` crate (Apache-2.0). Inline blame and hollow staged change bars
 follow Zed's public behavior, implemented from scratch, as do inlay

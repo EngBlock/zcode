@@ -55,7 +55,8 @@ pub(crate) fn plan_long_lines<M: InputModeKind>(
     viewport: Bounds<Pixels>,
 ) -> Vec<Option<LongPlan>> {
     let mut plans = Vec::with_capacity(visible_buffer_lines.len());
-    if state.tokens_visible() || state.masked || line_height <= px(0.) {
+    // Text fields and token rows lay out their text whole.
+    if !state.is_multi_line() || state.tokens_visible() || state.masked || line_height <= px(0.) {
         plans.resize_with(visible_buffer_lines.len(), || None);
         return plans;
     }

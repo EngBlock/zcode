@@ -46,6 +46,8 @@ folder, and drives it through the control channel (`bench …` in
 | `typing_tick_ms`, `typing_big_tick_ms` | Keystroke to the start of the next frame, wall-clock |
 | `typing_huge_ms` | A keystroke's work typing a line near the end of a 50,000-line Swift file (generated into the cache, `huge/Huge.swift`, opened next to the project) |
 | `pagedown_json_ms` | The work of five Page Downs in a 15 MB JSON file (`huge/huge.json`), median of 5 |
+| `typing_minified_ms` | A keystroke's work typing at the end of a 3.3 MB minified script, one line (`huge/min.js`) |
+| `pagedown_minified_ms` | The work of five Page Downs in that script, median of 5 |
 | `lsp_footprint_mb` | sourcekit-lsp with its `SourceKitService` helpers at the end |
 
 **Work, not ticks.** Frames are gated on their *work*: the input's
@@ -284,6 +286,72 @@ the control channel's `bench keys`, `type-latency` and `--startup-bench`.
   when the window becomes active, when the destination menu or Choose
   Destination opens, and otherwise once a minute. No device was plugged in
   during testing; the notifications were seen to register.
+
+## Performance batch 2: long lines
+
+With a minified script open (3.3 MB on one line), every frame after an edit
+shaped the whole line through CoreText (`TextElement::prepaint` →
+`shape_line`; ~78% of the main thread in a `sample` while typing) and then
+walked all 3.3 million glyphs to paint the few hundred on screen (~18%).
+The layout held ~210 MB for it. Turning soft wrap on shaped the line again
+in pieces to find each row's break, several times a row (5.5 s), and
+typing then re-wrapped all of it (2.8 s a keystroke).
+
+Now a line over 4 KB is measured rather than shaped: the x of a checkpoint
+every ~1 KB, summed from the font's width for each character, shifted
+rather than measured again after an edit. A frame shapes only the 256-byte
+tiles across the text area and around the caret (soft wrap on: the rows on
+screen and around it) and styles only those bytes; carets, selections,
+clicks and vertical movement measure from the checkpoints. Soft wrap wraps
+the line by the same widths and re-wraps an edit until its rows meet the
+old ones. Selections, search highlights and decorations on such a line are
+laid out on screen only. (`docs/editor-engine.md`, Long lines.)
+
+Profiling the result turned up two more walks of the line, at its end:
+LSP positions (completion syncs the document on each keystroke) counted
+UTF-16 units by walking the line, ~25 ms; and the status bar's column
+counted characters the same way on every render, ~15 ms. Both read the
+rope's counts now.
+
+Measured against a `master` release build in alternating launches (M4 Max,
+macOS 27.2; 3 launches each, medians, load average 2.6–5), on
+`/tmp/zbig/min.js` (`var a0=function(b){return b*0+Math.sqrt(0)};…` for
+60,000 functions):
+
+| | `master` | Now |
+|---|---|---|
+| Typing at the line's start, work per keystroke | 36.8 ms | 3.2 ms |
+| Typing at its end | 63.0 ms | 7.0 ms |
+| Five Page Downs, work | 61.5 ms | 12.8 ms |
+| ⌘↓ to the end | 32.9 ms | 7.0 ms |
+| A redraw | 16.4 ms | 6.8 ms |
+| Resident memory with it open | 626 MB | 331 MB |
+| The same file as plain text (no syntax tree), resident memory added by opening it | 225 MB | 14.5 MB |
+| Editor ▸ Wrap Lines on, to the frame on screen | 5.5 s | 58 ms |
+| Typing at the end with soft wrap on | 2.8 s | 7.0 ms |
+
+"Work" is the control channel's: the input's handling plus the frame's
+draw and present, which includes waiting for a drawable from the window
+server; with the work itself on the main thread, a keystroke at the
+line's end measured 1.3–1.5 ms in a `sample`d run (the e2e check's run:
+1.3 ms against 2.7 ms in a 200-line file), and the 7 ms medians above are
+mostly that wait (a redraw's 6.8 ms is too). The rest of the 331 MB is
+the syntax tree tree-sitter builds for the file (~190 MB), which batch 3
+takes on.
+
+The ordinary paths don't change: typing near the end of the 50,000-line
+Swift file 1.7 ms of work a keystroke against 1.7 ms on `master`, in a
+small Swift file 1.5 against 1.5 ms (8 alternating launches each, load
+3–5); cold launch, the welcome window's first pixels at 235.6 ms against
+243.6 ms (median of 15, alternating, load ~2).
+
+`scripts/bench.py` gates typing at the end of a generated minified script
+and Page Down in it. One round against `master` (load average 3–4):
+`typing_minified_ms` 2.2 ms against 56.4 ms, `pagedown_minified_ms` 11.2 ms
+against 68.3 ms, and every other gate within a few percent of master's
+except `listed_at_ms` (the background file scan, which the branch doesn't
+touch: 431 against 244 ms in that round, the branch's first and cold; 250
+against 284 ms over two more rounds).
 
 ## About the memory numbers
 

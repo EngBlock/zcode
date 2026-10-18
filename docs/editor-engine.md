@@ -633,6 +633,43 @@ Typing in Swift excerpts measured 3.8–3.9 ms keystroke to frame (median),
 against 5.1–5.2 ms in the same file's own tab; the first page of a
 400-file search took 13–27 ms.
 
+### Long lines (`display_map/long_line.rs`, `base/long_lines.rs`)
+
+Shaping a line costs time and memory in proportion to its length, so a
+line over 4 KB (`LONG_LINE_LEN`) is never shaped whole:
+
+* **Measured.** The wrapper gives its `LineItem` a `LongLine`: the x of a
+  checkpoint about every 1 KB, summed from the editor font's width for
+  each character (`CharWidths`, measured once per character as gpui's line
+  wrapper does; printable ASCII in a monospaced font is measured by its
+  length). `x(offset)` and `index_for_x(x)` measure from the nearest
+  checkpoint. An edit inside the line keeps the checkpoints before it,
+  measures to the first one after it and shifts the rest.
+* **Wrapped.** With soft wrap on, a long line is wrapped by those widths
+  at `unicode-linebreak`'s opportunities (`LongWrap`), and an edit re-wraps
+  from two rows before it until a row starts where one did before, past
+  the edit; the rest of the rows shift. Row lookups are binary searches.
+* **Laid out in pieces.** Each frame `plan_long_lines` picks, for each
+  visible long line, the 256-byte tiles across the text area (soft wrap
+  off) or the rows on screen (on), plus those within a screen of the
+  active caret and its selection's ends, where following the caret can
+  scroll this frame. Only those bytes are styled (tree-sitter, layers,
+  decorations, diagnostics; the rest of the line is one plain run) and
+  shaped. A tiled row is an `InputLine` whose tiles sit at their measured
+  x; a wrapped long line's `LineLayout` holds its shaped rows and every
+  row's range, and answers for the others by measuring.
+* **Drawn on screen.** Selections, search highlights and decorations on a
+  long line are laid out for its laid-out bytes only and clipped to the
+  text area (`LastLayout::viewport`) plus a margin.
+
+Lines over 10,000 bytes keep having no syntax colors (VS Code stops at
+20,000), and long lines leave their inlays out (neither drawn nor counted
+in their wrapping). Between tiles the glyphs are CoreText's within a tile
+and the sum of character widths across tiles, so a font with ligatures or
+kerning across a tile edge can be off by a fraction of a character there.
+`laid_out_bytes()` reports what the last frame shaped (the control
+channel's `dump`).
+
 ## How the upcoming features hook in
 
 | Feature (roadmap) | Hooks |
@@ -691,6 +728,11 @@ the next frame).
   files'), and has no language features of its own; an undo step skips a
   file edited since. Excerpts of one file are merged only with their
   neighbors in the list.
+* Long lines (over 4 KB) leave out inlay hints, and past 10,000 bytes have
+  no syntax colors. Positions are f32 pixels, which past 16 million pixels
+  (~2 MB of monospaced text) are 2 px apart, so far into such a line a
+  tile can sit a pixel or two off its neighbor (each tile's own glyphs
+  stay evenly spaced; the end of a 3.3 MB line looks right).
 * Anchors come back exactly when undo replays the history entry that moved
   them; `set_value` (a reload) clears the history and keeps line anchors on
   their rows instead, so a line deleted before a reload stays deleted.
