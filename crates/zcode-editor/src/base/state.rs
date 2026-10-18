@@ -746,6 +746,15 @@ impl<M: InputModeKind> InputBaseState<M> {
         self.mode.no_syntax_tree()
     }
 
+    /// Lets go of the last frame's shaped lines (~3 KB a visible line), for
+    /// an editor that isn't shown: an app with many tabs holds only the shown
+    /// ones'. The next frame that draws the editor lays it out again, as the
+    /// first one does.
+    pub fn release_layout(&mut self) {
+        self.last_layout = None;
+        self.prepaint_caret_geometry = None;
+    }
+
     /// How many places the text could fold (from its syntax tree). For the
     /// control channel's checks.
     pub fn fold_candidate_count(&self) -> usize {

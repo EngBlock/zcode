@@ -1047,7 +1047,9 @@ pub(crate) struct LineLayout {
     /// indentation when [`WrappingIndent::Same`] is used.
     pub(crate) wrap_indent: Pixels,
     pub(crate) longest_width: Pixels,
-    pub(crate) whitespace_indicators: Option<WhitespaceIndicators>,
+    /// The layout's shaped space and tab marks, shared by its lines (two
+    /// shaped lines are ~6 KB, twice what a line's own text costs).
+    pub(crate) whitespace_indicators: Option<Rc<WhitespaceIndicators>>,
     /// Whitespace indicators: (row, x_position, is_tab)
     pub(crate) whitespace_chars: Vec<(usize, Pixels, bool)>,
     /// Whether any run of this line carries a background color, so [`Self::paint_background`]
@@ -1282,7 +1284,7 @@ impl LineLayout {
         self
     }
 
-    pub(crate) fn with_whitespaces(mut self, indicators: Option<WhitespaceIndicators>) -> Self {
+    pub(crate) fn with_whitespaces(mut self, indicators: Option<Rc<WhitespaceIndicators>>) -> Self {
         self.whitespace_indicators = indicators;
         let Some(indicators) = self.whitespace_indicators.as_ref() else {
             return self;

@@ -7,7 +7,7 @@
 //! a frame that scrolls to the caret still has its text. Only the planned
 //! bytes are styled and shaped; the rest of the line is measured.
 
-use std::{ops::Range, sync::Arc};
+use std::{ops::Range, rc::Rc, sync::Arc};
 
 use gpui::{Bounds, Hsla, Pixels, ShapedLine, SharedString, TextRun, Window, px};
 use smallvec::SmallVec;
@@ -208,7 +208,7 @@ pub(crate) fn layout_long_line<M: InputModeKind>(
     bg_segments: &[(Range<usize>, Hsla)],
     display_line_start: usize,
     font_size: Pixels,
-    whitespace_indicators: Option<WhitespaceIndicators>,
+    whitespace_indicators: Option<Rc<WhitespaceIndicators>>,
     block_height: Pixels,
     window: &mut Window,
 ) -> LineLayout {

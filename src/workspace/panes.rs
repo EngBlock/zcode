@@ -208,9 +208,26 @@ impl Workspace {
     fn activated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.set_window_title(&self.title());
         window.set_window_edited(self.buffers.iter().any(|b| b.dirty));
+        self.release_hidden_layouts(cx);
         self.reveal_active_in_tree(cx);
         self.follow_counterparts(self.active_pane, window, cx);
         cx.notify();
+    }
+
+    /// Editors in tabs no pane shows let go of their last layout; the shown
+    /// ones keep theirs. Deferred, as one of them may be what's updating.
+    fn release_hidden_layouts(&self, cx: &mut Context<Self>) {
+        let hidden: Vec<_> = self
+            .panes
+            .iter()
+            .flat_map(|pane| pane.items.iter().enumerate().filter(move |(ix, _)| *ix != pane.active))
+            .filter_map(|(_, item)| item.editor().map(|item| item.editor.clone()))
+            .collect();
+        cx.defer(move |cx| {
+            for editor in hidden {
+                editor.update(cx, |state, _| state.release_layout());
+            }
+        });
     }
 
     /// A pane's editor got focus (a click, Tab): its pane is the focused one.

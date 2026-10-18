@@ -1497,7 +1497,7 @@ impl<M: InputModeKind> TextElement<M> {
         style: &TextStyle,
         window: &mut Window,
         _cx: &App,
-    ) -> Option<WhitespaceIndicators> {
+    ) -> Option<Rc<WhitespaceIndicators>> {
         if !state.show_whitespaces {
             return None;
         }
@@ -1540,7 +1540,7 @@ impl<M: InputModeKind> TextElement<M> {
             None,
         );
 
-        Some(WhitespaceIndicators { space, tab })
+        Some(Rc::new(WhitespaceIndicators { space, tab }))
     }
 
     /// Return (line_number_width, line_number_len)
@@ -2279,7 +2279,7 @@ impl<M: InputModeKind> TextElement<M> {
         font_size: Pixels,
         runs: &[TextRun],
         bg_segments: &[(Range<usize>, Hsla)],
-        whitespace_indicators: Option<WhitespaceIndicators>,
+        whitespace_indicators: Option<Rc<WhitespaceIndicators>>,
         annotations: &AnnotationLayout,
         long_plans: &[Option<LongPlan>],
         window: &mut Window,

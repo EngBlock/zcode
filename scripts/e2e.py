@@ -4707,6 +4707,10 @@ def long_line_checks():
         assert s["path"] == big_log and s["line"] == 240_001 and s["no_syntax_tree"] == "Large", {k: s[k] for k in ("path", "line", "no_syntax_tree")}
         paged = json.loads(z.run("bench keys pageup pageup pageup pageup pageup")[-1])
         print(f"    a 20 MB log: five Page Ups {paged['work_ms']:.1f} ms of work")
+        # Hidden tabs let go of their layout; shown again, a tab lays out again.
+        z.run(f"open {small_swift}:5", "wait 300", "keys down", "wait 100")
+        s = z.dump()["active"]
+        assert s["laid_out_bytes"] > 300 and s["line"] == 6 and s["probe"]["caret"], {k: s[k] for k in ("laid_out_bytes", "line")}
 
     try:
         check("Long lines: typing at the end of a minified line and Page Down cost about what a short file's do, and only what's on screen is shaped", typing_and_page_down)
