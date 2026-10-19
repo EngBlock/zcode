@@ -26,6 +26,10 @@ rounds on `firefox-ios/Client.xcodeproj` (~11,000 files, ~2,100 Swift files):
 * sourcekit-lsp ready and the first semantic tokens for a 5,000-line file
 * typing in that file and in a 9,400-line one, a keystroke's work and its
   time to the next tick
+* tabs: the app's 20 largest Swift files (~27,000 lines) opened one after
+  another, sourcekit-lsp's memory with them, and Quick Help on the first
+  once it's shown again (sourcekit-lsp keeps only the shown file and the
+  four shown last open, so it reopens it)
 * files far larger than the app's, generated into the cache: typing near
   the end of a 50,000-line Swift file, and five Page Downs in a 15 MB JSON
   file (a keystroke's and the Page Downs' work); typing at the end of a
@@ -108,9 +112,14 @@ GATES = [
     ("typing_minified_ms", "ms", 16, 1.5, 3),
     ("pagedown_minified_ms", "ms", 50, 1.5, 5),
     ("lsp_footprint_mb", "MB", 2000, None, None),
+    # SourceKitService's footprint swings by ~1 GB as macOS takes back its
+    # emptied pages (docs/scale.md, Performance batch 4): a ceiling only.
+    ("tabs_lsp_footprint_mb", "MB", 2000, None, None),
 ]
 # Reported beside the gates, never gated.
-REPORTED = ["files", "find_common_results", "find_many_results", "typing_drawn_ms", "typing_big_drawn_ms", "open_quickly_key_drawn_ms", "navigator_frame_drawn_ms", "find_frame_drawn_ms", "legacy"]
+REPORTED = ["files", "find_common_results", "find_many_results", "typing_drawn_ms", "typing_big_drawn_ms", "open_quickly_key_drawn_ms", "navigator_frame_drawn_ms", "find_frame_drawn_ms", "tab_reopen_hover_s", "legacy"]
+# Tabs: how many of the app's largest Swift files are opened.
+TABS = 20
 
 
 def arg(name, default=None):
@@ -278,6 +287,28 @@ def minified_file():
     return path
 
 
+def largest_swift_files(project, n=TABS):
+    """The `n` Swift files of the app's Client folder with the most lines."""
+    client = os.path.join(os.path.dirname(project), "Client")
+    sizes = []
+    for folder, _, names in os.walk(client):
+        for name in names:
+            if name.endswith(".swift"):
+                path = os.path.join(folder, name)
+                with open(path, "rb") as f:
+                    sizes.append((-f.read().count(b"\n"), path))
+    return [path for _, path in sorted(sizes)[:n]]
+
+
+def declaration_line(path):
+    """The first line declaring a type or extension at the top level (1-based)."""
+    with open(path) as f:
+        for number, line in enumerate(f, 1):
+            if line.startswith(("extension ", "class ", "struct ", "final class ", "enum ")):
+                return number
+    return 1
+
+
 def frames(z, n=5):
     """A forced redraw's work and its time to on screen, medians of `n`."""
     samples = [json.loads(z.run("bench frame")[-1]) for _ in range(n)]
@@ -425,6 +456,29 @@ def session(binary, project, index_cap=None):
         undo_all(z, status)
         z.run("keys cmd-w", "wait 300")
         r["lsp_footprint_mb"] = status()["memory"]["language_server_mb"]
+
+        # Tabs: the app's largest Swift files one after another. With all of
+        # them open sourcekit-lsp held ~1.5 GB; it keeps the shown one and the
+        # four shown last now (docs/scale.md, Performance batch 4), so the
+        # first is opened again when it's shown again: Quick Help on a name
+        # in it then waits for its AST.
+        tabs = largest_swift_files(project)
+        for path in tabs:
+            z.run(f"open {path}", "wait 200")
+        for _ in range(60):
+            if not status()["lsp_progress"]:
+                break
+            time.sleep(1)
+        time.sleep(20)
+        r["tabs_lsp_footprint_mb"] = status()["memory"]["language_server_mb"]
+        z.run(f"open {tabs[0]}:{declaration_line(tabs[0])}", "keys alt-right alt-right alt-left")
+        started = time.time()
+        try:
+            hover = json.loads(z.run("hover", timeout=120)[-1])
+            r["tab_reopen_hover_s"] = round(time.time() - started, 2) if hover.get("hover") else None
+        except RuntimeError:
+            r["tab_reopen_hover_s"] = None
+        z.run("keys cmd-alt-w", "wait 300", "keys cmd-w", "wait 300")
 
         # Typing near the end of a 50,000-line file: what an edit costs
         # beyond the rows shown (fold candidates, the language server's
