@@ -20,10 +20,12 @@ retry; see `WindowInvalidator` in gpui-pre's `src/window.rs`), for
 platforms that stop asking for frames while idle (upstream: the web). The
 macOS window now provides one:
 
-* `step` counts the frame requests since the last demand, and after
-  `IDLE_FRAMES_BEFORE_PAUSE` (4: the frame that served the demand and three
-  more, ~25 ms at 120 Hz) stops the frame source (`note_frame_request`,
-  marking it `paused_while_idle`).
+* `step` counts the frame requests since the last demand, and once there
+  have been `IDLE_FRAMES_BEFORE_PAUSE` (4: the frame that served the demand
+  and three more) over `IDLE_TIME_BEFORE_PAUSE` (33 ms) at least, stops the
+  frame source (`note_frame_request`, marking it `paused_while_idle`). The
+  time matters: a restarted display link can tick in a burst, and typing a
+  key every few milliseconds mustn't pause it between keys.
 * The waker (`frame_waker` → `frame_demanded`) resets the count and, if the
   source was paused for idleness, starts it again and asks for one frame on
   the main queue at once (`WindowFrameSource::request_frame`, the same
@@ -58,7 +60,7 @@ idle). If it doesn't, re-apply the diff below; drop this directory and the
 `[patch.crates-io]` entry once it does.
 
 ```diff
-diff -ru a/Cargo.toml gpui-pre-macos/Cargo.toml
+diff -ru a/Cargo.toml b/Cargo.toml
 --- a/Cargo.toml	2006-07-24 03:21:28
 +++ b/Cargo.toml	2026-10-19 00:50:42
 @@ -50,6 +50,11 @@
@@ -73,7 +75,7 @@ diff -ru a/Cargo.toml gpui-pre-macos/Cargo.toml
  [lib]
  name = "gpui_macos"
  path = "src/gpui_macos.rs"
-diff -ru a/src/display_link.rs gpui-pre-macos/src/display_link.rs
+diff -ru a/src/display_link.rs b/src/display_link.rs
 --- a/src/display_link.rs	2006-07-24 03:21:28
 +++ b/src/display_link.rs	2026-10-19 00:48:48
 @@ -333,6 +333,22 @@
@@ -99,41 +101,47 @@ diff -ru a/src/display_link.rs gpui-pre-macos/src/display_link.rs
      pub fn take_signal(&self) -> Option<(Instant, FrameRequestSource)> {
          self.signal.take()
      }
-diff -ru a/src/window.rs gpui-pre-macos/src/window.rs
+diff -ru a/src/window.rs b/src/window.rs
 --- a/src/window.rs	2006-07-24 03:21:28
-+++ b/src/window.rs	2026-10-19 00:50:42
-@@ -655,6 +655,11 @@
++++ b/src/window.rs	2026-10-19 03:45:57
+@@ -655,6 +655,14 @@
      }
  }
  
 +/// zcode patch: frame requests in a row with no frame demand before a
-+/// window's frame source pauses (~25 ms at 120 Hz). The frame that served the
-+/// last demand counts as the first.
++/// window's frame source pauses, and how long since the last demand at
++/// least: a restarted display link can tick several times in a burst, and
++/// typing a key every few milliseconds mustn't pause it between keys. The
++/// frame that served the last demand counts as the first request.
 +const IDLE_FRAMES_BEFORE_PAUSE: u32 = 4;
++const IDLE_TIME_BEFORE_PAUSE: std::time::Duration = std::time::Duration::from_millis(33);
 +
  struct MacWindowState {
      handle: AnyWindowHandle,
      foreground_executor: ForegroundExecutor,
-@@ -666,6 +671,10 @@
+@@ -666,6 +674,12 @@
      cursor_style: CursorStyle,
      cursor_visible: Arc<AtomicBool>,
      frame_source: Option<WindowFrameSource>,
 +    // zcode patch: frame requests since the last frame demand (GPUI's frame
-+    // waker), and whether the frame source was paused for want of any.
++    // waker) and when that was, and whether the frame source was paused for
++    // want of any.
 +    idle_frames: u32,
++    last_demand: std::time::Instant,
 +    paused_while_idle: bool,
      renderer: renderer::Renderer,
      request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
      event_callback: Option<Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>>,
-@@ -835,6 +844,7 @@
+@@ -835,6 +849,8 @@
  
      fn start_display_link(&mut self) {
          self.stop_display_link();
 +        self.idle_frames = 0;
++        self.last_demand = std::time::Instant::now();
          unsafe {
              if !self
                  .native_window
-@@ -856,11 +866,47 @@
+@@ -856,11 +872,50 @@
      }
  
      fn stop_display_link(&mut self) {
@@ -144,11 +152,13 @@ diff -ru a/src/window.rs gpui-pre-macos/src/window.rs
      }
  
 +    /// zcode patch: counts a frame request, and pauses the frame source once
-+    /// `IDLE_FRAMES_BEFORE_PAUSE` have come without any frame demand, so an
-+    /// idle window stops waking the main thread on every display refresh.
++    /// `IDLE_FRAMES_BEFORE_PAUSE` have come without any frame demand, over
++    /// `IDLE_TIME_BEFORE_PAUSE` at least, so an idle window stops waking the
++    /// main thread on every display refresh.
 +    fn note_frame_request(&mut self) {
 +        self.idle_frames = self.idle_frames.saturating_add(1);
 +        if self.idle_frames >= IDLE_FRAMES_BEFORE_PAUSE
++            && self.last_demand.elapsed() >= IDLE_TIME_BEFORE_PAUSE
 +            && self
 +                .frame_source
 +                .as_ref()
@@ -165,6 +175,7 @@ diff -ru a/src/window.rs gpui-pre-macos/src/window.rs
 +    /// occlusion stays stopped until the window is visible again.
 +    fn frame_demanded(&mut self) {
 +        self.idle_frames = 0;
++        self.last_demand = std::time::Instant::now();
 +        if !self.paused_while_idle {
 +            return;
 +        }
@@ -181,16 +192,17 @@ diff -ru a/src/window.rs gpui-pre-macos/src/window.rs
      fn is_maximized(&self) -> bool {
          fn rect_to_size(rect: NSRect) -> Size<Pixels> {
              let NSSize { width, height } = rect.size;
-@@ -1100,6 +1146,8 @@
+@@ -1100,6 +1155,9 @@
                  cursor_style: CursorStyle::Arrow,
                  cursor_visible,
                  frame_source: None,
 +                idle_frames: 0,
++                last_demand: std::time::Instant::now(),
 +                paused_while_idle: false,
                  renderer: renderer::new_renderer(
                      renderer_context,
                      native_window as *mut _,
-@@ -2022,6 +2070,27 @@
+@@ -2022,6 +2080,27 @@
          self.0.as_ref().lock().request_frame_callback = Some(callback);
      }
  
@@ -218,7 +230,7 @@ diff -ru a/src/window.rs gpui-pre-macos/src/window.rs
      fn on_input(&self, callback: Box<dyn FnMut(PlatformInput) -> gpui::DispatchEventResult>) {
          self.0.as_ref().lock().event_callback = Some(callback);
      }
-@@ -3359,7 +3428,9 @@
+@@ -3359,7 +3438,9 @@
              signal_source,
              ..Default::default()
          });

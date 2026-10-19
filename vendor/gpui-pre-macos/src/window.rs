@@ -656,9 +656,12 @@ unsafe fn apply_simple_fullscreen_plan(
 }
 
 /// zcode patch: frame requests in a row with no frame demand before a
-/// window's frame source pauses (~25 ms at 120 Hz). The frame that served the
-/// last demand counts as the first.
+/// window's frame source pauses, and how long since the last demand at
+/// least: a restarted display link can tick several times in a burst, and
+/// typing a key every few milliseconds mustn't pause it between keys. The
+/// frame that served the last demand counts as the first request.
 const IDLE_FRAMES_BEFORE_PAUSE: u32 = 4;
+const IDLE_TIME_BEFORE_PAUSE: std::time::Duration = std::time::Duration::from_millis(33);
 
 struct MacWindowState {
     handle: AnyWindowHandle,
@@ -672,8 +675,10 @@ struct MacWindowState {
     cursor_visible: Arc<AtomicBool>,
     frame_source: Option<WindowFrameSource>,
     // zcode patch: frame requests since the last frame demand (GPUI's frame
-    // waker), and whether the frame source was paused for want of any.
+    // waker) and when that was, and whether the frame source was paused for
+    // want of any.
     idle_frames: u32,
+    last_demand: std::time::Instant,
     paused_while_idle: bool,
     renderer: renderer::Renderer,
     request_frame_callback: Option<Box<dyn FnMut(RequestFrameOptions)>>,
@@ -845,6 +850,7 @@ impl MacWindowState {
     fn start_display_link(&mut self) {
         self.stop_display_link();
         self.idle_frames = 0;
+        self.last_demand = std::time::Instant::now();
         unsafe {
             if !self
                 .native_window
@@ -873,11 +879,13 @@ impl MacWindowState {
     }
 
     /// zcode patch: counts a frame request, and pauses the frame source once
-    /// `IDLE_FRAMES_BEFORE_PAUSE` have come without any frame demand, so an
-    /// idle window stops waking the main thread on every display refresh.
+    /// `IDLE_FRAMES_BEFORE_PAUSE` have come without any frame demand, over
+    /// `IDLE_TIME_BEFORE_PAUSE` at least, so an idle window stops waking the
+    /// main thread on every display refresh.
     fn note_frame_request(&mut self) {
         self.idle_frames = self.idle_frames.saturating_add(1);
         if self.idle_frames >= IDLE_FRAMES_BEFORE_PAUSE
+            && self.last_demand.elapsed() >= IDLE_TIME_BEFORE_PAUSE
             && self
                 .frame_source
                 .as_ref()
@@ -894,6 +902,7 @@ impl MacWindowState {
     /// occlusion stays stopped until the window is visible again.
     fn frame_demanded(&mut self) {
         self.idle_frames = 0;
+        self.last_demand = std::time::Instant::now();
         if !self.paused_while_idle {
             return;
         }
@@ -1147,6 +1156,7 @@ impl MacWindow {
                 cursor_visible,
                 frame_source: None,
                 idle_frames: 0,
+                last_demand: std::time::Instant::now(),
                 paused_while_idle: false,
                 renderer: renderer::new_renderer(
                     renderer_context,

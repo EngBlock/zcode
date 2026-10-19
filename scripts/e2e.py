@@ -4691,12 +4691,18 @@ def long_line_checks():
         z.run("keys end", "type x(", "wait 100")
         assert z.dump()["active"]["line_text"].endswith("* 2 }x()"), z.dump()["active"]["line_text"]
         undo_all()
-        # Vim's text objects go by the text too.
+        # Vim's text objects go by the text too. Turning Vim on writes the
+        # run's settings.json, which later checks expect not to exist yet.
+        settings_file = json.loads(z.run("settings paths")[-1])["settings"]
+        had_settings = os.path.exists(settings_file)
         z.run("vim on", "wait 200", "keys home", "type f(ci(", "type b: Int", "keys escape", "wait 100")
         try:
             assert z.dump()["active"]["line_text"] == "func value19(b: Int) -> Int { return (a + 19) * 2 }", z.dump()["active"]["line_text"]
         finally:
             z.run("keys escape", "vim off", "wait 100")
+            if not had_settings and os.path.exists(settings_file):
+                os.remove(settings_file)
+                z.run("wait 300")
         undo_all()
         z.run(f"open {minified}", "wait 500")
         assert z.dump()["active"]["no_syntax_tree"] == "Minified", z.dump()["active"]
@@ -4773,6 +4779,7 @@ def idle_checks(samples):
                        timeout=20, interval=0.3)
         assert not s["file_watching"]["failed"], s["file_watching"]
         paths = json.loads(z.run("settings paths")[-1])
+        had_settings = os.path.exists(paths["settings"])
         z.run(f"open {greeter}", "wait 300")
         with open(greeter, "a") as f:
             f.write("// changed outside zcode\n")
@@ -4784,8 +4791,12 @@ def idle_checks(samples):
         start = time.time()
         z.wait_for(lambda s: s["settings"]["tab_size"] == 3, timeout=10, interval=0.1)
         applied = time.time() - start
-        with open(paths["settings"], "w") as f:
-            f.write("{}\n")
+        # The run's settings.json is the later checks' to make.
+        if had_settings:
+            with open(paths["settings"], "w") as f:
+                f.write("{}\n")
+        else:
+            os.remove(paths["settings"])
         print(f"    a file changed outside: read again in {reloaded:.2f} s; settings.json: applied in {applied:.2f} s")
         # Polling took up to 3 s and 1 s.
         assert reloaded < 2 and applied < 2, (reloaded, applied)
@@ -5646,12 +5657,19 @@ def prediction_checks(samples):
         revert()
         z.run("settings set edit_predictions.provider \"claude\"", "wait 300")
         print(f"    a keystroke's work, median / p95: predictions on {on['work_median_ms']:.1f} / {on['work_p95_ms']:.1f} ms, "
-              f"off {off['work_median_ms']:.1f} / {off['work_p95_ms']:.1f} ms (to the next tick: {on['median_ms']:.1f}, "
+              f"off {off['work_median_ms']:.1f} / {off['work_p95_ms']:.1f} ms; to the frame on screen: "
+              f"{on['drawn_median_ms']:.1f}, {off['drawn_median_ms']:.1f} ms (to the next tick: {on['median_ms']:.1f}, "
               f"{off['median_ms']:.1f} ms)")
-        # The work, not the time to the next tick: where a keystroke lands
-        # in the display's cadence is luck, and decides the tick figure.
-        on_ms, off_ms = on["work_median_ms"], off["work_median_ms"]
-        assert on_ms < 16 and on_ms <= max(off_ms * 1.5, off_ms + 2), (on, off)
+        # Not the time to the next tick, which is luck: where a keystroke
+        # lands in the display's cadence. A keystroke's frame either waits
+        # for the next tick and then draws, or (typing in step with the
+        # display) draws at once and waits to present; the work counts
+        # only the second wait and the frame on screen both, so either
+        # alone flips with the cadence. Level by either is level.
+        def level(key, factor, slack):
+            return on[key] <= max(off[key] * factor, off[key] + slack)
+        assert on["work_median_ms"] < 16 and on["drawn_median_ms"] < 20, (on, off)
+        assert level("work_median_ms", 1.5, 2) or level("drawn_median_ms", 1.25, 2), (on, off)
 
     def key_in_no_log():
         z.quit()

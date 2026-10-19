@@ -402,6 +402,13 @@ Idle over 60 s, no file open (two alternating launches each, medians):
 `master`'s ~145 wakeups a second are the display link's (120 Hz) and the
 polls'; now less than one a second remains, mostly the memory sampler.
 
+A keystroke after a pause draws at once rather than at the restarted
+link's first tick: 20 single keystrokes each after 300 ms idle reached the
+screen in 6.8–6.9 ms against 7.4–7.7 ms on `master` (11.5–12.1 ms when
+waiting for the link instead, which is why the waker asks for a frame);
+the pause needs four frame requests over 33 ms without demand, since a
+restarted link can tick in a burst.
+
 With an editor focused and its caret blinking (the e2e check, whose
 control channel reads a file every 150 ms): 24 interrupt wakeups a second
 against 161 on `master`. A file changed outside zcode is read again in
@@ -477,8 +484,13 @@ build's products (which sourcekit-lsp's arguments point at) lacked the
 package's modules and Jump to Definition found nothing; a build that stops
 it now starts it again when it's done. "Predictions: typing latency…"
 compared the time to the next display tick, which depends on where each
-keystroke lands in the display's cadence; it compares the keystroke's
-work.
+keystroke lands in the display's cadence. It now takes the keystroke's
+work or the time to the frame on screen: a keystroke's frame either waits
+for the next tick and then draws, or, typing in step with the display,
+draws at once and waits to present, which the work counts and the tick
+doesn't (seen on this branch in about one run in two: work 7 ms with 0.3 ms
+to the tick, against 3 ms and 4 ms; on screen 7.0 ms either way, as on
+`master`).
 
 ## About the memory numbers
 

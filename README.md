@@ -433,7 +433,8 @@ if zcode is not faster.
   the main thread on every refresh (120 Hz here) to find nothing to draw; a
   patch (`vendor/gpui-pre-macos/ZCODE-PATCH.md`) pauses it after four frame
   requests with nothing asked for, and GPUI's frame waker (any notify,
-  refresh, animation frame) starts it again with a frame at once. Open
+  refresh, animation frame) starts it again with a frame at once (a
+  keystroke after a pause is on screen in 6.8 ms against 7.4–7.7 ms). Open
   files, settings files, the git directory and the build server's project
   files are looked at when FSEvents says something under them changed
   (`src/fs_watch.rs`, one stream on a thread of its own started 1.5 s after
