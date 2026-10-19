@@ -1,0 +1,123 @@
+# A GitHub release for each `v*` tag: the release build, signed with the
+# Developer ID, notarized and stapled by scripts/package.py, as the zip (what
+# zcode ▸ Check for Updates… installs), the dmg and appcast.json. The update
+# feed is releases/latest/download/appcast.json, so a tag with a hyphen
+# (v0.3.0-beta.1) is published as a prerelease and never offered as an update.
+# Run by hand (Actions ▸ Release ▸ Run workflow), it does everything but
+# publish and keeps the zip and dmg as the run's artifacts: a check of the
+# secrets and notarization without a release.
+#
+# Secrets (Settings ▸ Secrets and variables ▸ Actions):
+#   DEVELOPER_ID_P12           the "Developer ID Application" certificate and
+#                              its private key, exported as .p12, base64
+#   DEVELOPER_ID_P12_PASSWORD  the .p12's password
+#   ASC_API_KEY_P8             an App Store Connect API key (.p8, Developer
+#                              role) for notarytool
+#   ASC_API_KEY_ID             its key ID
+#   ASC_API_ISSUER             its issuer ID
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  release:
+    runs-on: macos-26
+    env:
+      TAG: ${{ github.ref_name }}
+      # Baked into the binary (src/updates.rs), so a fork's releases announce
+      # themselves.
+      ZCODE_UPDATE_FEED: https://github.com/${{ github.repository }}/releases/latest/download/appcast.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag is Cargo.toml's version
+        if: github.ref_type == 'tag'
+        run: |
+          VERSION=$(python3 -I -c 'import sys; sys.path.insert(0, "scripts"); import package; print(package.version_from_cargo())')
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error::the tag is $TAG but Cargo.toml says $VERSION"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # GPUI compiles its shaders with `xcrun metal`, a separate download
+      # since Xcode 26.
+      - name: Metal toolchain
+        run: xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+
+      - run: cargo build --release
+
+      - name: Signing keychain and notary profile
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER: ${{ secrets.ASC_API_ISSUER }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          PASSWORD=$(uuidgen)
+          security create-keychain -p "$PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$PASSWORD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$PASSWORD" "$KEYCHAIN" > /dev/null
+          rm "$RUNNER_TEMP/developer-id.p12"
+          echo "$ASC_API_KEY_P8" > "$RUNNER_TEMP/notary.p8"
+          xcrun notarytool store-credentials zcode-release --key "$RUNNER_TEMP/notary.p8" \
+            --key-id "$ASC_API_KEY_ID" --issuer "$ASC_API_ISSUER" --keychain "$KEYCHAIN"
+          rm "$RUNNER_TEMP/notary.p8"
+
+      - name: Package
+        env:
+          ZCODE_SIGN_IDENTITY: Developer ID Application
+          ZCODE_NOTARY_PROFILE: zcode-release
+        run: |
+          python3 scripts/package.py release \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" \
+            --build "$GITHUB_RUN_NUMBER"
+
+      # A draft until every asset is up, so releases/latest never names a
+      # release without appcast.json.
+      - name: Keep the archives
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcode
+          path: |
+            target/release/bundle/*.zip
+            target/release/bundle/*.dmg
+            target/release/bundle/appcast.json
+
+      - name: Publish
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=${TAG#v}
+          cd target/release/bundle
+          PRERELEASE=
+          case "$TAG" in *-*) PRERELEASE=--prerelease ;; esac
+          gh release create "$TAG" --draft --verify-tag --generate-notes --title "zcode $VERSION" $PRERELEASE \
+            "zcode-$VERSION.zip" "zcode-$VERSION.dmg" appcast.json
+          gh release edit "$TAG" --draft=false
+
+      - name: Remove the keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true
