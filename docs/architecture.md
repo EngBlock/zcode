@@ -129,6 +129,8 @@ scripts/
   fake_distribute.py  xcodebuild -exportArchive, notarytool and stapler for Distribute App's tests: exports
                     copy the app, uploads and notarization are pretended (nothing reaches Apple)
   appkit_floor.swift  minimal native AppKit app, the cold-launch reference
+  background_window.swift  a small window brought to the front, for the idle checks of a window behind
+                    another app's
   package.py        zcode as a Mac app: bundle (Info.plist, icon, the login item's agent), sign, notarize,
                     zip, dmg, appcast, release; bundle/ holds the icon's drawing (make_icon.swift), the
                     entitlements and the agent's plist

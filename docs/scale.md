@@ -492,13 +492,134 @@ doesn't (seen with the change in about one run in two: work 7 ms with 0.3 ms
 to the tick, against 3 ms and 4 ms; on screen 7.0 ms either way, as on
 before).
 
+## Performance batch 4: hidden tabs, the caret and SourceKitService
+
+Measured against a release build of `main` from before the change
+(`041d986`) on firefox-ios with the index build off (`ZCODE_INDEX_BUILD=0`),
+M4 Max, macOS 27.2, the load average beside each. Footprints are `vmmap`'s
+physical footprint; sourcekit-lsp's SourceKitService is the one in its
+launchd domain (below). Xcode 27 was running throughout with firefox-ios
+open, its own SourceKitService holding ~1.3 GB.
+
+**The caret kept every window drawing.** zcode's editor
+(`crates/zcode-editor/src/base/blink_cursor.rs`) and gpui-base's text fields
+blinked the caret every 500 ms for as long as they had focus. Each blink is
+a frame, and while a window draws macOS attributes ~230 MB of compositor
+memory to the process ("owned unmapped (graphics)"), released ~1.5 s after
+the last frame, so a window with an editor never let go of it. The caret now
+rests, shown, after 20 blinks (10 s, GTK's `gtk-cursor-blink-timeout`)
+without a key or click, and stops when the window deactivates (GPUI's blur
+on deactivation already stopped it, except with a context menu open);
+gpui-base is vendored for its copy (`vendor/gpui-base/ZCODE-PATCH.md`). A
+one-file folder, frontmost and idle (load 1–6):
+
+| | Before | Now |
+|---|---|---|
+| Compositor memory, 16–26 s after the last key | 258–260 MB | 28 MB (from ~12 s) |
+| Footprint | 382 MB | 148 MB |
+| Editor paints a second | 2 | 0 |
+| Interrupt wakeups a second (control channel included) | 18–20 | 7 |
+
+Behind another app's window (zcode's still visible) both builds draw
+nothing and hold 28 MB; the claim that a background window kept drawing
+didn't reproduce, since GPUI blurs a deactivated window's focus. With 20
+firefox-ios tabs open and the window idle 90 s, zcode's footprint was 233 MB
+against 475 MB.
+
+**The status bar counted every SourceKitService on the machine.**
+`sample_language_servers` added every process whose path ends in
+`/SourceKitService`, Xcode's included: "LSP 2.29 GB" with 20 firefox-ios
+tabs, of which ~1.3 GB was Xcode's, and LSP 1.32 GB for ZKit. sourcekitd's
+XPC service runs in its client's launchd domain (Xcode's in its SKAgent's),
+so `launchctl print pid/<sourcekit-lsp>` names zcode's, asked again only
+when the machine's SourceKitService processes or zcode's servers change.
+The parent pid is launchd's, and the responsible pid doesn't tell them
+apart: an app started from a terminal is responsible to the terminal, and
+so were Xcode and zcode here. ZKit now shows 29 MB (sourcekit-lsp 10 MB,
+its helper 19 MB); `scripts/bench.py`'s `lsp_footprint_mb` and the new
+`tabs_lsp_footprint_mb` are zcode's own.
+
+**sourcekit-lsp kept every tab's document open.** zcode now tells it which
+files the panes show (`LspStore::set_shown`, from what the editor area
+draws) and closes the rest there (`textDocument/didClose`), except the four
+shown last (`KEEP_RECENT`: a file and its test, a header and its
+implementation, the last definition jumped to) and any with unsaved changes,
+whose text the server must keep seeing in other files' diagnostics and
+completions. zcode keeps a closed document's text, version and
+diagnostics; it's opened again with the buffer's current text when it's
+shown, edited, or asked about (formatting, a command, an agent's tool), and
+semantic tokens and inlay hints are asked for again then. Only sourcekit-lsp
+closes hidden documents (and clangd behind it): the web's servers hold
+little per document, and tsserver can drop and rebuild a closed file's
+inferred project. Restored tabs open at the server only where they're
+shown, as `open_document` now waits for the end of the update.
+
+What it saves is less than the 55 MB a tab that SourceKitService grew by
+suggested. sourcekitd keeps memory past a document's close, and macOS takes
+back a process's emptied malloc pages on its own schedule, so the
+footprint at a given moment says little. The firefox-ios Client folder's
+40 largest Swift files shown one after another, 1.5 s apart, SourceKitService
+20 s after the 5th, 10th, 20th, 30th and 40th (two runs each, load 1–6):
+
+| Files shown | Live heap (`heap`), before | Now | Footprint, before | Now |
+|---|---|---|---|---|
+| 5 | 322 MB | 322 MB | 352 MB | 352–354 MB |
+| 10 | 1,516–1,536 MB | 884 MB | 928–1,024 MB | 954–1,434 MB |
+| 20 | 1,425–1,434 MB | 842 MB | 973–1,126 MB | 916–1,434 MB |
+| 40 | 1,382–1,434 MB | 822 MB | 220–344 MB | 401–640 MB |
+
+The live heap is ~0.6 GB smaller from the tenth file on and stays there;
+the footprint swings by a gigabyte in both builds as emptied pages go
+(the "Malloc Small (empty)" regions held 25–490 MB at these moments). With
+the 20 largest open in turn, waited 90 s on (one round each, load 2–5):
+sourcekit-lsp 98 → 74 MB, SourceKitService 787 MB before against 892 MB
+now (931 and 1,229 MB in a second round that overlapped another run), the
+status bar's figure 2.29 GB → 979 MB (the attribution above). What
+sourcekit-lsp diagnoses again when build settings change is its open
+documents, so that work shrinks with them too.
+
+The cost is reopening. Showing the 5,166-line view controller again after
+19 other files, its diagnostics came back 1.27–1.29 s later (they and its
+semantic tokens are shown meanwhile as they were); a request in that time
+(Quick Help, completion) waits for its AST, as it would on first open.
+`scripts/bench.py --skip-index`, three alternating rounds against `main`
+(load 3–17): every gate held but two. The cold open read 422 against
+295 ms, the branch's launches under load just after `main`'s build; 12
+alternating launches each afterwards gave 275 against 277 ms (load 5–10).
+`tabs_lsp_footprint_mb` read 1,351 MB against its first ceiling of 1,200 MB,
+which is now 2,000 MB, as that footprint swings by a gigabyte. Typing,
+frames, searches and sourcekit-lsp's readiness were within 0.1–0.4 ms or
+0.1 s of `main`. Changed: the footprint after the search 168 against 405 MB
+(the Find field's caret rests), `lsp_footprint_mb` 267 against 1,870 MB and
+`tabs_lsp_footprint_mb` 1,351 against 3,865 MB (Xcode's SourceKitService no
+longer counted), and Quick Help on the first of the 20 tabs, shown again,
+in 1.09 against 6.43 s: reopening it cost less than `main`'s sourcekit-lsp,
+busy with 20 open documents, took to answer.
+
+The e2e checks found one more: a file opened once FSEvents covered the
+files open before wasn't followed until one of those changed or 30 s
+passed (the loop that checks the files' times set its paths only when it
+woke), so it wasn't read again after a change outside zcode (in a Swift
+package, once sourcekit-lsp was ready); opening a buffer sets them now.
+
+New e2e checks: the caret rests 10 s after a key and nothing is drawn
+(compositor memory under 100 MB); behind another app's window
+(`scripts/background_window.swift`) nothing is drawn and the caret blinks
+again in front; the language servers' memory leaves out a sourcekit-lsp of
+the suite's own; hidden tabs are closed at sourcekit-lsp with their issues
+kept, an unsaved one stays open, a tab shown again reopens with its text and
+gets its diagnostics and tokens back, a file changed on disk while closed
+reopens with the new text; a file opened later is followed through FSEvents.
+
 ## About the memory numbers
 
-The footprint after the search includes over 200 MB of compositor memory that
-macOS attributes to a window while it redraws. The Find field's caret
-blinks, so the window keeps redrawing (see "About memory" in `docs/performance.md`).
-Resident memory, 175 MB, is the better figure for what the search
-costs. Both are gated.
+The footprint after the search included over 200 MB of compositor memory that
+macOS attributes to a window while it redraws: the Find field's caret
+blinked, so the window kept redrawing (see "About memory" in
+`docs/performance.md`). The caret rests 10 s after the last key now, and the
+measurement takes the lowest sample over 12 s, so the figure falls by about
+that much once the last sample comes after the caret has rested. Resident
+memory is the better figure for what the search costs. Both are gated.
 
 ## Limits
 
