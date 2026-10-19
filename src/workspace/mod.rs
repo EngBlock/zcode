@@ -207,6 +207,8 @@ pub struct Workspace {
     activity_ticker: Option<Task<()>>,
     /// FSEvents watches the project's tree whole (`fs_watch`).
     _fs_root: crate::fs_watch::Root,
+    /// The open files, as `watch_files` follows them (`follow_open_files`).
+    open_file_changes: Rc<crate::fs_watch::Changes>,
     outline_task: Option<Task<()>>,
     pub(super) index_refresh: Option<Task<()>>,
 }
@@ -379,6 +381,7 @@ impl Workspace {
             _tasks: vec![],
             activity_ticker: None,
             _fs_root: crate::fs_watch::Root::new(&project.root),
+            open_file_changes: Rc::new(crate::fs_watch::Changes::new(vec![])),
             outline_task: None,
             index_refresh: None,
         };
@@ -494,8 +497,8 @@ impl Workspace {
     /// FSEvents says one may have changed (`fs_watch`, which starts after the
     /// window does), else every few seconds.
     fn watch_files(&mut self, cx: &mut Context<Self>) {
+        let changes = self.open_file_changes.clone();
         let task = cx.spawn(async move |this, cx| {
-            let changes = crate::fs_watch::Changes::new(vec![]);
             loop {
                 changes.wait(Duration::from_secs(3), cx.background_executor()).await;
                 let Ok(paths) = this.update(cx, |this, _| {
@@ -535,6 +538,14 @@ impl Workspace {
             }
         });
         self._tasks.push(task);
+    }
+
+    /// Follows the open files now (a file just opened): the loop in
+    /// `watch_files` sets them when it wakes, which, once FSEvents covers
+    /// the files open before, is only when one of those changes or every
+    /// 30 s.
+    pub(super) fn follow_open_files(&self) {
+        self.open_file_changes.set_paths(self.buffers.iter().map(|b| b.path.clone()).collect());
     }
 
     /// Re-renders once a second while a build or run is in progress so the

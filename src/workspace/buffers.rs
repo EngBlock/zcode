@@ -273,6 +273,7 @@ impl Workspace {
             previews: Default::default(),
             _subscriptions: vec![subscription],
         });
+        self.follow_open_files();
         if !headless {
             self.schedule_semantic_tokens(path, Duration::ZERO, cx);
         }

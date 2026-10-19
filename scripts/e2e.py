@@ -5001,9 +5001,18 @@ def idle_checks(samples):
         # Put back as it was (later checks expect the template's comments).
         with open(paths["settings"], "w") as f:
             f.write(original)
-        print(f"    a file changed outside: read again in {reloaded:.2f} s; settings.json: applied in {applied:.2f} s")
+        # A file opened now, once the stream covers the others, is followed
+        # too (it waited for a change under those, or 30 s).
+        main = os.path.join(project, "Sources", "zhello", "main.swift")
+        z.run(f"open {main}", "wait 300")
+        with open(main, "a") as f:
+            f.write("// opened later, changed outside zcode\n")
+        start = time.time()
+        z.wait_for(lambda s: "// opened later" in s["active"]["text"], timeout=10, interval=0.1)
+        later = time.time() - start
+        print(f"    a file changed outside: read again in {reloaded:.2f} s (one opened later: {later:.2f} s); settings.json: applied in {applied:.2f} s")
         # Polling took up to 3 s and 1 s.
-        assert reloaded < 2 and applied < 2, (reloaded, applied)
+        assert reloaded < 2 and applied < 2 and later < 2, (reloaded, applied, later)
 
     try:
         check("Idle: with the caret blinking, zcode wakes a few times a second, not at the display's rate", wakes_a_few_times_a_second)
