@@ -114,7 +114,7 @@ impl Workspace {
             (state.text().clone(), state.cursor())
         };
         let capability = if kind.is_calls() { "/callHierarchyProvider" } else { "/typeHierarchyProvider" };
-        let Some(server) = self.lsp.update(cx, |lsp, _| lsp.synced_server_supporting(&path, None, Some(capability))) else {
+        let Some(server) = self.lsp.update(cx, |lsp, cx| lsp.synced_server_supporting(&path, None, Some(capability), cx)) else {
             if self.lsp.update(cx, |lsp, cx| lsp.synced_server(&path, cx)).is_some() {
                 let what = if kind.is_calls() { "call hierarchies" } else { "type hierarchies" };
                 self.notify_error(format!("The language server doesn’t offer {what}."), window, cx);
@@ -256,7 +256,7 @@ impl Workspace {
             let state = editor.read(cx);
             (state.text().clone(), state.cursor())
         };
-        let Some(server) = self.lsp.update(cx, |lsp, _| lsp.synced_server_supporting(&path, None, Some("/callHierarchyProvider"))) else {
+        let Some(server) = self.lsp.update(cx, |lsp, cx| lsp.synced_server_supporting(&path, None, Some("/callHierarchyProvider"), cx)) else {
             if self.lsp.update(cx, |lsp, cx| lsp.synced_server(&path, cx)).is_some() {
                 self.notify_error("The language server doesn’t offer call hierarchies.".into(), window, cx);
             } else {

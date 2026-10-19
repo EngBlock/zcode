@@ -1,6 +1,8 @@
 //! The editor area on screen: the split tree of panes, and each pane's tab
 //! bar, jump bar and shown item.
 
+use std::path::PathBuf;
+
 use gpui_kit::assets::IconName;
 use gpui_kit::component::resizable::{ResizableState, h_resizable, resizable_panel, v_resizable};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
@@ -16,6 +18,7 @@ use crate::actions::*;
 
 impl Workspace {
     pub(super) fn render_editor_area(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        self.note_shown_documents(cx);
         if self.zoomed || self.panes.len() == 1 {
             return self.render_pane(self.active_pane, cx);
         }
@@ -25,6 +28,28 @@ impl Workspace {
         root.split_keys(&mut keys);
         self.split_states.retain(|key, _| keys.iter().any(|k| k == key.as_ref()));
         self.render_member(&root, cx)
+    }
+
+    /// Tells the language servers which files the panes show, the focused
+    /// pane's first, when that changed: sourcekit-lsp keeps only those and
+    /// the few shown last open (`LspStore::set_shown`). Here rather than
+    /// where tabs change, since whatever is drawn is what's shown.
+    fn note_shown_documents(&mut self, cx: &mut Context<Self>) {
+        let focused = self.pane(self.active_pane).into_iter();
+        let others = self.panes.iter().filter(|p| !self.zoomed && p.id != self.active_pane);
+        let shown: Vec<PathBuf> = focused
+            .chain(others)
+            .filter_map(|pane| match pane.active_item()? {
+                Item::Editor(item) => Some(item.path.clone()),
+                Item::Diff(item) => Some(item.path.clone()),
+                _ => None,
+            })
+            .collect();
+        if shown != self.lsp_shown {
+            self.lsp_shown = shown.clone();
+            let lsp = self.lsp.clone();
+            cx.defer(move |cx| lsp.update(cx, |lsp, cx| lsp.set_shown(shown, cx)));
+        }
     }
 
     fn render_member(&mut self, member: &Member, cx: &mut Context<Self>) -> AnyElement {

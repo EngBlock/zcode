@@ -134,6 +134,9 @@ pub struct Workspace {
     next_pane_id: u64,
     /// Focus Editor Pane: only the focused pane is shown.
     zoomed: bool,
+    /// The files the panes showed at the last render, as the language
+    /// servers were told (`note_shown_documents`).
+    lsp_shown: Vec<PathBuf>,
     /// Each split's pane sizes as dragged, and as the session had them.
     split_states: std::collections::HashMap<SharedString, Entity<gpui_kit::component::resizable::ResizableState>>,
     restored_split_sizes: std::collections::HashMap<SharedString, Vec<f32>>,
@@ -315,6 +318,7 @@ impl Workspace {
             active_pane: PaneId(0),
             next_pane_id: 1,
             zoomed: false,
+            lsp_shown: vec![],
             split_states: Default::default(),
             restored_split_sizes: Default::default(),
             project_settings: None,
@@ -952,6 +956,7 @@ impl Workspace {
         state["predictions"] = self.predictions_summary(cx);
         state["previews"] = self.previews_summary(cx);
         state["language_servers"] = self.lsp.read(cx).summary();
+        state["lsp_documents"] = self.lsp.read(cx).documents_summary();
         state["build_server"] = self.build_server_status(cx);
         // FSEvents: how many of the checks of files on disk it covers.
         state["file_watching"] = crate::fs_watch::status();

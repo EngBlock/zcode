@@ -8,8 +8,14 @@
 //! every server it has, each at the same version; requests go to the first
 //! ready server offering what's asked ([`LspStore::synced_server`]), and
 //! diagnostics are every server's.
+//!
+//! sourcekit-lsp keeps only the documents a pane shows, the
+//! [`KEEP_RECENT`] shown last and those with unsaved changes open
+//! ([`LspStore::set_shown`]); the others are closed there, their text and
+//! version kept here, and opened again with the current text when shown,
+//! edited or asked about.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,6 +42,9 @@ pub enum LspStatus {
 
 pub enum LspStoreEvent {
     DiagnosticsChanged(PathBuf),
+    /// A document was opened at a server (first, or again after it was
+    /// closed while hidden): ask for its tokens and hints.
+    DocumentOpened(PathBuf),
     StatusChanged,
     /// A server became ready (again, after a restart): what it offers may
     /// have changed, so ask again.
@@ -212,6 +221,14 @@ struct Document {
     servers: Vec<DocumentServer>,
 }
 
+/// Documents shown last, besides the shown ones, that stay open at a server
+/// that closes hidden documents: a few tab switches back and forth (a file
+/// and its test, a header and its implementation, the last definition
+/// jumped to) don't reopen anything. Each costs sourcekitd its AST, ~55 MB
+/// for a large Swift file (firefox-ios: 1.3 GB of SourceKitService with 20
+/// tabs, 207 MB with one).
+pub const KEEP_RECENT: usize = 4;
+
 /// One server, as the status bar and `dump` show it.
 #[derive(Clone, Debug)]
 pub struct ServerSummary {
@@ -258,6 +275,13 @@ pub struct LspStore {
     /// Until when sourcekit-lsp's diagnostics for a file mean it reopened
     /// it with new build settings (`build_settings_changed`).
     reopening_until: Option<std::time::Instant>,
+    /// The documents panes show ([`Self::set_shown`]), those with unsaved
+    /// changes, and every document by when it was last shown, most recent
+    /// first: what stays open at a server that closes hidden documents.
+    shown: HashSet<PathBuf>,
+    unsaved: HashSet<PathBuf>,
+    recent: Vec<PathBuf>,
+    settle_pending: bool,
 }
 
 impl EventEmitter<LspStoreEvent> for LspStore {}
@@ -275,6 +299,10 @@ impl LspStore {
             edited: Default::default(),
             flush_task: None,
             reopening_until: None,
+            shown: HashSet::new(),
+            unsaved: HashSet::new(),
+            recent: vec![],
+            settle_pending: false,
         }
     }
 
@@ -490,6 +518,7 @@ impl LspStore {
     /// servers it should have now.
     fn rematch_documents(&mut self, cx: &mut Context<Self>) {
         let paths: Vec<(PathBuf, &'static str)> = self.documents.iter().map(|(p, d)| (p.clone(), d.language_id)).collect();
+        let kept_open = self.kept_open();
         for (path, language_id) in paths {
             let wanted = self.match_servers(&path, language_id);
             let Some(doc) = self.documents.get_mut(&path) else { continue };
@@ -511,12 +540,14 @@ impl LspStore {
                     self.merge_diagnostics(&path, cx);
                 }
             }
+            let keep = kept_open.contains(&path);
             for id in wanted {
                 match self.servers[id].status {
-                    LspStatus::Ready => {
+                    LspStatus::Ready if keep || !self.servers[id].spec.closes_hidden_documents() => {
                         self.send_did_open(&path, id);
                         self.pull_diagnostics(&path, Some(id), cx);
                     }
+                    LspStatus::Ready => {}
                     _ => self.ensure_started(id, cx),
                 }
             }
@@ -635,9 +666,11 @@ impl LspStore {
                 server.settings = settings;
                 server.server = Some(running);
                 server.status = LspStatus::Ready;
+                let closes_hidden = server.spec.closes_hidden_documents();
                 let paths: Vec<PathBuf> =
                     self.documents.iter().filter(|(_, d)| d.servers.iter().any(|s| s.id == id && !s.opened)).map(|(p, _)| p.clone()).collect();
-                for path in paths {
+                let keep = self.kept_open();
+                for path in paths.into_iter().filter(|path| !closes_hidden || keep.contains(path)) {
                     self.send_did_open(&path, id);
                     self.pull_diagnostics(&path, Some(id), cx);
                 }
@@ -687,6 +720,15 @@ impl LspStore {
                         return;
                     };
                     let Some(path) = uri_to_path(&params.uri) else { return };
+                    // A document closed while hidden keeps what was said
+                    // while it was open, as Xcode's issues do for a file
+                    // not open; it's said again when it's opened again.
+                    // (clangd, behind sourcekit-lsp for C and Objective-C,
+                    // clears a file's on closing, with no version; one with
+                    // a version is about text it had, sent before the close.)
+                    if params.diagnostics.is_empty() && params.version.is_none() && self.closed_at(&path, id) {
+                        return;
+                    }
                     let server = &mut self.servers[id];
                     if params.diagnostics.is_empty() {
                         server.diagnostics.remove(&path);
@@ -869,24 +911,143 @@ impl LspStore {
     /// Registers an open editor buffer and starts the servers it needs:
     /// `text` is the editor's current text, and `journal` its edits, which
     /// incremental changes are made of.
+    ///
+    /// It's sent to its ready servers once the current update is done
+    /// ([`Self::settle`]), by when the panes say whether they show it: a
+    /// session's restored tabs open only where they're shown.
     pub fn open_document(&mut self, path: PathBuf, language_id: &'static str, text: Rope, journal: Option<EditJournal>, cx: &mut Context<Self>) {
         let ids = self.match_servers(&path, language_id);
         let servers = ids.iter().map(|&id| DocumentServer { id, synced_version: 1, synced_text: Rope::new(), synced_revision: 0, opened: false }).collect();
         let revision = journal.as_ref().map_or(0, EditJournal::revision);
         self.documents.insert(path.clone(), Document { language_id, text, version: 1, journal, revision, servers });
+        self.touch(&path);
         for id in ids {
-            match self.servers[id].status {
-                LspStatus::Ready => {
-                    self.send_did_open(&path, id);
-                    self.pull_diagnostics(&path, Some(id), cx);
-                }
-                _ => self.ensure_started(id, cx),
+            if self.servers[id].status != LspStatus::Ready {
+                self.ensure_started(id, cx);
             }
         }
+        self.schedule_settle(cx);
         cx.emit(LspStoreEvent::StatusChanged);
     }
 
+    /// The documents panes show, the focused pane's first. Documents no pane
+    /// shows, except the [`KEEP_RECENT`] shown last and those with unsaved
+    /// changes, are closed at the servers that close hidden documents
+    /// (sourcekit-lsp); a document shown again is opened again.
+    pub fn set_shown(&mut self, shown: Vec<PathBuf>, cx: &mut Context<Self>) {
+        // Files that aren't documents (no server, too large) aren't kept.
+        for path in shown.iter().rev() {
+            if self.documents.contains_key(path) {
+                self.touch(path);
+            }
+        }
+        let shown: HashSet<PathBuf> = shown.into_iter().collect();
+        if shown != self.shown {
+            self.shown = shown;
+            self.settle(cx);
+        }
+    }
+
+    /// Whether `path`'s buffer has unsaved changes: such a document stays
+    /// open, so the server sees its text rather than the file's (in other
+    /// files' completions and diagnostics too).
+    pub fn set_unsaved(&mut self, path: &Path, unsaved: bool, cx: &mut Context<Self>) {
+        let changed = if unsaved { self.unsaved.insert(path.to_path_buf()) } else { self.unsaved.remove(path) };
+        if changed {
+            self.schedule_settle(cx);
+        }
+    }
+
+    /// Makes `path` the most recently shown document.
+    fn touch(&mut self, path: &Path) {
+        if self.recent.first().is_some_and(|p| p == path) {
+            return;
+        }
+        self.recent.retain(|p| p != path);
+        self.recent.insert(0, path.to_path_buf());
+    }
+
+    /// The documents that stay open at a server that closes hidden ones:
+    /// the recent ones counted are its own (a Markdown or TypeScript tab
+    /// shown last takes none of sourcekit-lsp's places).
+    fn kept_open(&self) -> HashSet<PathBuf> {
+        let recent = self.recent.iter().filter(|p| !self.shown.contains(*p) && self.closes_when_hidden(p)).take(KEEP_RECENT);
+        self.shown.iter().chain(&self.unsaved).chain(recent).cloned().collect()
+    }
+
+    /// `path` is a document one of whose servers closes hidden documents.
+    fn closes_when_hidden(&self, path: &Path) -> bool {
+        self.documents.get(path).is_some_and(|d| d.servers.iter().any(|s| self.servers[s.id].spec.closes_hidden_documents()))
+    }
+
+    /// `path` is registered but not open at server `id`, which closes
+    /// hidden documents: closed while hidden, or not opened yet.
+    fn closed_at(&self, path: &Path, id: usize) -> bool {
+        self.servers[id].spec.closes_hidden_documents()
+            && self.documents.get(path).is_some_and(|d| d.servers.iter().any(|s| s.id == id && !s.opened))
+    }
+
+    /// Settles once the current update is done: what it opened and edited
+    /// is known by then.
+    fn schedule_settle(&mut self, cx: &mut Context<Self>) {
+        if std::mem::replace(&mut self.settle_pending, true) {
+            return;
+        }
+        let this = cx.weak_entity();
+        cx.defer(move |cx| {
+            this.update(cx, |this, cx| this.settle(cx)).ok();
+        });
+    }
+
+    /// Opens every document at each ready server that should have it and
+    /// doesn't, with its current text and version, and closes the hidden
+    /// ones at the servers that close them. A closed document keeps its
+    /// text, version and diagnostics here.
+    fn settle(&mut self, cx: &mut Context<Self>) {
+        self.settle_pending = false;
+        let keep = self.kept_open();
+        let mut open = vec![];
+        let mut close = vec![];
+        for (path, doc) in &self.documents {
+            for entry in &doc.servers {
+                let server = &self.servers[entry.id];
+                if server.ready().is_none() {
+                    continue;
+                }
+                let wanted = !server.spec.closes_hidden_documents() || keep.contains(path);
+                if wanted && !entry.opened {
+                    open.push((path.clone(), entry.id));
+                } else if !wanted && entry.opened {
+                    close.push((path.clone(), entry.id));
+                }
+            }
+        }
+        for (path, id) in close {
+            if let Some(server) = self.servers[id].ready() {
+                server.notify_raw("textDocument/didClose", json!({ "textDocument": { "uri": path_to_uri(&path).as_str() } }));
+            }
+            if let Some(entry) = self.documents.get_mut(&path).and_then(|d| d.servers.iter_mut().find(|s| s.id == id)) {
+                entry.opened = false;
+            }
+            log::debug!("closed hidden {} at {}", path.display(), self.servers[id].spec.id);
+        }
+        let mut opened = vec![];
+        for (path, id) in open {
+            self.send_did_open(&path, id);
+            self.pull_diagnostics(&path, Some(id), cx);
+            if !opened.contains(&path) {
+                opened.push(path);
+            }
+        }
+        for path in opened {
+            cx.emit(LspStoreEvent::DocumentOpened(path));
+        }
+    }
+
     pub fn close_document(&mut self, path: &Path, cx: &mut Context<Self>) {
+        self.recent.retain(|p| p != path);
+        self.shown.remove(path);
+        self.unsaved.remove(path);
         let Some(doc) = self.documents.remove(path) else { return };
         // What a server was asked for goes with the file, as a pushing
         // server clears its own.
@@ -1063,7 +1224,15 @@ impl LspStore {
 
     /// Adopts `text` (the editor's current contents: providers run before
     /// change events are delivered) and flushes `path`'s pending edits.
-    fn sync(&mut self, path: &Path, text: Option<&Rope>) {
+    ///
+    /// With `reopen`, a document closed while hidden (or not opened yet) is
+    /// opened first, as the most recently shown: a request about it
+    /// (formatting, a command, an agent's question) finds it open.
+    fn sync(&mut self, path: &Path, text: Option<&Rope>, reopen: bool, cx: &mut Context<Self>) {
+        if reopen && (0..self.servers.len()).any(|id| self.servers[id].ready().is_some() && self.closed_at(path, id)) {
+            self.touch(path);
+            self.settle(cx);
+        }
         if let Some(text) = text
             && let Some(doc) = self.documents.get_mut(path)
             && !super::sync::same_text(&doc.text, text)
@@ -1076,25 +1245,25 @@ impl LspStore {
 
     /// Flushes pending edits for `path` and returns its first ready server,
     /// for a request against the current text.
-    pub fn synced_server(&mut self, path: &Path, _cx: &App) -> Option<Arc<LanguageServer>> {
-        self.synced_server_supporting(path, None, None)
+    pub fn synced_server(&mut self, path: &Path, cx: &mut Context<Self>) -> Option<Arc<LanguageServer>> {
+        self.synced_server_supporting(path, None, None, cx)
     }
 
     /// Like [`Self::synced_server`], but first adopts `text`.
-    pub fn synced_server_with_text(&mut self, path: &Path, text: &Rope, _cx: &App) -> Option<Arc<LanguageServer>> {
-        self.synced_server_supporting(path, Some(text), None)
+    pub fn synced_server_with_text(&mut self, path: &Path, text: &Rope, cx: &mut Context<Self>) -> Option<Arc<LanguageServer>> {
+        self.synced_server_supporting(path, Some(text), None, cx)
     }
 
     /// `path`'s first ready server that advertises `capability` (a JSON
     /// pointer into its capabilities, like `/renameProvider`), synced.
-    pub fn synced_server_supporting(&mut self, path: &Path, text: Option<&Rope>, capability: Option<&str>) -> Option<Arc<LanguageServer>> {
-        self.synced_servers(path, text, capability).into_iter().next().map(|(_, server)| server)
+    pub fn synced_server_supporting(&mut self, path: &Path, text: Option<&Rope>, capability: Option<&str>, cx: &mut Context<Self>) -> Option<Arc<LanguageServer>> {
+        self.synced_servers(path, text, capability, cx).into_iter().next().map(|(_, server)| server)
     }
 
     /// Every ready server of `path` advertising `capability`, synced, with
     /// its id (for [`Self::server_by_id`] and [`Self::features_of`]).
-    pub fn synced_servers(&mut self, path: &Path, text: Option<&Rope>, capability: Option<&str>) -> Vec<(usize, Arc<LanguageServer>)> {
-        self.sync(path, text);
+    pub fn synced_servers(&mut self, path: &Path, text: Option<&Rope>, capability: Option<&str>, cx: &mut Context<Self>) -> Vec<(usize, Arc<LanguageServer>)> {
+        self.sync(path, text, true, cx);
         self.ready_ids(path)
             .filter_map(|id| self.servers[id].ready().map(|server| (id, server.clone())))
             .filter(|(_, server)| capability.is_none_or(|c| server.supports(c)))
@@ -1102,9 +1271,11 @@ impl LspStore {
     }
 
     /// The first ready server of `path` whose features `wanted` accepts,
-    /// synced with `text`, and those features.
-    pub fn synced_server_with(&mut self, path: &Path, text: &Rope, wanted: impl Fn(&Features) -> bool) -> Option<(Arc<LanguageServer>, Features)> {
-        self.sync(path, Some(text));
+    /// synced with `text`, and those features. For what a view shows
+    /// (semantic tokens, inlay hints, predictions): a document closed while
+    /// hidden isn't opened for it, and has no such server.
+    pub fn synced_server_with(&mut self, path: &Path, text: &Rope, wanted: impl Fn(&Features) -> bool, cx: &mut Context<Self>) -> Option<(Arc<LanguageServer>, Features)> {
+        self.sync(path, Some(text), false, cx);
         self.ready_ids(path)
             .find(|&id| wanted(&self.servers[id].features))
             .and_then(|id| self.servers[id].ready().map(|server| (server.clone(), self.servers[id].features.clone())))
@@ -1157,6 +1328,20 @@ impl LspStore {
         })
     }
 
+    /// The documents of the servers that close hidden ones, open there or
+    /// closed (while hidden, or not opened yet), for `dump`.
+    pub fn documents_summary(&self) -> Value {
+        let (mut open, mut closed) = (vec![], vec![]);
+        for (path, doc) in &self.documents {
+            for entry in doc.servers.iter().filter(|s| self.servers[s.id].spec.closes_hidden_documents() && self.servers[s.id].ready().is_some()) {
+                if entry.opened { open.push(path) } else { closed.push(path) }
+            }
+        }
+        open.sort();
+        closed.sort();
+        json!({ "open": open, "closed": closed, "keep_recent": KEEP_RECENT })
+    }
+
     /// Every server and what it's doing, for `dump`.
     pub fn summary(&self) -> Value {
         Value::Array(
@@ -1196,6 +1381,54 @@ fn vue_plugin(root: &Path, project_root: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_at_sourcekit_are_the_shown_the_four_shown_last_and_the_unsaved() {
+        let mut store = LspStore::new(PathBuf::from("/p"), Default::default(), LspConfig::default());
+        let sourcekit = servers::spec("sourcekit-lsp").unwrap();
+        let vtsls = servers::spec("vtsls").unwrap();
+        for (spec, root) in [(sourcekit, "/p"), (vtsls, "/p/web")] {
+            store.servers.push(Server {
+                spec,
+                root: PathBuf::from(root),
+                server: None,
+                status: LspStatus::Idle,
+                features: Features::default(),
+                settings: Value::Null,
+                incremental: false,
+                progress: BTreeMap::new(),
+                diagnostics: BTreeMap::new(),
+                pull_diagnostics: false,
+                result_ids: HashMap::new(),
+                pulls: HashMap::new(),
+                _start_task: None,
+                _event_task: None,
+            });
+        }
+        let path = |name: &str| PathBuf::from(format!("/p/{name}"));
+        let add = |store: &mut LspStore, name: &str, id: usize| {
+            let server = DocumentServer { id, synced_version: 1, synced_text: Rope::new(), synced_revision: 0, opened: false };
+            store.documents.insert(path(name), Document { language_id: "swift", text: Rope::new(), version: 1, journal: None, revision: 0, servers: vec![server] });
+            store.touch(&path(name));
+        };
+        for i in 1..=7 {
+            add(&mut store, &format!("{i}.swift"), 0);
+        }
+        // A web file shown since takes none of sourcekit-lsp's places.
+        add(&mut store, "web/app.ts", 1);
+        store.unsaved.insert(path("1.swift"));
+        store.shown = [path("7.swift")].into();
+        let mut kept: Vec<PathBuf> = store.kept_open().into_iter().collect();
+        kept.sort();
+        assert_eq!(kept, ["1.swift", "3.swift", "4.swift", "5.swift", "6.swift", "7.swift"].map(path));
+
+        // Shown again, 2.swift is the most recent; 3.swift drops out.
+        store.touch(&path("2.swift"));
+        store.shown = [path("2.swift")].into();
+        let kept = store.kept_open();
+        assert!(kept.contains(&path("2.swift")) && kept.contains(&path("7.swift")) && !kept.contains(&path("3.swift")), "{kept:?}");
+        assert_eq!(store.recent.first(), Some(&path("2.swift")));
+    }
 
     #[test]
     fn features_follow_what_the_server_advertises() {

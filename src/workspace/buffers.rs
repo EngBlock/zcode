@@ -310,6 +310,8 @@ impl Workspace {
                     let dirty = text.len() != buffer.saved_text.len() || *text != buffer.saved_text;
                     if dirty != buffer.dirty {
                         buffer.dirty = dirty;
+                        // Unsaved, it stays open at its servers even hidden.
+                        this.lsp.update(cx, |lsp, cx| lsp.set_unsaved(&path, dirty, cx));
                         cx.notify();
                     }
                 }
@@ -536,7 +538,10 @@ impl Workspace {
                 buffer.saved_text = buffer.editor.read(cx).text().clone();
                 buffer.mtime = std::fs::metadata(&buffer.path).and_then(|m| m.modified()).ok();
                 let path = buffer.path.clone();
-                self.lsp.update(cx, |lsp, cx| lsp.did_save(&path, cx));
+                self.lsp.update(cx, |lsp, cx| {
+                    lsp.did_save(&path, cx);
+                    lsp.set_unsaved(&path, false, cx);
+                });
                 if lsp::language_id_for(&path).is_some() {
                     self.schedule_index_refresh(cx);
                 }
@@ -583,7 +588,7 @@ impl Workspace {
                 Ok(lsp::prettier::line_edits(&before, &after))
             }));
         }
-        let servers = self.lsp.update(cx, |lsp, _| lsp.synced_servers(path, Some(&text), Some("/documentFormattingProvider")));
+        let servers = self.lsp.update(cx, |lsp, cx| lsp.synced_servers(path, Some(&text), Some("/documentFormattingProvider"), cx));
         let (_, server) = servers.iter().find(|(_, s)| s.name() == "biome").or(servers.first())?.clone();
         let request = server.request_raw(
             "textDocument/formatting",

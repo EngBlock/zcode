@@ -12,9 +12,12 @@ through both ways, and:
   * with `$ZCODE_LSP_PROXY_INLINE_TEXT`, offers `inlineCompletionProvider`
     (sourcekit-lsp has none) and answers `textDocument/inlineCompletion`
     itself with one item inserting that text at the position;
-  * appends the params of every `textDocument/didOpen` and `didChange`
-    zcode sends, as a JSON line, to `$ZCODE_LSP_PROXY_CHANGES`, so a test
-    can replay what the server was told.
+  * appends the params of every `textDocument/didOpen`, `didChange` and
+    `didClose` zcode sends, as a JSON line, to `$ZCODE_LSP_PROXY_CHANGES`,
+    so a test can replay what the server was told;
+  * appends the uri and number of diagnostics of every
+    `textDocument/publishDiagnostics` the server sends, as a JSON line, to
+    `$ZCODE_LSP_PROXY_DIAGNOSTICS`.
 """
 
 import json
@@ -27,6 +30,7 @@ LOG = os.environ.get("ZCODE_LSP_PROXY_LOG")
 HIDE = [c for c in os.environ.get("ZCODE_LSP_PROXY_HIDE", "").split(",") if c]
 INLINE_TEXT = os.environ.get("ZCODE_LSP_PROXY_INLINE_TEXT")
 CHANGES = os.environ.get("ZCODE_LSP_PROXY_CHANGES")
+DIAGNOSTICS = os.environ.get("ZCODE_LSP_PROXY_DIAGNOSTICS")
 initialize_ids = set()
 log_lock = threading.Lock()
 # Both threads write to zcode.
@@ -65,7 +69,7 @@ def client_to_server(server):
         if LOG and method:
             with log_lock, open(LOG, "a") as log:
                 log.write(method + "\n")
-        if CHANGES and method in ("textDocument/didOpen", "textDocument/didChange"):
+        if CHANGES and method in ("textDocument/didOpen", "textDocument/didChange", "textDocument/didClose"):
             with log_lock, open(CHANGES, "a") as log:
                 log.write(json.dumps({"method": method, "params": message["params"]}) + "\n")
         if INLINE_TEXT is not None and method == "textDocument/inlineCompletion":
@@ -84,6 +88,9 @@ def server_to_client(server):
                 capabilities.pop(name, None)
             if INLINE_TEXT is not None:
                 capabilities["inlineCompletionProvider"] = True
+        if DIAGNOSTICS and message.get("method") == "textDocument/publishDiagnostics":
+            with log_lock, open(DIAGNOSTICS, "a") as log:
+                log.write(json.dumps({"uri": message["params"]["uri"], "count": len(message["params"]["diagnostics"])}) + "\n")
         write_message(sys.stdout.buffer, message)
 
 

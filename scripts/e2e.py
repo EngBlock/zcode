@@ -290,6 +290,8 @@ def replay_lsp_changes(log, suffix):
         if message["method"] == "textDocument/didOpen":
             text, changes = document["text"], []
             continue
+        if message["method"] == "textDocument/didClose":
+            continue
         for change in message["params"]["contentChanges"]:
             changes.append(change)
             if "range" not in change:
@@ -3379,6 +3381,133 @@ def web_language_checks(samples):
             z.quit()
 
     check("ESLint's diagnostics (pulled) and Tailwind's classes, from the app's own packages", eslint_and_tailwind)
+
+
+def hidden_tab_checks(samples):
+    """Hidden tabs at the language server (docs/scale.md, Performance
+    batch 4): sourcekit-lsp keeps open only the files panes show, the four
+    shown last and those with unsaved changes; the rest are closed there
+    (zcode keeps their text, version and diagnostics) and opened again with
+    the buffer's current text when shown. Through lsp_proxy.py, which
+    records what's sent and the server's diagnostics."""
+    # As zcode reports paths (/private/var/…), which FSEvents' match.
+    project = os.path.realpath(os.path.join(WORK, "TabsKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    sources = os.path.join(project, "Sources", "ZKit")
+    broken = os.path.join(sources, "Broken.swift")
+    with open(broken, "w") as f:
+        f.write('public func broken() -> Int {\n    let count: Int = "not a number"\n    return count\n}\n')
+    files = []
+    for i in range(1, 6):
+        files.append(os.path.join(sources, f"File{i}.swift"))
+        with open(files[-1], "w") as f:
+            f.write(f"public func file{i}() -> Int {{\n    return {i}\n}}\n")
+    greeter = os.path.join(sources, "Greeter.swift")
+    proxy = os.path.join(ROOT, "scripts", "lsp_proxy.py")
+    changes = os.path.join(WORK, "tabs-changes.log")
+    diagnostics = os.path.join(WORK, "tabs-diagnostics.log")
+    z = Zcode(project, {"ZCODE_SOURCEKIT_LSP": proxy, "ZCODE_LSP_PROXY_CHANGES": changes, "ZCODE_LSP_PROXY_DIAGNOSTICS": diagnostics})
+
+    def sent(name):
+        """What zcode sent about `name`: (method, params) in order."""
+        out = []
+        for line in open(changes):
+            m = json.loads(line)
+            if m["params"]["textDocument"]["uri"].endswith("/" + name):
+                out.append((m["method"].split("/")[1], m["params"]))
+        return out
+
+    def published(name):
+        return [json.loads(l)["count"] for l in open(diagnostics) if json.loads(l)["uri"].endswith("/" + name)]
+
+    def documents(s=None):
+        return (s or z.dump())["lsp_documents"]
+
+    def names(paths):
+        return sorted(os.path.basename(p) for p in paths)
+
+    def issues_of(s, name):
+        return [i for i in s["issues"] if f" {name}:" in i]
+
+    def hidden_tabs_closed():
+        z.run(f"open {broken}")
+        z.wait_for(lambda s: s["lsp"] == "Ready" and issues_of(s, "Broken.swift"), timeout=180, interval=0.5)
+        # An unsaved error in Greeter.swift: it stays open, hidden or not.
+        z.run(f"open {greeter}:1", "keys cmd-up", "type let typed: Int = \"oops\"", "keys enter")
+        z.wait_for(lambda s: issues_of(s, "Greeter.swift"), timeout=60, interval=0.5)
+        for path in files:
+            z.run(f"open {path}", "wait 300")
+        s = z.wait_for(lambda s: "Broken.swift" in names(documents(s)["closed"]), timeout=20, interval=0.3)
+        d = documents(s)
+        # Shown (File5), the four shown before it, and the unsaved one.
+        assert names(d["open"]) == ["File1.swift", "File2.swift", "File3.swift", "File4.swift", "File5.swift", "Greeter.swift"], d
+        assert names(d["closed"]) == ["Broken.swift"], d
+        sourcekit = [x for x in s["language_servers"] if x["id"] == "sourcekit-lsp"][0]
+        assert sourcekit["documents"] == 6, sourcekit
+        assert [m for m, _ in sent("Broken.swift")][-1] == "didClose", sent("Broken.swift")
+        assert "didClose" not in [m for m, _ in sent("Greeter.swift")], sent("Greeter.swift")
+        # Its diagnostics are kept (whatever the server says on closing).
+        assert issues_of(s, "Broken.swift") and issues_of(s, "Greeter.swift"), s["issues"]
+        print(f"    Broken.swift closed at sourcekit-lsp, its issue kept: {issues_of(s, 'Broken.swift')[0]}; "
+              f"diagnostics published for it: {published('Broken.swift')}")
+
+    def shown_again_reopens():
+        before = len(published("Broken.swift"))
+        start = time.time()
+        z.run(f"open {broken}")
+        s = z.wait_for(lambda s: "Broken.swift" in names(documents(s)["open"]), timeout=10, interval=0.1)
+        last = sent("Broken.swift")[-1]
+        assert last[0] == "didOpen", last
+        with open(broken) as f:
+            assert last[1]["textDocument"]["text"] == f.read(), last
+        # The server diagnoses it again, and the semantic tokens come back.
+        s = z.wait_for(lambda s: len(published("Broken.swift")) > before and issues_of(s, "Broken.swift")
+                       and s["language_features"]["semantic_tokens"]["count"], timeout=60, interval=0.2)
+        diagnosed = time.time() - start
+        # File1, now the fifth shown before, is closed in its place.
+        d = documents(s)
+        assert names(d["closed"]) == ["File1.swift"], d
+        print(f"    shown again: diagnosed again in {diagnosed:.2f} s; File1.swift closed in its place")
+
+    def changed_on_disk_while_closed():
+        # File1.swift is closed at the server; it changes outside zcode.
+        assert "File1.swift" in names(documents()["closed"]), documents()
+        mark = len(sent("File1.swift"))
+        with open(files[0], "w") as f:
+            f.write("public func file1() -> Int {\n    return 100\n}\n")
+        z.run(f"open {files[0]}")
+        s = z.wait_for(lambda s: "return 100" in s["active"]["text"] and "File1.swift" in names(documents(s)["open"]),
+                       timeout=15, interval=0.2)
+        since = sent("File1.swift")[mark:]
+        # Nothing was sent while it was closed; it reopened with the new text.
+        assert [m for m, _ in since] == ["didOpen"], since
+        assert since[0][1]["textDocument"]["text"] == s["active"]["text"], since[0]
+        assert not s["active"]["dirty"], s["active"]
+
+    def unsaved_stays_open_saved_closes():
+        # Greeter.swift, hidden all along with unsaved changes, is open.
+        d = documents()
+        assert "Greeter.swift" in names(d["open"]), d
+        z.run(f"open {greeter}")
+        for _ in range(10):
+            if not z.dump()["active"]["dirty"]:
+                break
+            z.run("keys cmd-z", "wait 200")
+        assert not z.dump()["active"]["dirty"]
+        # Shown again, clean: once four others are shown it's closed too.
+        for path in files[1:]:
+            z.run(f"open {path}", "wait 300")
+        z.run(f"open {broken}", "wait 300")
+        z.wait_for(lambda s: "Greeter.swift" in names(documents(s)["closed"]), timeout=15, interval=0.3)
+        assert not issues_of(z.dump(), "Greeter.swift"), z.dump()["issues"]
+
+    try:
+        check("Hidden tabs: a file no pane shows, past the four shown last, is closed at sourcekit-lsp; its issues stay, an unsaved file stays open", hidden_tabs_closed)
+        check("Hidden tabs: shown again, it's opened again with its text, diagnosed again and gets its tokens back", shown_again_reopens)
+        check("Hidden tabs: a file changed on disk while closed reopens with the new text, nothing sent meanwhile", changed_on_disk_while_closed)
+        check("Hidden tabs: an unsaved file stays open hidden; undone to its saved text, it's closed like the others", unsaved_stays_open_saved_closes)
+    finally:
+        z.quit()
 
 
 def pane_checks(samples):
@@ -7355,6 +7484,9 @@ def main():
 
     print("Web languages (a copy of samples/HelloWeb: a Swift package with a Vite app in web/):")
     web_language_checks(samples)
+
+    print("Hidden tabs at the language server (a copy of samples/ZKit, sourcekit-lsp through lsp_proxy.py):")
+    hidden_tab_checks(samples)
 
     print("Editor panes (a copy of samples/ZKit):")
     pane_checks(samples)

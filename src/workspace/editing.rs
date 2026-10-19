@@ -472,7 +472,7 @@ impl Workspace {
             let state = buffer.editor.read(cx);
             (state.text().clone(), state.selected_range())
         };
-        let server = self.lsp.update(cx, |lsp, _| lsp.synced_server_supporting(&path, Some(&text), Some(capability)))?;
+        let server = self.lsp.update(cx, |lsp, cx| lsp.synced_server_supporting(&path, Some(&text), Some(capability), cx))?;
         Some((server, path, text, selection))
     }
 

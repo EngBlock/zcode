@@ -27,6 +27,15 @@
   presents unchanged frames for a second after fast input (which keeps a
   ProMotion display at its top rate); input that changes anything draws
   as before.
+* Hidden tabs: sourcekit-lsp keeps open only the shown files, the four
+  shown last and those with unsaved changes. A file closed there keeps the
+  diagnostics it had (as Xcode's issues keep a file's that isn't open), so
+  an error another file's edit causes or fixes in it shows once it's shown
+  again; showing it again costs sourcekit-lsp its AST again (~1.3 s for a
+  5,000-line file before its diagnostics are back), and Quick Help or
+  completion in it waits that long. Its semantic tokens stay as they were
+  meanwhile. Restarting the server clears a closed file's diagnostics until
+  it's shown. The web's servers keep every open file.
 * Build server: sourcekit-lsp doesn't prepare targets or index files
   itself (zcode doesn't offer `buildTarget/prepare`): the index is the
   index build's, so references, rename and call hierarchies reach only

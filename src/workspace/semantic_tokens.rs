@@ -65,7 +65,7 @@ impl Workspace {
             }
             let request = this.update(cx, |this, cx| {
                 let text = this.buffer(&path)?.editor.read(cx).text().clone();
-                let (server, features) = this.lsp.update(cx, |lsp, _| lsp.synced_server_with(&path, &text, |f| f.semantic_tokens.is_some()))?;
+                let (server, features) = this.lsp.update(cx, |lsp, cx| lsp.synced_server_with(&path, &text, |f| f.semantic_tokens.is_some(), cx))?;
                 let legend = features.semantic_tokens?;
                 let version = this.lsp.read(cx).document_version(&path)?;
                 let document = json!({ "uri": path_to_uri(&path).as_str() });

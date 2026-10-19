@@ -272,7 +272,22 @@ if zcode is not faster.
 * **Tabs:** an editor in a tab no pane shows lets go of its layout, and a
   layout's lines share their whitespace marks instead of each holding a
   copy (a line's layout was 9.1 KB). 40 firefox-ios Swift tabs add 15 MB of
-  heap against 32 MB before, about half of it their syntax trees.
+  heap against 32 MB before, about half of it their syntax trees. At the
+  language server, sourcekit-lsp keeps open only the files the panes show,
+  the four shown last and those with unsaved changes; the others are closed
+  there (`textDocument/didClose`) and opened again with the buffer's current
+  text when shown, edited or asked about, while zcode keeps their text and
+  their last diagnostics. SourceKitService's live heap with firefox-ios's
+  40 largest files shown in turn: ~0.82 GB against ~1.4 GB (its footprint
+  moves with when macOS takes back emptied pages, and was no steady
+  measure); showing the 5,166-line view controller again re-diagnoses it in
+  ~1.3 s, during which Quick Help and completion in it wait (`docs/scale.md`,
+  Performance batch 4).
+* **Language server memory:** the status bar's LSP figure is zcode's
+  servers, their children and the SourceKitService its sourcekit-lsp uses,
+  found in sourcekit-lsp's launchd domain; it used to add every
+  SourceKitService on the machine, Xcode's included (LSP 1.32 GB for ZKit
+  with Xcode open, 29 MB now).
 * **About memory:** while a GPUI window draws, macOS attributes about
   230 MB of compositor/GPU memory to the process ("owned unmapped
   (graphics)" in `vmmap`, part of the physical footprint), and a bare GPUI

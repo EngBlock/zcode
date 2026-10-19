@@ -85,7 +85,7 @@ impl DocumentProviders {
     /// The document's ready servers offering `capability`, synced with `text`.
     fn servers(&self, text: Option<&Rope>, capability: &str, cx: &mut App) -> Vec<(usize, Arc<LanguageServer>)> {
         let Some(store) = self.store.upgrade() else { return vec![] };
-        store.update(cx, |store, _| store.synced_servers(&self.path, text, Some(capability)))
+        store.update(cx, |store, cx| store.synced_servers(&self.path, text, Some(capability), cx))
     }
 
     fn server_by_id(&self, id: usize, cx: &App) -> Option<Arc<LanguageServer>> {

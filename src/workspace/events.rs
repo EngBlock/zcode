@@ -41,6 +41,12 @@ impl Workspace {
                 self.semantic_tokens_diagnosed(path, cx);
                 cx.notify();
             }
+            // Opened at a server, first or again after it was closed while
+            // hidden: its tokens and hints are asked for (again).
+            LspStoreEvent::DocumentOpened(path) => {
+                self.schedule_semantic_tokens(path, std::time::Duration::ZERO, cx);
+                self.inlay_hints_opened(path, cx);
+            }
             LspStoreEvent::StatusChanged => cx.notify(),
             // Ready (again, after a restart): what it offers may have changed.
             LspStoreEvent::ServerReady => {

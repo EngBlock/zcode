@@ -284,6 +284,13 @@ themes or session. It covers:
   memory, the status-bar label and the `--perf-log` file
 * language-server memory counts zcode's own `SourceKitService`, not that of
   a sourcekit-lsp the suite starts itself (another app's)
+* hidden tabs at sourcekit-lsp (through `scripts/lsp_proxy.py`): a file no
+  pane shows past the four shown last is closed with its issues kept, an
+  unsaved one stays open, one shown again reopens with its text and gets its
+  diagnostics and tokens back, one changed on disk while closed reopens with
+  the new text
+* an idle window: 10 s after the last key the caret rests and nothing is
+  drawn, nor behind another app's window (`scripts/background_window.swift`)
 * the scale benchmarks' instrumentation on ZKit: the scan, tree, search
   and Open Quickly timings in `dump` and `bench status`, `bench frame /
   action / keys` and `type-latency`'s times to the frame drawn and the

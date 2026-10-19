@@ -110,6 +110,17 @@ impl Workspace {
         }
     }
 
+    /// `path` was opened at its servers (again): each view asks now.
+    pub(super) fn inlay_hints_opened(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if !self.inlay_hints.enabled {
+            return;
+        }
+        let views: Vec<Entity<EditorState>> = self.views_of(path).iter().map(|item| item.editor.clone()).collect();
+        for editor in views {
+            self.schedule_inlay_hints(editor, path.to_path_buf(), Duration::ZERO, cx);
+        }
+    }
+
     pub(super) fn inlay_hints_view_closed(&mut self, view: EntityId) {
         self.inlay_hints.views.remove(&view);
     }
@@ -129,7 +140,7 @@ impl Workspace {
                 let margin = rows.len() as u32;
                 let rows = rows.start.saturating_sub(margin)..rows.end + margin;
                 let text = editor.read(cx).text().clone();
-                let (server, _) = this.lsp.update(cx, |lsp, _| lsp.synced_server_with(&path, &text, |f| f.inlay_hints))?;
+                let (server, _) = this.lsp.update(cx, |lsp, cx| lsp.synced_server_with(&path, &text, |f| f.inlay_hints, cx))?;
                 let version = this.lsp.read(cx).document_version(&path)?;
                 let params = json!({
                     "textDocument": { "uri": path_to_uri(&path).as_str() },

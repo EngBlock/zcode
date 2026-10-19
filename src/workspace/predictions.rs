@@ -330,7 +330,7 @@ impl Workspace {
             PredictionProvider::Lsp => {
                 // The server answers about the text it was last sent: send this.
                 let text = request.text.clone();
-                let server = self.lsp.update(cx, |lsp, _| lsp.synced_server_with(path, &text, |f| f.inline_completion)).map(|(server, _)| server);
+                let server = self.lsp.update(cx, |lsp, cx| lsp.synced_server_with(path, &text, |f| f.inline_completion, cx)).map(|(server, _)| server);
                 let Some(server) = server else {
                     self.predictions.status = Status::Failed("the language server has no inline completion".into());
                     self.predictions.pending = None;
