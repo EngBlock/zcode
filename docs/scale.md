@@ -496,7 +496,7 @@ before).
 
 The footprint after the search includes over 200 MB of compositor memory that
 macOS attributes to a window while it redraws. The Find field's caret
-blinks, so the window keeps redrawing (see "About memory" in the README).
+blinks, so the window keeps redrawing (see "About memory" in `docs/performance.md`).
 Resident memory, 175 MB, is the better figure for what the search
 costs. Both are gated.
 

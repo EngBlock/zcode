@@ -1,5 +1,5 @@
 //! The tools zcode's MCP server offers: a deliberate, documented set (see
-//! the README's "zcode as an MCP server"), not the control channel's test
+//! `docs/mcp.md`), not the control channel's test
 //! commands. Each one acts on a project window as the Product menu, the
 //! navigators and the editor do, through the same workspace functions.
 //!
