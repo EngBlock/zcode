@@ -3,3 +3,5 @@
 .swiftpm/
 xcuserdata/
 *.xcuserstate
+.DS_Store
+.claude/

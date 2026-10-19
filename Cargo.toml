@@ -3,7 +3,7 @@ name = "zcode"
 version = "0.1.0"
 edition = "2024"
 description = "A fast, Zed-inspired editor for the Apple ecosystem"
-license = "Apache-2.0"
+license = "MIT"
 
 [workspace]
 members = ["crates/zcode-editor", "crates/zcode-emmet"]

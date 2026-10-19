@@ -6,7 +6,7 @@ and offline; this one fetches a big project and takes a few minutes.
 
 ```
 cargo build --release
-python3 scripts/bench.py                    # 3 alternating rounds against master, then the index build
+python3 scripts/bench.py                    # 3 alternating rounds against main, then the index build
 python3 scripts/bench.py --skip-index       # the latency rounds only (~5 minutes)
 python3 scripts/bench.py --rounds 0 --skip-open --no-master --index-cap 1500   # the index build only
 ```
@@ -87,29 +87,29 @@ says so, since sourcekit-lsp's numbers then differ.
 The machine these run on is often loaded by other work, with load averages
 of 10–70. To keep that from failing a build that didn't regress:
 
-* The branch and a release build of `master` alternate round by round
-  (`master` is built once per commit in the cache). Each metric's median
+* The branch and a release build of `main` alternate round by round
+  (`main` is built once per commit in the cache). Each metric's median
   over the rounds is compared.
 * A gate fails when the branch's median is over a generous absolute
-  ceiling, or over master × factor + slack: ×1.15 + 25 ms for the cold
+  ceiling, or over main × factor + slack: ×1.15 + 25 ms for the cold
   open, ×1.5 + a few ms for frames, ×1.3 + 50–60 MB for memory, ×1.5 +
   100 ms for searches, ×2 + 5 s for sourcekit-lsp. Both limits are in the
   `GATES` table at the top of the script.
 * Every result carries the load average when it was taken.
-* A `master` from before the benchmarks' control commands is measured
+* A `main` from before the benchmarks' control commands is measured
   through `dump`. Its index build is stopped as it starts, since it can't
   be turned off there. Only the cold open, memory footprint, sourcekit-lsp
   and keystroke-to-tick gates get a relative limit from it. From the next
-  merge on, master has the commands and every gate is relative.
+  merge on, main has the commands and every gate is relative.
 
 `python3 scripts/bench.py --self-test` checks the gate arithmetic.
 
 ## Baselines
 
-M4 Max, macOS 27.2, release builds; 3 alternating rounds of this branch
-against `master` (`237031c`); load average 1.6–2.9 throughout.
+M4 Max, macOS 27.2, release builds; 3 alternating rounds of the change
+against the build before it (`237031c`); load average 1.6–2.9 throughout.
 
-| | Branch | Master |
+| | After | Before |
 |---|---|---|
 | Cold open of the project, first pixels | 264 ms | 290 ms |
 | File scan, 10,908 files | 77 ms | — |
@@ -130,7 +130,7 @@ against `master` (`237031c`); load average 1.6–2.9 throughout.
 | Typing, keystroke to the next tick | 3.8 / 3.8 ms | 4.2 / 4.2 ms |
 | sourcekit-lsp with its helpers | 316 MB | 280 MB |
 
-Master's Find navigator redraw was measured on this branch before the fix
+The earlier Find navigator redraw was measured before the fix
 (the same code), in the profiling below. The full
 report is written as JSON to `~/Library/Caches/zcode-bench/reports/`.
 
@@ -153,17 +153,17 @@ depends on compiles first, and the database keeps those commands.
 
 Foundations 3 hands sourcekit-lsp its arguments from zcode's build server
 (`src/bsp`) instead of the compilation database. Measured with the same
-script, branch against `master` (`7afb09d`), 3 alternating rounds, load
+script, against the build before it (`7afb09d`), 3 alternating rounds, load
 average 2–7:
 
-| | Branch | Master |
+| | After | Before |
 |---|---|---|
 | After the index build, the app's view controller (not in the database) | semantic tokens after 8.2 s, 4,945 of them; arguments: Xcode's index settings | no semantic tokens in 120 s |
 | Rounds with no database (the rounds' scheme is `Account`, a Mac library) | ready 0.8 s, first tokens 1.9 s | ready 0.4 s, first tokens 1.5 s |
 | Rounds that found a database at open (left by an interrupted session) | first tokens 1.9–2.0 s | no tokens in any round |
 | sourcekit-lsp with its helpers, end of a round | 246–322 MB | 228–311 MB |
 
-Every other gate held, within a few percent of master. In the rounds the
+Every other gate held, within a few percent of the build before. In the rounds the
 app target isn't in the scheme: until Xcode has answered, its files are
 compiled alone with the Mac's SDK (as sourcekit-lsp does without a build
 server, hence the same first tokens), then with the settings
@@ -195,7 +195,7 @@ of small allocations with the results shown, against 48 MB after the fix.
 The navigator now keeps the rows (a file's header, then up to 100 of its
 matches) and lays out only those on screen in a uniform list. A redraw
 takes 2.3 ms of work, and the footprint after the search drops by ~140 MB
-against master.
+against the build before.
 
 **An interrupted first index build left no database.** zcode's
 compilation database comes from the compile commands its background
@@ -231,12 +231,12 @@ project whose index build stops partway hit this. zcode's build server
 
 ## Performance batch 1
 
-Four fixes from a profile of a `master` release build, each measured
+Four fixes from a profile of a release build from before the change, each measured
 against that build in alternating launches (M4 Max, macOS 27.2; the load
 average beside each, as other work shares the machine). The drivers are
 the control channel's `bench keys`, `type-latency` and `--startup-bench`.
 
-| | `master` | Now | How measured |
+| | Before | Now | How measured |
 |---|---|---|---|
 | Five Page Downs in a 15 MB JSON file, work | 31 ms (23 ms in `bench.py`) | 19 ms (15 ms) | median of 4 launches × 5, load 5–12 |
 | CPU to open 30 firefox-ios Swift files | 1.39–1.46 s | 0.99–1.04 s | 3 launches each, load 3–9 |
@@ -313,12 +313,12 @@ UTF-16 units by walking the line, ~25 ms; and the status bar's column
 counted characters the same way on every render, ~15 ms. Both read the
 rope's counts now.
 
-Measured against a `master` release build in alternating launches (M4 Max,
+Measured against a release build from before the change in alternating launches (M4 Max,
 macOS 27.2; 3 launches each, medians, load average 2.6–5), on
 `/tmp/zbig/min.js` (`var a0=function(b){return b*0+Math.sqrt(0)};…` for
 60,000 functions):
 
-| | `master` | Now |
+| | Before | Now |
 |---|---|---|
 | Typing at the line's start, work per keystroke | 36.8 ms | 3.2 ms |
 | Typing at its end | 63.0 ms | 7.0 ms |
@@ -340,22 +340,22 @@ the syntax tree tree-sitter builds for the file (~190 MB), which batch 3
 takes on.
 
 The ordinary paths don't change: typing near the end of the 50,000-line
-Swift file 1.7 ms of work a keystroke against 1.7 ms on `master`, in a
+Swift file 1.7 ms of work a keystroke against 1.7 ms before, in a
 small Swift file 1.5 against 1.5 ms (8 alternating launches each, load
 3–5); cold launch, the welcome window's first pixels at 235.6 ms against
 243.6 ms (median of 15, alternating, load ~2).
 
 `scripts/bench.py` gates typing at the end of a generated minified script
-and Page Down in it. One round against `master` (load average 3–4):
+and Page Down in it. One round against the build before (load average 3–4):
 `typing_minified_ms` 2.2 ms against 56.4 ms, `pagedown_minified_ms` 11.2 ms
-against 68.3 ms, and every other gate within a few percent of master's
-except `listed_at_ms` (the background file scan, which the branch doesn't
-touch: 431 against 244 ms in that round, the branch's first and cold; 250
+against 68.3 ms, and every other gate within a few percent of the build before
+except `listed_at_ms` (the background file scan, which the change doesn't
+touch: 431 against 244 ms in that round, the new build's first and cold; 250
 against 284 ms over two more rounds).
 
 ## Performance batch 3: idle wakeups and large-file memory
 
-Measured against a `master` release build (`ca396fe`) in alternating
+Measured against a release build from before the change (`ca396fe`) in alternating
 launches (M4 Max, macOS 27.2; the load average beside each).
 
 **An idle window woke at the display's rate.** GPUI's macOS backend only
@@ -392,26 +392,26 @@ sampler (every 2 s, one `proc_pid_rusage`) stays.
 
 Idle over 60 s, no file open (two alternating launches each, medians):
 
-| | `master`: CPU, interrupt wakeups, context switches | Now |
+| | Before: CPU, interrupt wakeups, context switches | Now |
 |---|---|---|
 | Welcome window | 429–566 ms, 8,700, 17,830 | 11 ms, 41, 210 |
 | ZKit (Swift package) | 722–761 ms, 8,727, 18,250 | 35–50 ms, 49, 280 |
 | HelloZ (iOS app) | 734–762 ms, 8,735, 18,270 | 36–42 ms, 47, 270 |
 
 (load 1.3–2.1; `proc_pid_rusage` before and after, no control channel).
-`master`'s ~145 wakeups a second are the display link's (120 Hz) and the
+The earlier ~145 wakeups a second are the display link's (120 Hz) and the
 polls'; now less than one a second remains, mostly the memory sampler.
 
 A keystroke after a pause draws at once rather than at the restarted
 link's first tick: 20 single keystrokes each after 300 ms idle reached the
-screen in 6.8–6.9 ms against 7.4–7.7 ms on `master` (11.5–12.1 ms when
+screen in 6.8–6.9 ms against 7.4–7.7 ms before (11.5–12.1 ms when
 waiting for the link instead, which is why the waker asks for a frame);
 the pause needs four frame requests over 33 ms without demand, since a
 restarted link can tick in a burst.
 
 With an editor focused and its caret blinking (the e2e check, whose
 control channel reads a file every 150 ms): 24 interrupt wakeups a second
-against 161 on `master`. A file changed outside zcode is read again in
+against 161 before. A file changed outside zcode is read again in
 ~0.2 s (up to 3 s before), a saved settings.json applied in ~0.2 s (up to
 1 s). Typing, caret blink, animations, terminal output, scrolling and
 resizing go through the waker like any other demand; the e2e suite's
@@ -447,7 +447,7 @@ What's left per tab is mostly its syntax tree (~7.8 MB for the 40 files'
 
 Heap added by opening a file (`heap`, fresh launches, load 3–13):
 
-| | `master` | Now |
+| | Before | Now |
 |---|---|---|
 | 15 MB JSON, 1.2M lines (no tree now) | 514 MB | 22 MB |
 | 3.3 MB minified script, one line (no tree) | 194 MB | 5 MB |
@@ -477,7 +477,7 @@ footprint after the open read 141 against 118 MB: how many drawables Core
 Animation still held 15 s in (one more window-sized IOSurface); 60 s in,
 both held six, 128 against 133 MB, resident 164 against 170 MB.
 
-Two e2e checks that failed on `master` pass now. "Packages: browse a
+Two e2e checks that failed before pass now. "Packages: browse a
 package's sources" failed since the build server: ⌘B stopped the
 background index build and nothing started it again, so the index
 build's products (which sourcekit-lsp's arguments point at) lacked the
@@ -488,9 +488,9 @@ keystroke lands in the display's cadence. It now takes the keystroke's
 work or the time to the frame on screen: a keystroke's frame either waits
 for the next tick and then draws, or, typing in step with the display,
 draws at once and waits to present, which the work counts and the tick
-doesn't (seen on this branch in about one run in two: work 7 ms with 0.3 ms
+doesn't (seen with the change in about one run in two: work 7 ms with 0.3 ms
 to the tick, against 3 ms and 4 ms; on screen 7.0 ms either way, as on
-`master`).
+before).
 
 ## About the memory numbers
 

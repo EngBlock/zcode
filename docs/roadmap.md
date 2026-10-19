@@ -34,7 +34,7 @@ memory budgets, and e2e coverage (`scripts/e2e.py`) for every feature.
 ## Phase 2: Zed-quality editing
 
 1. Editor-engine decision: spike moving the gpui-component editor into a
-   first-party crate (Apache-2.0) instead of accumulating vendor patches.
+   first-party crate (Apache-2.0, as its source is) instead of accumulating vendor patches.
    Zed's editor is GPL and off-limits. ✅
 2. Break up `Workspace` into Pane/Item; split panes and Xcode's
    assistant/counterpart pane (⌃⌘T, ⌃⌥⌘J). ✅

@@ -161,7 +161,7 @@ def master_binary():
         return None
     if "--master" in sys.argv:
         return os.path.abspath(arg("--master"))
-    sha = run(["git", "-C", ROOT, "rev-parse", "master"]).stdout.strip()
+    sha = run(["git", "-C", ROOT, "rev-parse", "main"]).stdout.strip()
     head = run(["git", "-C", ROOT, "rev-parse", "HEAD"]).stdout.strip()
     if sha == head and not run(["git", "-C", ROOT, "status", "--porcelain"]).stdout.strip():
         print("  master is HEAD: the relative gates compare two builds of the same commit")

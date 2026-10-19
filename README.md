@@ -98,7 +98,7 @@ update feed in one go (`--dry-run` prints what it would run).
 | | Symbolic (symbol and module), Swift Error and Exception (Objective-C, C++ or both, on throw or catch) breakpoints from the Breakpoint navigator's + menu or Debug ▸ Breakpoints; the navigator lists every breakpoint with its toggle and options. | ⌥⌘\\ |
 | | Pause/continue, step over/into/out, the stopped line highlighted in green, threads and frames in the Debug navigator, and an expandable Variables view next to the console, with Copy Value and Print Description. Hovering a variable while paused shows its value. | ⌃⌘Y, F6, F7, F8 |
 | | The LLDB console: an `(lldb)` prompt while paused takes `po`, `p`, `v`, `expr` and any other lldb command, with ↑/↓ history; an empty Return repeats the last command. | ⇧⌘C |
-| **Monitoring** | Memory is sampled every 2 s for the life of the app. The status bar shows zcode's footprint and the language servers' together (including sourcekit-lsp's `SourceKitService` XPC helpers and the processes the web's servers start, such as vtsls's tsserver), and turns orange above 1.5 GB idle for zcode or 4 GB for the language server. View ▸ Performance shows startup timings, the current and 30 s idle-baseline footprint, peak, and a history graph. `--perf-log <file>` (or `ZCODE_PERF_LOG`) appends every sample as a JSON line for long-term tracking. `zcode --startup-bench` prints startup and memory as JSON and quits. `scripts/bench.py` runs the scale benchmarks on firefox-ios, against a build of `master`, with gates (`docs/scale.md`). | — |
+| **Monitoring** | Memory is sampled every 2 s for the life of the app. The status bar shows zcode's footprint and the language servers' together (including sourcekit-lsp's `SourceKitService` XPC helpers and the processes the web's servers start, such as vtsls's tsserver), and turns orange above 1.5 GB idle for zcode or 4 GB for the language server. View ▸ Performance shows startup timings, the current and 30 s idle-baseline footprint, peak, and a history graph. `--perf-log <file>` (or `ZCODE_PERF_LOG`) appends every sample as a JSON line for long-term tracking. `zcode --startup-bench` prints startup and memory as JSON and quits. `scripts/bench.py` runs the scale benchmarks on firefox-ios, against a build of `main`, with gates (`docs/scale.md`). | — |
 | **The app** | `scripts/package.py` builds `zcode.app` (icon, `Info.plist` with the version from `Cargo.toml`, the document types for `.xcodeproj`, `.xcworkspace`, Swift sources, source code and folders as an alternate handler so Xcode stays the default), signs it (Developer ID with the hardened runtime, or ad hoc for local use), notarizes and staples it (`notarytool` with a keychain profile; nothing in the repo), and makes the zip, the dmg and the update feed. Finder opens projects in the running zcode or starts it. zcode ▸ Install CLI links `zcode` into `/usr/local/bin` (an administrator prompt when needed, as Zed's): `zcode <path>` hands the path to the running zcode in ~50 ms or starts the app through LaunchServices and returns. zcode ▸ Open at Login registers the bundle's LaunchAgent (`zcode --background`) with SMAppService, listed under zcode in System Settings ▸ Login Items. zcode ▸ Check for Updates… (and a daily check, `auto_update` in settings.json) reads a JSON feed, downloads the release, checks its SHA-256 and signature (the running app's team), swaps it into the bundle's place and offers Restart Now. | — |
 
 The full Xcode 27 menu and shortcut inventory this was matched against is in
@@ -262,7 +262,7 @@ if zcode is not faster.
   see "Idle" below); change bars come from a diff of the editor's
   text run in the background 30 ms after the last keystroke, so typing
   latency doesn't change (median keystroke to frame in a 6,000-line file:
-  5.3 ms on this branch, 5.4 ms on `master`). Devices are listed again when
+  5.3 ms with the change, 5.4 ms before). Devices are listed again when
   an Apple USB device attaches or detaches (IOKit's notifications, on a
   thread of their own), when the project's window becomes active and when
   the destination menu or Choose Destination opens, and otherwise once a
@@ -275,7 +275,7 @@ if zcode is not faster.
   answers for text that has changed are dropped, so 30 keystrokes cost one
   semantic token request and a few hint requests. Typing in the middle of a
   6,000-line Swift file with both on: median keystroke to frame 5.0–5.1 ms,
-  against 5.2–5.3 ms on `master` (alternating runs, load average 4–8). A
+  against 5.2–5.3 ms before (alternating runs, load average 4–8). A
   highlight layer follows an edit without sorting its ranges again.
 * The terminal is parsed on its own thread (`alacritty_terminal`'s reader,
   which holds the grid's lock for at most 64 KB of output at a time) and
@@ -286,8 +286,8 @@ if zcode is not faster.
   `cat`: 0.2 s). Nothing of the terminal runs at startup: a shell starts
   on a background thread when its terminal is first shown, so a session
   restored with a terminal tab shows its first frame in ~209 ms (~228 ms
-  with a Swift file's tab instead). Cold launch on this branch: median 247
-  ms against 252 ms on `master` (alternating runs, load average 8–11).
+  with a Swift file's tab instead). Cold launch with it: median 247
+  ms against 252 ms before (alternating runs, load average 8–11).
 * Vim mode costs nothing while it's off: the editor has no keystroke
   interceptor or observer then, and the status bar follows Vim through an
   event an editor only emits with it on. On, insert mode passes keystrokes
@@ -295,7 +295,7 @@ if zcode is not faster.
   Escape. Typing in the middle of a 6,000-line Swift file, four
   alternating rounds each: median keystroke to frame 3.8–5.2 ms with Vim
   mode off and 5.0–5.2 ms in insert mode (load average 6–13). Cold launch,
-  alternating with `master` (load average ~7): the welcome window's first
+  alternating against the build before (load average ~7): the welcome window's first
   pixels at 247.0 ms against 248.4 ms (median of 24), and ZKit with two
   Swift tabs restored at 226.3 ms against 224.5 ms to the first frame
   (median of 20), 225.9 ms with Vim mode on.
@@ -305,14 +305,14 @@ if zcode is not faster.
   login shell's `PATH`, read off the main thread once) when the first
   message is sent. Its process and the reading of what it sends are on
   threads of their own; each update re-lays out only the rows it changed
-  in a virtual list. Cold launch, alternating runs against `master`: the
+  in a virtual list. Cold launch, alternating runs against the build before: the
   welcome window's first pixels at 242.5 ms against 249.9 ms (median of 9).
   The binary grows by 1.9 MB (the protocol's types).
 * The MCP server costs nothing until a client connects: the socket was
   already there for `zcode <path>`, and a connection's reading and writing
   are on threads of their own. `zcode mcp` itself is a relay that checks
   its first argument before anything else starts, so it starts in a few
-  milliseconds. Cold launch, alternating with `master` (load average
+  milliseconds. Cold launch, alternating against the build before (load average
   ~9.6): the welcome window's first pixels at 254.8 ms against 254.6 ms
   (median of 12).
 * Predictive completion costs nothing while it's off (the default): no
@@ -324,21 +324,21 @@ if zcode is not faster.
   HTTP client is made on the first request. Typing in a file with
   predictions on: median keystroke to frame 2.0 ms, against 3.0 ms with
   them off (the e2e check's run). Cold launch, three alternating rounds of
-  15 against `master` (load average 7–10): the welcome window's first
+  15 against the build before (load average 7–10): the welcome window's first
   pixels at 263.8, 257.9 and 260.7 ms against 258.4, 259.8 and 263.8 ms.
   The binary grows by 1.4 MB (`ureq` and `native-tls`).
 * Profile costs nothing until it's used: Instruments' templates are listed
   (`xctrace list templates`, on a thread of its own) the first time
   Profile asks for one, a recording's output streams like a run's, and the
   summary's export is read off the main thread. Cold launch, three
-  alternating rounds of 15 against `master` (load average 10–25): the
+  alternating rounds of 15 against the build before (load average 10–25): the
   welcome window's first pixels at 236.6, 234.9 and 237.7 ms against
   231.8, 240.4 and 235.3 ms.
 * Archive and the Organizer cost nothing until used: the Organizer reads
   the Archives folder on a thread of its own when it opens (and after
   zcode archives, exports or deletes), and Distribute App's export,
   notarization and stapling stream like a build. Cold launch, three
-  alternating rounds of 12 against `master` (load average ~8): the
+  alternating rounds of 12 against the build before (load average ~8): the
   welcome window's first pixels at 237.1, 228.5 and 237.2 ms against
   230.5, 234.6 and 230.1 ms.
 * Asset catalogs cost nothing until one is opened: the catalog is read on
@@ -348,7 +348,7 @@ if zcode is not faster.
   screen (the outline and a folder's tiles are virtual lists), scaled to
   192 pixels and kept in a cache of at most 64 MB that drops the least
   recently shown (their textures freed too). Edits run in the background.
-  Cold launch, three alternating rounds of 10 against `master` (load
+  Cold launch, three alternating rounds of 10 against the build before (load
   average 10–14): the welcome window's first pixels at 231.3, 224.7 and
   219.2 ms against 227.4, 229.2 and 223.7 ms. The binary grows by 1.5 MB
   (the PDF and image decoding zcode now calls; the crates were already
@@ -358,7 +358,7 @@ if zcode is not faster.
   (files that don't mention `#Preview` or `PreviewProvider` aren't
   parsed), and the gutter reads what was found. Show in Xcode Canvas waits
   for Xcode on a thread of its own. Cold launch, three alternating rounds
-  of 10 against `master` (load average 12–16): the welcome window's first
+  of 10 against the build before (load average 12–16): the welcome window's first
   pixels at 250.3, 243.8 and 246.1 ms against 245.3, 249.2 and 244.6 ms.
   The binary grows by 0.2 MB.
 * Packaging costs nothing at startup: the bundle is found from the
@@ -371,7 +371,7 @@ if zcode is not faster.
   zcode. Finder's file URLs arrive through `on_open_urls` into a channel
   the first window's code drains, so a document opened at launch doesn't
   flash the welcome window. Cold launch, three alternating rounds of 10
-  against a build of `master`'s commit (load average 20–50): the welcome
+  against a build of the commit before it (load average 20–50): the welcome
   window's first pixels at 251.1, 260.1 and 259.4 ms against 269.9, 269.0
   and 261.8 ms. The binary grows by 0.05 MB (`objc2-service-management`).
 * Settings cost nothing measurable at startup: the user's settings,
@@ -380,10 +380,10 @@ if zcode is not faster.
   read (~0.06 ms on the main thread); with no files it's one failed
   `open` each. A project's `.zcode/settings.json` is read when its window
   opens, and every file is read again when FSEvents says it changed
-  (see "Idle" below). Cold launch, alternating runs against `master` (load average
+  (see "Idle" below). Cold launch, alternating runs against the build before (load average
   9–17): the welcome window's first pixels at 253.2 ms with no settings
   files and 255.0 ms with settings, a custom theme, a font and key
-  bindings, against 259.0 ms on `master` (median of 20); ZKit at 262.4 /
+  bindings, against 259.0 ms before (median of 20); ZKit at 262.4 /
   265.2 ms against 262.7 ms (median of 12).
 * Swift highlighting uses a compact tree-sitter query
   (`src/languages/swift-highlights.scm`) that compiles in ~11 ms. The upstream
@@ -391,22 +391,22 @@ if zcode is not faster.
   language's queries are compiled once and shared by every editor (a patch
   to gpui-component's highlighter; upstream compiles them for each editor,
   and an injected language's on every parse): opening 30 firefox-ios Swift
-  files costs 1.0 s of CPU against 1.4 s on `master`. When a project opens,
+  files costs 1.0 s of CPU against 1.4 s before. When a project opens,
   its restored tabs' languages are compiled on a background thread while
   the window is created, so the shown tab's highlighter no longer compiles
   them on the main thread: ZKit with four Swift tabs restored shows its
-  first frame at 201 ms against 218 ms on `master` (median of 15,
+  first frame at 201 ms against 218 ms before (median of 15,
   alternating, load average 9–20); the welcome window is unchanged
   (232.5 ms against 233.9 ms to its first pixels, median of 15).
 * Big files: an edit costs what it touches. The gutter finds a row's fold
   by binary search, not a scan of every fold (Page Down ×5 in a 15 MB JSON
-  file: 15–19 ms of work against 23–31 ms on `master`); an edit's fold
+  file: 15–19 ms of work against 23–31 ms before); an edit's fold
   candidates come from the syntax tree's nodes around it, not from every
   node at the top level; and a language server is sent the editor's own
   edits (`EditJournal`, recorded as each edit is applied), checked against
   the text, with a rope comparison that skips the chunks both texts share
   when they don't add up. Typing near the end of a 50,000-line Swift file:
-  1.9–2.9 ms of work per keystroke against 6.7–7.8 ms on `master`
+  1.9–2.9 ms of work per keystroke against 6.7–7.8 ms before
   (`scripts/bench.py`'s `typing_huge_ms` and `pagedown_json_ms`;
   `docs/scale.md`).
 * Long lines are laid out only where they're seen. A line over 4 KB (a
@@ -420,7 +420,7 @@ if zcode is not faster.
   an edit only until its rows meet the old ones. Lines over 10,000 bytes
   get no syntax colors (VS Code stops at 20,000), and long lines leave out
   inlay hints. In a 3.3 MB one-line minified script (alternating launches
-  against `master`, load average 3–5): typing 3.2 ms of work a keystroke
+  against the build before, load average 3–5): typing 3.2 ms of work a keystroke
   at its start and 7.0 ms at its end against 37 and 63 ms, five Page Downs
   12.8 ms against 61.5 ms, turning soft wrap on 58 ms to the frame on
   screen against 5.5 s, typing at the end with it on 7.0 ms against 2.8 s,
@@ -441,7 +441,7 @@ if zcode is not faster.
   the window), not every 1–3 s; a check polls at its old interval only where
   the stream can't cover its files, and every 30 s anyway. The status bar's
   memory figure is the 30 s idle baseline (the last sample flipped after
-  each redraw and so redrew the window). Over 60 s idle, against `master`
+  each redraw and so redrew the window). Over 60 s idle, against the build before
   (alternating launches, load 1.3–2.1): the welcome window 11 ms of CPU
   against 429–566 ms and 41 interrupt wakeups against 8,700, ZKit 35–50 ms
   against 722–761 ms, HelloZ 36–42 ms against 734–762 ms; with a caret
@@ -455,7 +455,7 @@ if zcode is not faster.
   comment context, which the status bar says ("Large file" / "Minified: no
   syntax highlighting"). Soft wrap's index keeps lines that are one row as
   runs of their count, so it costs what the wrapped lines do (~110 bytes a
-  line before). Heap added by opening a file, against `master`: a 15 MB
+  line before). Heap added by opening a file, against the build before: a 15 MB
   JSON file 22 MB against 514 MB, a 3.3 MB minified script 5 MB against
   194 MB, a 1.2 MB Swift file (which keeps its tree) 55 MB against 61 MB.
   Files up to 64 MB open (16 MB before; a 60 MB log adds 88 MB and types at
@@ -464,7 +464,7 @@ if zcode is not faster.
 * **Tabs:** an editor in a tab no pane shows lets go of its layout, and a
   layout's lines share their whitespace marks instead of each holding a
   copy (a line's layout was 9.1 KB). 40 firefox-ios Swift tabs add 15 MB of
-  heap against 32 MB on `master`, about half of it their syntax trees.
+  heap against 32 MB before, about half of it their syntax trees.
 * **About memory:** while a GPUI window is frontmost and redrawing (for
   example while the caret blinks), macOS attributes about 220 MB of transient
   compositor/GPU memory to the process (the "Owned physical footprint
@@ -591,7 +591,7 @@ vendor/
 scripts/
   e2e.py            end-to-end UI tests
   bench.py          scale benchmarks on firefox-ios (fetched into ~/Library/Caches/zcode-bench), gated against
-                    a build of master made there (docs/scale.md)
+                    a build of main made there (docs/scale.md)
   fake_acp_agent.py a scripted ACP agent for the agent panel's tests (no network or account); it also
                     calls the MCP servers it's handed
   mcp_client.py     a stdio MCP client for the MCP server's tests and for trying it
@@ -767,7 +767,7 @@ cargo test                          # unit tests (zcode and crates/zcode-editor)
 cargo test -- --ignored             # needs Xcode: sourcekit-lsp (also through `zcode bsp`), lldb-dap, and xcodebuild on an edited project
                                     # (network_* tests need network access)
 cargo build --release && python3 scripts/e2e.py [--simulator] [--network] [--compare-apps]   # drives the real UI
-python3 scripts/bench.py [--rounds 3] [--skip-index]   # scale benchmarks on firefox-ios, against master (docs/scale.md)
+python3 scripts/bench.py [--rounds 3] [--skip-index]   # scale benchmarks on firefox-ios, against main (docs/scale.md)
 ```
 
 `scripts/e2e.py` launches zcode with `ZCODE_DEBUG_DIR` set and checks against
@@ -1068,7 +1068,7 @@ The control channel also takes window screenshots
   Xcode's index settings once the build has run, from build settings
   before). zcode opens with a project's first scheme in name order (a
   library here), and the benchmark picks the app's. The relative gates
-  need a `master` with the benchmarks' control commands; an older one is
+  need a `main` with the benchmarks' control commands; an older one is
   measured through `dump`, and only the cold open, memory, readiness and
   keystroke-to-tick gates get a relative limit from it.
 * Large files: whether a file gets a syntax tree is decided when it opens
@@ -1397,6 +1397,16 @@ The control channel also takes window screenshots
   outside zcode don't move breakpoints. The console takes lldb commands only while paused;
   a running program's stdin isn't connected.
 * UI test bundles are skipped by the in-simulator unit-test runner and still
-  need `xcodebuild test` (running only UI tests from a diamond uses it). On this machine that fails ("The test runner hung
+  need `xcodebuild test` (running only UI tests from a diamond uses it). On the machine zcode is developed on that fails ("The test runner hung
   before establishing connection") because of the simulator runtime, with
   either installed Xcode, independent of zcode.
+
+## License
+
+MIT ([`LICENSE`](LICENSE)), copyright Nathan Beddoe.
+
+The exceptions are code derived from other projects, which keeps its
+license: `crates/zcode-editor` is Apache-2.0, derived from GPUI Component
+(Longbridge), and the patched crates in `vendor/` are GPUI Component and
+GPUI (Zed Industries), also Apache-2.0. See their `LICENSE-APACHE`,
+`NOTICE` and `ZCODE-PATCH.md` files.

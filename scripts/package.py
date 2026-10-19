@@ -94,7 +94,7 @@ def info_plist(version, build=None):
         "LSMinimumSystemVersion": MINIMUM_SYSTEM,
         "NSAppleEventsUsageDescription": "zcode drives Xcode's canvas through System Events for Show in Xcode Canvas.",
         "NSHighResolutionCapable": True,
-        "NSHumanReadableCopyright": "Apache License 2.0",
+        "NSHumanReadableCopyright": "Copyright © 2026 Nathan Beddoe. MIT License.",
         "NSSupportsAutomaticGraphicsSwitching": True,
         "UTImportedTypeDeclarations": imported_types,
     }

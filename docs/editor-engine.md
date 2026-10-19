@@ -563,7 +563,7 @@ document, breakpoint and bookmark anchors) whose `editor` is one of its
 views, and gives each pane a view of its own; breakpoint markers drawn in
 every pane come from the one set of anchors. Typing in a 6,000-line Swift
 file shown in two panes takes as long as in one (keystroke to frame, median
-3.9–4.6 ms on this branch with two panes, 3.9–5.3 ms on `master` with one).
+3.9–4.6 ms with two panes, 3.9–5.3 ms before, with one).
 
 ### Multibuffers (`multibuffer.rs`, `multibuffer_editor.rs`)
 
@@ -723,10 +723,10 @@ whitespace marks.
 The extraction moved code without changing it, and the extension points cost
 nothing when unused (no lanes, inlays, blocks or layers means the same paths
 as before; gutter lanes query their owners for visible rows only).
-Measured on this branch against `master`, alternating runs, release builds,
+Measured against the build before, alternating runs, release builds,
 load average 4–14:
 
-| | master | branch |
+| | Before | After |
 |---|---|---|
 | Cold launch, welcome window, first pixels (median of 15) | 246.5 ms | 245.8 ms |
 | Cold launch, ZKit with 3 Swift tabs restored, first pixels (median of 9) | 263.9 ms | 266.3 ms |

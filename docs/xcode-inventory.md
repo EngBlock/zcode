@@ -1,6 +1,6 @@
 # Xcode functionality inventory (for zcode MVP)
 
-Source: `/Users/nathan/Downloads/Xcode-beta.app` (Xcode 27.0, build 27A5228h). `/Applications/Xcode.app` is also 27.0 (27A5252f) and has the same key navigator/inspector bindings. Both bundles were only read, never changed.
+Source: `Xcode-beta.app` (Xcode 27.0, build 27A5228h). `/Applications/Xcode.app` is also 27.0 (27A5252f) and has the same key navigator/inspector bindings. Both bundles were only read, never changed.
 
 ## Where the data lives
 
