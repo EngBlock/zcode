@@ -282,6 +282,8 @@ themes or session. It covers:
   keymap
 * memory monitoring: sampler history, language-server and `SourceKitService`
   memory, the status-bar label and the `--perf-log` file
+* language-server memory counts zcode's own `SourceKitService`, not that of
+  a sourcekit-lsp the suite starts itself (another app's)
 * the scale benchmarks' instrumentation on ZKit: the scan, tree, search
   and Open Quickly timings in `dump` and `bench status`, `bench frame /
   action / keys` and `type-latency`'s times to the frame drawn and the

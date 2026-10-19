@@ -73,8 +73,9 @@ pub fn sample_language_server(pid: i32) -> Option<MemorySample> {
 }
 
 /// Every language server's memory together: theirs, their children's
-/// (vtsls runs TypeScript's tsserver in processes of its own) and
-/// SourceKitService's.
+/// (vtsls runs TypeScript's tsserver in processes of its own) and the
+/// `SourceKitService` helpers zcode's sourcekit-lsp uses, but not the ones
+/// of other apps (Xcode's, another editor's sourcekit-lsp's).
 pub fn sample_language_servers(pids: &[i32]) -> Option<MemorySample> {
     let mut total: Option<MemorySample> = None;
     let mut add = |s: MemorySample| {
@@ -99,12 +100,87 @@ pub fn sample_language_servers(pids: &[i32]) -> Option<MemorySample> {
     if seen.iter().all(|&pid| sample_pid(pid).is_none()) {
         return None;
     }
-    for helper in pids_with_path_suffix("/SourceKitService") {
+    let clients: Vec<i32> = seen.iter().copied().filter(|&pid| process_path(pid).is_some_and(|p| p.ends_with("/sourcekit-lsp"))).collect();
+    for helper in sourcekit_services_of(&clients) {
         if let Some(s) = sample_pid(helper) {
             add(s);
         }
     }
     total
+}
+
+/// Which of the machine's `SourceKitService` processes are `clients`'
+/// (sourcekit-lsp processes): the ones launchd runs in their XPC domains.
+///
+/// sourcekitd, loaded into sourcekit-lsp, starts its framework's XPC
+/// service, which launchd runs in the client's own domain (`pid/<client>`;
+/// Xcode's runs in its SKAgent's). Neither the parent pid (launchd) nor the
+/// responsible pid tells them apart: an app started from a terminal is
+/// responsible to the terminal, and so are the helpers of every client it
+/// starts, Xcode's included when Xcode was opened from the same terminal.
+/// `launchctl print pid/<client>` lists the domain's services and their
+/// pids. Asked again only when the set of `SourceKitService` processes or
+/// of clients changes (one ~3 ms `launchctl` per client), so the 2 s
+/// sampler doesn't spawn a process each time.
+fn sourcekit_services_of(clients: &[i32]) -> Vec<i32> {
+    struct Known {
+        clients: Vec<i32>,
+        running: Vec<i32>,
+        ours: Vec<i32>,
+    }
+    static KNOWN: std::sync::Mutex<Option<Known>> = std::sync::Mutex::new(None);
+
+    let mut clients = clients.to_vec();
+    clients.sort_unstable();
+    let mut running = pids_with_path_suffix("/SourceKitService");
+    running.sort_unstable();
+    let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(k) = known.as_ref().filter(|k| k.clients == clients && k.running == running) {
+        return k.ours.clone();
+    }
+    let ours: Vec<i32> = clients
+        .iter()
+        .flat_map(|&client| {
+            let listing = std::process::Command::new("/bin/launchctl")
+                .arg("print")
+                .arg(format!("pid/{client}"))
+                .stderr(std::process::Stdio::null())
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+                .unwrap_or_default();
+            xpc_domain_services(&listing)
+        })
+        .filter(|(pid, name)| name.starts_with("com.apple.SourceKitService") && running.contains(pid))
+        .map(|(pid, _)| pid)
+        .collect();
+    *known = Some(Known { clients, running, ours: ours.clone() });
+    ours
+}
+
+/// The running services in `launchctl print pid/<pid>`'s `services` block
+/// (lines of pid, last exit status and label): their pids and labels.
+fn xpc_domain_services(listing: &str) -> Vec<(i32, String)> {
+    let mut services = vec![];
+    let mut inside = false;
+    for line in listing.lines() {
+        if !inside {
+            inside = line.trim() == "services = {";
+            continue;
+        }
+        if line.trim() == "}" {
+            break;
+        }
+        let mut fields = line.split_whitespace();
+        if let (Some(pid), Some(_), Some(label)) = (fields.next(), fields.next(), fields.next())
+            && let Ok(pid) = pid.parse::<i32>()
+            && pid > 0
+        {
+            services.push((pid, label.to_string()));
+        }
+    }
+    services
 }
 
 fn child_pids(pid: i32) -> Vec<i32> {
@@ -398,7 +474,14 @@ pub fn start_sampler(cx: &mut App) {
         loop {
             let me = sample_self();
             let pids = cx.update(|cx| cx.global::<Perf>().language_server_pids.clone());
-            let ls = pids.first().and_then(|&pid| sample_language_servers(&pids).map(|s| (pid, s)));
+            // Off the main thread: it lists the machine's processes, and
+            // now and then asks launchd (`sourcekit_services_of`).
+            let ls = if pids.is_empty() {
+                None
+            } else {
+                let sampled = pids.clone();
+                cx.background_executor().spawn(async move { sample_language_servers(&sampled) }).await.map(|s| (pids[0], s))
+            };
             let log = cx.update(|cx| {
                 let perf = cx.global_mut::<Perf>();
                 perf.record(me);
@@ -426,6 +509,15 @@ pub fn start_sampler(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_clients_xpc_services_are_read_from_its_launchd_domain() {
+        // `launchctl print pid/<sourcekit-lsp>` (macOS 27), trimmed: the
+        // services block, then others whose lines look alike.
+        let listing = "pid/4242 = {\n\ttype = pid\n\tservices = {\n\t\t    5564      - \tcom.apple.SourceKitService.6.4.0.33.1_default\n\t\t       0      - \tcom.apple.MTLCompilerService\n\t}\n\n\tservice stubs = {\n\t\tcom.apple.siri.media-indexer\n\t}\n\tendpoints = {\n\t\t    7777      - \tcom.apple.SourceKitService.other\n\t}\n}\n";
+        assert_eq!(xpc_domain_services(listing), vec![(5564, "com.apple.SourceKitService.6.4.0.33.1_default".to_string())]);
+        assert!(xpc_domain_services("").is_empty());
+    }
 
     #[test]
     fn timings_keep_the_last_measurement_per_key() {

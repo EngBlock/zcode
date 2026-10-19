@@ -4728,9 +4728,8 @@ def long_line_checks():
         z.quit()
 
 
-def interrupt_wakeups(pid):
-    """How many times `pid`'s threads have been woken by an interrupt (a
-    timer, the display link's thread) so far: `proc_pid_rusage`."""
+def rusage(pid):
+    """`proc_pid_rusage` of `pid` (RUSAGE_INFO_V0)."""
     import ctypes
 
     class RusageInfoV0(ctypes.Structure):
@@ -4740,7 +4739,131 @@ def interrupt_wakeups(pid):
 
     info = RusageInfoV0()
     assert ctypes.CDLL("/usr/lib/libproc.dylib").proc_pid_rusage(pid, 0, ctypes.byref(info)) == 0
-    return info.interrupt_wkups
+    return info
+
+
+def interrupt_wakeups(pid):
+    """How many times `pid`'s threads have been woken by an interrupt (a
+    timer, the display link's thread) so far."""
+    return rusage(pid).interrupt_wkups
+
+
+def footprint_mb(pid):
+    """`pid`'s physical footprint (Activity Monitor's Memory), in MB."""
+    return rusage(pid).phys_footprint / 2 ** 20
+
+
+def descendants(pid):
+    kids = [int(k) for k in subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout.split()]
+    return kids + [d for k in kids for d in descendants(k)]
+
+
+def sourcekit_services_of(pid):
+    """The SourceKitService processes in `pid`'s launchd domain: the XPC
+    helpers of the sourcekit-lsp that `pid` is."""
+    out = subprocess.run(["launchctl", "print", f"pid/{pid}"], capture_output=True, text=True).stdout
+    block = out.split("\tservices = {\n", 1)[1].split("\n\t}", 1)[0] if "\tservices = {\n" in out else ""
+    return [int(f[0]) for f in (l.split() for l in block.splitlines()) if len(f) >= 3 and f[0] != "0" and f[2].startswith("com.apple.SourceKitService")]
+
+
+class ForeignSourceKitLsp:
+    """A sourcekit-lsp of the suite's own with `path` open, as another app
+    (Xcode, another editor) would run one: its SourceKitService isn't
+    zcode's."""
+
+    def __init__(self, folder, path):
+        import lsp_proxy
+        self.lsp = lsp_proxy
+        binary = subprocess.run(["xcrun", "--find", "sourcekit-lsp"], capture_output=True, text=True, check=True).stdout.strip()
+        self.proc = subprocess.Popen([binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        uri = lambda p: "file://" + p
+        self.send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                   "params": {"processId": os.getpid(), "rootUri": uri(folder), "capabilities": {}}})
+        self.wait(lambda m: m.get("id") == 1)
+        self.send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+        with open(path) as f:
+            text = f.read()
+        self.send({"jsonrpc": "2.0", "method": "textDocument/didOpen",
+                   "params": {"textDocument": {"uri": uri(path), "languageId": "swift", "version": 1, "text": text}}})
+        # Diagnosed: sourcekitd has built the file's AST in its helper.
+        self.wait(lambda m: m.get("method") == "textDocument/publishDiagnostics" and m["params"]["uri"].endswith(os.path.basename(path)))
+
+    def send(self, message):
+        self.lsp.write_message(self.proc.stdin, message)
+
+    def wait(self, predicate, timeout=120):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            message = self.lsp.read_message(self.proc.stdout)
+            if message is None:
+                raise RuntimeError("the foreign sourcekit-lsp exited")
+            if predicate(message):
+                return message
+        raise TimeoutError("the foreign sourcekit-lsp didn't answer")
+
+    def helpers(self):
+        return sourcekit_services_of(self.proc.pid)
+
+    def close(self):
+        self.proc.kill()
+        self.proc.wait()
+
+
+def language_server_memory_checks(samples):
+    """The status bar's language-server memory (docs/scale.md, Performance
+    batch 4): zcode's servers, their children and the SourceKitService its
+    own sourcekit-lsp uses, not one of another app's."""
+    project = os.path.join(WORK, "MemoryKit")
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    other = os.path.join(WORK, "OtherApp")
+    os.makedirs(other)
+    big = os.path.join(other, "Big.swift")
+    with open(big, "w") as f:
+        f.write(big_swift())
+    z = Zcode(project)
+
+    def foreign_sourcekit_service_left_out():
+        z.run(f"open {os.path.join(project, 'Sources', 'ZKit', 'Greeter.swift')}")
+        z.wait_for(lambda s: s["lsp"] == "Ready", timeout=120)
+        foreign = ForeignSourceKitLsp(other, big)
+        try:
+            helpers = foreign.helpers()
+            assert helpers, "the foreign sourcekit-lsp has no SourceKitService"
+            # Settled: sourcekit-lsp's background indexing (swift-frontend
+            # children, counted while they run) done, and the sampler's
+            # figure (every 2 s) the same twice.
+            shown = None
+            for _ in range(60):
+                s = z.dump()
+                figure = s["memory"]["language_server_mb"]
+                if not s["lsp_progress"] and shown and figure and abs(figure - shown) < 0.1 * shown:
+                    break
+                shown = figure
+                time.sleep(2.5)
+            servers = [s["pid"] for s in z.dump()["language_servers"] if s["pid"]]
+            tree = servers + [d for pid in servers for d in descendants(pid)]
+            clients = [pid for pid in tree if "sourcekit-lsp" in os.path.basename(process_path(pid))]
+            ours_helpers = [h for pid in clients for h in sourcekit_services_of(pid)]
+            assert ours_helpers and not set(ours_helpers) & set(helpers), (ours_helpers, helpers)
+            ours = sum(footprint_mb(pid) for pid in tree + ours_helpers)
+            theirs = sum(footprint_mb(pid) for pid in helpers)
+            shown = z.dump()["memory"]["language_server_mb"]
+            print(f"    zcode shows {shown:.0f} MB; its servers and SourceKitService {ours:.0f} MB; "
+                  f"the other sourcekit-lsp's SourceKitService {theirs:.0f} MB")
+            # Every SourceKitService on the machine was counted.
+            assert theirs > 30, theirs
+            assert abs(shown - ours) < abs(shown - (ours + theirs)), (shown, ours, theirs)
+        finally:
+            foreign.close()
+
+    try:
+        check("Memory: the language servers' figure is zcode's servers and its own SourceKitService, not another app's", foreign_sourcekit_service_left_out)
+    finally:
+        z.quit()
+
+
+def process_path(pid):
+    return subprocess.run(["ps", "-o", "comm=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
 
 
 def graphics_mb(pid):
@@ -7244,6 +7367,9 @@ def main():
 
     print("Idle (a copy of samples/ZKit):")
     idle_checks(samples)
+
+    print("Language server memory (a copy of samples/ZKit, and a sourcekit-lsp of the suite's own):")
+    language_server_memory_checks(samples)
 
     print("Settings, key bindings and themes (a copy of samples/ZKit):")
     settings_checks(samples)
