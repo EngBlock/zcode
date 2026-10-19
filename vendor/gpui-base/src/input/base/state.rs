@@ -791,6 +791,11 @@ impl<M: InputModeKind> InputBaseState<M> {
                             blink_cursor.start(cx);
                         });
                     }
+                } else {
+                    // zcode patch: the pause the comment above promises. GPUI's
+                    // blur on deactivation stops it too, but not while the
+                    // context menu is open (`on_blur` returns early).
+                    input.blink_cursor.update(cx, |blink_cursor, cx| blink_cursor.suspend(cx));
                 }
             }),
             cx.on_focus(&focus_handle, window, Self::on_focus),

@@ -3,6 +3,11 @@ use std::time::Duration;
 
 static INTERVAL: Duration = Duration::from_millis(500);
 static PAUSE_DELAY: Duration = Duration::from_millis(300);
+/// Blinks (shown or hidden) after the last input or focus before the cursor
+/// stays shown: 10 s, GTK's `gtk-cursor-blink-timeout`. Every blink redraws
+/// the window, so a cursor that blinks forever keeps an idle window drawing
+/// (and its compositor memory, ~230 MB, attributed to the process).
+const IDLE_BLINKS: u32 = 20;
 
 // On Windows, Linux, we should use integer to avoid blurry cursor.
 #[cfg(not(target_os = "macos"))]
@@ -14,12 +19,16 @@ pub(super) const CURSOR_WIDTH: Pixels = px(1.5);
 ///
 /// It will start blinking with a interval of 500ms.
 /// Every loop will notify the view to update the `visible`, and Input will observe this update to touch repaint.
+/// After [`IDLE_BLINKS`] without input it stops, shown, until the next input
+/// or focus.
 ///
 /// The input painter will check if this in visible state, then it will draw the cursor.
 pub(crate) struct BlinkCursor {
     visible: bool,
     paused: bool,
     epoch: usize,
+    /// Blinks since the last start or pause.
+    blinks: u32,
 
     _task: Task<()>,
 }
@@ -30,12 +39,14 @@ impl BlinkCursor {
             visible: false,
             paused: false,
             epoch: 0,
+            blinks: 0,
             _task: Task::ready(()),
         }
     }
 
     /// Start the blinking
     pub(crate) fn start(&mut self, cx: &mut Context<Self>) {
+        self.blinks = 0;
         self.blink(self.epoch, cx);
     }
 
@@ -47,6 +58,20 @@ impl BlinkCursor {
         self.visible = false;
         self._task = Task::ready(());
         cx.notify();
+    }
+
+    /// The window went to the background: stop blinking (an inactive window
+    /// shows no cursor) until [`Self::start`] on activation. A no-op on a
+    /// cursor that isn't blinking, so unfocused inputs don't redraw.
+    pub(crate) fn suspend(&mut self, cx: &mut Context<Self>) {
+        if self.epoch != 0 {
+            self.stop(cx);
+        }
+    }
+
+    /// Whether a blink is scheduled, for tests and the control channel.
+    pub(crate) fn is_blinking(&self) -> bool {
+        self.epoch != 0 && !self.paused && self.blinks < IDLE_BLINKS
     }
 
     fn next_epoch(&mut self) -> usize {
@@ -64,6 +89,17 @@ impl BlinkCursor {
             self.visible = true;
             return;
         }
+
+        // Idle long enough: stay shown, and stop redrawing. The epoch stays,
+        // so the next pause (input) blinks again.
+        if self.blinks >= IDLE_BLINKS {
+            if !self.visible {
+                self.visible = true;
+                cx.notify();
+            }
+            return;
+        }
+        self.blinks += 1;
 
         self.visible = !self.visible;
         cx.notify();
@@ -97,6 +133,7 @@ impl BlinkCursor {
 
         self.paused = true;
         self.visible = true;
+        self.blinks = 0;
         cx.notify();
 
         // Every pause replaces the pending timer, keeping repeated input visible.
@@ -222,6 +259,67 @@ mod tests {
         cursor.update(cx, |cursor, cx| cursor.start(cx));
         cx.run_until_parked();
         assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+    }
+
+    #[gpui::test]
+    fn an_idle_cursor_stops_blinking_shown_until_input(cx: &mut TestAppContext) {
+        let cursor = cx.new(|_| BlinkCursor::new());
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cx.run_until_parked();
+
+        let notifications = Rc::new(Cell::new(0usize));
+        let count = notifications.clone();
+        let _observer = cx.update(|cx| cx.observe(&cursor, move |_, _| count.set(count.get() + 1)));
+
+        // It blinks for IDLE_BLINKS, then stays shown and stops notifying.
+        cx.executor().advance_clock(INTERVAL * IDLE_BLINKS);
+        cx.run_until_parked();
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+        assert!(!cursor.read_with(cx, |cursor, _| cursor.is_blinking()));
+        let idle = notifications.get();
+        assert!(idle >= IDLE_BLINKS as usize - 1, "{idle} blinks");
+        cx.executor().advance_clock(Duration::from_secs(60));
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), idle, "an idle cursor kept redrawing");
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+
+        // Input blinks it again.
+        cursor.update(cx, |cursor, cx| cursor.pause(cx));
+        cx.run_until_parked();
+        cx.executor().advance_clock(PAUSE_DELAY + INTERVAL);
+        cx.run_until_parked();
+        assert!(cursor.read_with(cx, |cursor, _| cursor.is_blinking()));
+        assert!(notifications.get() > idle + 1);
+    }
+
+    #[gpui::test]
+    fn suspending_stops_a_blinking_cursor_and_leaves_others_alone(cx: &mut TestAppContext) {
+        let blinking = cx.new(|_| BlinkCursor::new());
+        let unfocused = cx.new(|_| BlinkCursor::new());
+        blinking.update(cx, |cursor, cx| cursor.start(cx));
+        cx.run_until_parked();
+
+        let notifications = Rc::new(Cell::new(0usize));
+        let count = notifications.clone();
+        let _observer = cx.update(|cx| cx.observe(&unfocused, move |_, _| count.set(count.get() + 1)));
+        let blinks = Rc::new(Cell::new(0usize));
+        let count = blinks.clone();
+        let _blinks = cx.update(|cx| cx.observe(&blinking, move |_, _| count.set(count.get() + 1)));
+
+        // The window deactivates.
+        blinking.update(cx, |cursor, cx| cursor.suspend(cx));
+        unfocused.update(cx, |cursor, cx| cursor.suspend(cx));
+        cx.run_until_parked();
+        let suspended = blinks.get();
+        cx.executor().advance_clock(Duration::from_secs(5));
+        cx.run_until_parked();
+        assert_eq!(blinks.get(), suspended, "a suspended cursor kept blinking");
+        assert_eq!(notifications.get(), 0, "suspending an unfocused input redrew it");
+
+        // And activates again.
+        blinking.update(cx, |cursor, cx| cursor.start(cx));
+        cx.run_until_parked();
+        assert!(blinking.read_with(cx, |cursor, _| cursor.visible() && cursor.is_blinking()));
     }
 
     #[gpui::test]

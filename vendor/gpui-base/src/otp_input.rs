@@ -35,6 +35,9 @@ impl OtpState {
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() && this.focus_handle.is_focused(window) {
                     this.blink_cursor.update(cx, |cursor, cx| cursor.start(cx));
+                } else if !window.is_window_active() {
+                    // zcode patch: pause in the background.
+                    this.blink_cursor.update(cx, |cursor, cx| cursor.suspend(cx));
                 }
             }),
             cx.on_focus(&focus_handle, window, Self::on_focus),

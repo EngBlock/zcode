@@ -110,6 +110,7 @@ crates/
   zcode-emmet/      Emmet, std only: HTML, JSX and CSS abbreviations to LSP snippets, the abbreviation
                     before the cursor, Wrap with Abbreviation
 vendor/
+  gpui-base/        gpui-base 0.7.3, a text field's caret resting after 10 s without input (ZCODE-PATCH.md)
   gpui-component/   gpui-component 0.7.3 plus small patches (ZCODE-PATCH.md)
   gpui-pre-macos/   GPUI's macOS backend 0.3.9, its display link paused while a window is idle (ZCODE-PATCH.md)
 scripts/
@@ -149,7 +150,10 @@ once, all described in `vendor/gpui-component/ZCODE-PATCH.md`. GPUI's
 macOS backend (`gpui-pre-macos`, Zed's `gpui_macos`, Apache-2.0) is
 vendored with one patch that pauses an idle window's display link through
 the frame waker GPUI's core already has
-(`vendor/gpui-pre-macos/ZCODE-PATCH.md`). Files changed on disk come from
+(`vendor/gpui-pre-macos/ZCODE-PATCH.md`), and `gpui-base` (GPUI Kit's
+widgets, Apache-2.0) with one that stops a text field's caret blinking
+after 10 s without input, as zcode's editor's own copy of it does
+(`vendor/gpui-base/ZCODE-PATCH.md`). Files changed on disk come from
 FSEvents through `notify` (CC0-1.0, already built for gpui-component).
 Opening large files without a syntax tree follows VS Code's and JetBrains'
 documented behavior (limits past which they turn features off); the

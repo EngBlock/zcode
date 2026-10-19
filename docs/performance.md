@@ -251,7 +251,10 @@ if zcode is not faster.
   against 429–566 ms and 41 interrupt wakeups against 8,700, ZKit 35–50 ms
   against 722–761 ms, HelloZ 36–42 ms against 734–762 ms; with a caret
   blinking, 24 wakeups a second against 161 (the e2e check, its control
-  channel included). A file changed outside
+  channel included). A caret blinks for 10 s after the last key or click
+  (GTK's `gtk-cursor-blink-timeout`) and then rests, shown, so an idle
+  window with an editor draws nothing (it drew twice a second, holding
+  ~230 MB of compositor memory; see About memory). A file changed outside
   zcode is read again in ~0.2 s (up to 3 s before), settings.json in ~0.2 s.
 * **Large files:** a file over 2 MB, or over 256 KB and mostly lines past
   10,000 bytes (minified), opens with its language (comments, brackets,
@@ -270,11 +273,15 @@ if zcode is not faster.
   layout's lines share their whitespace marks instead of each holding a
   copy (a line's layout was 9.1 KB). 40 firefox-ios Swift tabs add 15 MB of
   heap against 32 MB before, about half of it their syntax trees.
-* **About memory:** while a GPUI window is frontmost and redrawing (for
-  example while the caret blinks), macOS attributes about 220 MB of transient
-  compositor/GPU memory to the process (the "Owned physical footprint
-  (graphics)" category in `footprint`). That memory is released within a
-  second once redraws stop or the window goes to the background, and a bare
-  GPUI window shows exactly the same behavior. The Performance panel reports
-  both the current footprint and a 30-second idle baseline. zcode itself
-  holds about 85 MB.
+* **About memory:** while a GPUI window draws, macOS attributes about
+  230 MB of compositor/GPU memory to the process ("owned unmapped
+  (graphics)" in `vmmap`, part of the physical footprint), and a bare GPUI
+  window does the same. It's released about 1.5 s after the window's last
+  frame. A focused editor's caret used to blink for as long as it had focus,
+  a frame every 500 ms, so a window with an editor never let go of it
+  (~260 MB, frontmost and idle, in any project); the caret now rests, shown,
+  10 s after the last key or click, and the window stops drawing (28 MB a
+  few seconds later). A window behind another app's draws nothing either:
+  its caret doesn't blink there. The Performance panel reports both the
+  current footprint and a 30-second idle baseline. zcode itself holds about
+  85 MB.

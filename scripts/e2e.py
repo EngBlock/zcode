@@ -4743,21 +4743,45 @@ def interrupt_wakeups(pid):
     return info.interrupt_wkups
 
 
+def graphics_mb(pid):
+    """The compositor memory macOS attributes to `pid` (`vmmap`'s "owned
+    unmapped (graphics)"): ~230 MB for a while after each frame a window
+    draws, a few MB once it stops."""
+    out = subprocess.run(["vmmap", "--summary", str(pid)], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if line.startswith("owned unmapped (graphics)"):
+            value = line.split()[5]  # resident
+            return float(value[:-1]) * {"K": 1 / 1024, "M": 1, "G": 1024}[value[-1]]
+    return 0.0
+
+
+def frontmost(process):
+    """Brings `process` (a process name) to the front through System Events."""
+    subprocess.run(["osascript", "-e", f'tell application "System Events" to set frontmost of process "{process}" to true'],
+                   check=True, capture_output=True)
+
+
 def idle_checks(samples):
-    """An idle window (docs/scale.md, Performance batch 3): its display link
-    pauses while nothing is drawn, so with a caret blinking zcode wakes a few
-    times a second rather than at the display's rate, and the caret still
-    blinks; files, settings and git are followed through FSEvents rather
-    than polled, and a file changed outside zcode is read again at once."""
+    """An idle window (docs/scale.md, Performance batches 3 and 4): its
+    display link pauses while nothing is drawn, so with a caret blinking
+    zcode wakes a few times a second rather than at the display's rate, and
+    the caret still blinks; 10 s after the last key the caret stops
+    blinking and the window draws nothing, frontmost or behind another
+    app's window; files, settings and git are followed through FSEvents
+    rather than polled, and a file changed outside zcode is read again at
+    once."""
     project = os.path.realpath(os.path.join(WORK, "IdleKit"))
     shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
     greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
     z = Zcode(project)
 
+    def drawing():
+        return z.dump()["drawing"]
+
     def wakes_a_few_times_a_second():
-        z.run(f"open {greeter}", "wait 3000")
+        z.run(f"open {greeter}", "wait 1000", "keys right")
         before, start = interrupt_wakeups(z.proc.pid), time.time()
-        time.sleep(10)
+        time.sleep(8)
         rate = (interrupt_wakeups(z.proc.pid) - before) / (time.time() - start)
         # The display link alone woke zcode ~120 times a second (60 on a
         # 60 Hz display). What's left: the caret's frames, this suite's
@@ -4766,6 +4790,8 @@ def idle_checks(samples):
         assert rate < 40, rate
 
     def caret_still_blinks():
+        # A key: the caret blinks again (it rests 10 s after the last one).
+        z.run("keys left", "wait 400")
         shots = []
         for i in range(10):
             path = os.path.join(WORK, f"idle-{i}.png")
@@ -4775,6 +4801,61 @@ def idle_checks(samples):
             time.sleep(0.12)
         # Shown and hidden at least once in ~1.8 s (it blinks every 500 ms).
         assert len(set(shots)) >= 2, "the window didn't change in 1.8 s"
+
+    def caret_rests_when_idle():
+        # A key holds the caret shown for 300 ms, then it blinks.
+        z.run("keys right", "wait 400")
+        assert drawing()["caret_blinking"], drawing()
+        blinking = graphics_mb(z.proc.pid)
+        time.sleep(11.5)
+        rested = drawing()
+        assert not rested["caret_blinking"] and rested["window_active"], rested
+        before, start = interrupt_wakeups(z.proc.pid), time.time()
+        time.sleep(5)
+        rate = (interrupt_wakeups(z.proc.pid) - before) / (time.time() - start)
+        paints = drawing()["editor_paints"] - rested["editor_paints"]
+        graphics = graphics_mb(z.proc.pid)
+        print(f"    10 s after the last key: {paints} editor paints in 5 s, {rate:.1f} interrupt wakeups a second, "
+              f"compositor memory {graphics:.0f} MB (blinking: {blinking:.0f} MB)")
+        # The caret blinked forever: two frames a second, and ~230 MB of
+        # compositor memory never released.
+        assert paints <= 1, paints
+        assert graphics < 100, graphics
+        # The next key blinks it again.
+        z.run("keys left", "wait 400")
+        assert drawing()["caret_blinking"], drawing()
+
+    def nothing_drawn_behind_another_window():
+        helper = os.path.join(WORK, "background_window")
+        if not os.path.exists(helper):
+            subprocess.run(["xcrun", "swiftc", "-O", os.path.join(ROOT, "scripts", "background_window.swift"), "-o", helper],
+                           check=True, capture_output=True)
+        z.run("keys right", "wait 400")
+        assert drawing()["caret_blinking"], drawing()
+        other = subprocess.Popen([helper, "30"])
+        try:
+            time.sleep(1)
+            frontmost("background_window")
+            z.wait_for(lambda s: not s["drawing"]["window_active"], timeout=10, interval=0.2)
+            time.sleep(2)
+            behind = drawing()
+            before, start = interrupt_wakeups(z.proc.pid), time.time()
+            time.sleep(5)
+            rate = (interrupt_wakeups(z.proc.pid) - before) / (time.time() - start)
+            paints = drawing()["editor_paints"] - behind["editor_paints"]
+            graphics = graphics_mb(z.proc.pid)
+            print(f"    behind another app's window (zcode's still visible): {paints} editor paints in 5 s, "
+                  f"{rate:.1f} interrupt wakeups a second, compositor memory {graphics:.0f} MB")
+            assert not behind["caret_blinking"], behind
+            assert paints <= 1 and graphics < 100, (paints, graphics)
+        finally:
+            other.terminate()
+            other.wait()
+            frontmost("zcode")
+        # In front again: the caret blinks.
+        z.wait_for(lambda s: s["drawing"]["window_active"], timeout=10, interval=0.2)
+        z.run("keys left", "wait 400")
+        assert drawing()["caret_blinking"], drawing()
 
     def files_followed_through_fsevents():
         s = z.wait_for(lambda s: s["file_watching"]["checks"] and s["file_watching"]["watched"] == s["file_watching"]["checks"],
@@ -4804,6 +4885,8 @@ def idle_checks(samples):
     try:
         check("Idle: with the caret blinking, zcode wakes a few times a second, not at the display's rate", wakes_a_few_times_a_second)
         check("Idle: the caret still blinks while the display link pauses between frames", caret_still_blinks)
+        check("Idle: 10 s after the last key the caret rests and the window draws nothing (its compositor memory goes)", caret_rests_when_idle)
+        check("Idle: behind another app's window, an editor's window draws nothing; in front again the caret blinks", nothing_drawn_behind_another_window)
         check("Idle: open files and settings are followed through FSEvents; a change outside zcode arrives at once", files_followed_through_fsevents)
     finally:
         z.quit()

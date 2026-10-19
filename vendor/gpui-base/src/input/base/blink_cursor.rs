@@ -3,6 +3,11 @@ use instant::Duration;
 
 static INTERVAL: Duration = Duration::from_millis(500);
 static PAUSE_DELAY: Duration = Duration::from_millis(300);
+/// zcode patch: blinks (shown or hidden) after the last input or focus
+/// before the cursor stays shown: 10 s, GTK's `gtk-cursor-blink-timeout`.
+/// Every blink redraws the window, so a cursor that blinks forever keeps an
+/// idle window drawing.
+const IDLE_BLINKS: u32 = 20;
 
 // On Windows, Linux, we should use integer to avoid blurry cursor.
 #[cfg(not(target_os = "macos"))]
@@ -20,6 +25,8 @@ pub(crate) struct BlinkCursor {
     visible: bool,
     paused: bool,
     epoch: usize,
+    // zcode patch: blinks since the last start or pause.
+    blinks: u32,
 
     _task: Task<()>,
 }
@@ -30,12 +37,14 @@ impl BlinkCursor {
             visible: false,
             paused: false,
             epoch: 0,
+            blinks: 0,
             _task: Task::ready(()),
         }
     }
 
     /// Start the blinking
     pub(crate) fn start(&mut self, cx: &mut Context<Self>) {
+        self.blinks = 0; // zcode patch
         self.blink(self.epoch, cx);
     }
 
@@ -47,6 +56,16 @@ impl BlinkCursor {
         self.visible = false;
         self._task = Task::ready(());
         cx.notify();
+    }
+
+    /// zcode patch: the window went to the background, so stop blinking (an
+    /// inactive window shows no cursor) until [`Self::start`] on activation.
+    /// A no-op on a cursor that isn't blinking, so unfocused inputs don't
+    /// redraw.
+    pub(crate) fn suspend(&mut self, cx: &mut Context<Self>) {
+        if self.epoch != 0 {
+            self.stop(cx);
+        }
     }
 
     fn next_epoch(&mut self) -> usize {
@@ -64,6 +83,17 @@ impl BlinkCursor {
             self.visible = true;
             return;
         }
+
+        // zcode patch: idle long enough, so stay shown and stop redrawing. The
+        // epoch stays, so the next pause (input) blinks again.
+        if self.blinks >= IDLE_BLINKS {
+            if !self.visible {
+                self.visible = true;
+                cx.notify();
+            }
+            return;
+        }
+        self.blinks += 1;
 
         self.visible = !self.visible;
         cx.notify();
@@ -97,6 +127,7 @@ impl BlinkCursor {
 
         self.paused = true;
         self.visible = true;
+        self.blinks = 0; // zcode patch
         cx.notify();
 
         // Every pause replaces the pending timer, keeping repeated input visible.
@@ -242,5 +273,37 @@ mod tests {
 
         assert!(!cursor.read_with(cx, |cursor, _| cursor.visible()));
         assert_eq!(notifications.get(), 0, "a stopped cursor kept blinking");
+    }
+
+    // zcode patch
+    #[gpui::test]
+    fn an_idle_cursor_stops_blinking_shown_until_input(cx: &mut TestAppContext) {
+        let cursor = cx.new(|_| BlinkCursor::new());
+        cursor.update(cx, |cursor, cx| cursor.start(cx));
+        cx.run_until_parked();
+
+        let notifications = Rc::new(Cell::new(0usize));
+        let count = notifications.clone();
+        let _observer = cx.update(|cx| cx.observe(&cursor, move |_, _| count.set(count.get() + 1)));
+        cx.executor().advance_clock(INTERVAL * IDLE_BLINKS);
+        cx.run_until_parked();
+        let idle = notifications.get();
+        cx.executor().advance_clock(Duration::from_secs(60));
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), idle, "an idle cursor kept redrawing");
+        assert!(cursor.read_with(cx, |cursor, _| cursor.visible()));
+
+        // Input blinks it again; the window going to the background stops it.
+        cursor.update(cx, |cursor, cx| cursor.pause(cx));
+        cx.run_until_parked();
+        cx.executor().advance_clock(PAUSE_DELAY + INTERVAL * 2);
+        cx.run_until_parked();
+        assert!(notifications.get() > idle + 2);
+        cursor.update(cx, |cursor, cx| cursor.suspend(cx));
+        cx.run_until_parked();
+        let suspended = notifications.get();
+        cx.executor().advance_clock(Duration::from_secs(5));
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), suspended, "a suspended cursor kept blinking");
     }
 }

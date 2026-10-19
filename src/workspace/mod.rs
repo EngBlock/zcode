@@ -944,6 +944,13 @@ impl Workspace {
         state["build_server"] = self.build_server_status(cx);
         // FSEvents: how many of the checks of files on disk it covers.
         state["file_watching"] = crate::fs_watch::status();
+        // Whether an idle window still draws: editors' paints since launch,
+        // and whether the focused one's caret blinks (each blink is a frame).
+        state["drawing"] = serde_json::json!({
+            "editor_paints": zcode_editor::paint_count(),
+            "caret_blinking": self.active_editor().map(|editor| editor.read(cx).caret_blinking(cx)),
+            "window_active": window.is_window_active(),
+        });
         state["language_features"] = serde_json::json!({
             "server": self.active_item().map(|i| self.lsp.read(cx).features_for(&i.path)).unwrap_or_default().summary(),
             "inlay_hints": self.inlay_hints_summary(cx),

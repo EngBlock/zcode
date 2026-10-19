@@ -579,7 +579,9 @@ impl<M: InputModeKind> InputBaseState<M> {
             }),
             // Observe the blink cursor to repaint the view when it changes.
             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
-            // Blink the cursor when the window is active, pause when it's not.
+            // Blink the cursor when the window is active, pause when it's not
+            // (an inactive window shows no cursor). GPUI's blur on deactivation
+            // stops it too, but not while the context menu is open.
             cx.observe_window_activation(window, |input, window, cx| {
                 if window.is_window_active() {
                     let focus_handle = input.focus_handle.clone();
@@ -588,6 +590,8 @@ impl<M: InputModeKind> InputBaseState<M> {
                             blink_cursor.start(cx);
                         });
                     }
+                } else {
+                    input.blink_cursor.update(cx, |blink_cursor, cx| blink_cursor.suspend(cx));
                 }
             }),
             cx.on_focus(&focus_handle, window, Self::on_focus),
@@ -753,6 +757,13 @@ impl<M: InputModeKind> InputBaseState<M> {
     pub fn release_layout(&mut self) {
         self.last_layout = None;
         self.prepaint_caret_geometry = None;
+    }
+
+    /// Whether the caret is blinking (focused, the window active, and input
+    /// in the last ~10 s): each blink redraws the window. For the control
+    /// channel's checks.
+    pub fn caret_blinking(&self, cx: &App) -> bool {
+        self.blink_cursor.read(cx).is_blinking()
     }
 
     /// How many places the text could fold (from its syntax tree). For the

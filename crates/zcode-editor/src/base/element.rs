@@ -29,6 +29,15 @@ use super::{
     mode::LayoutMode,
 };
 
+/// Editors painted since launch, every editor's frames together: the
+/// control channel's measure of whether an idle window still draws.
+static PAINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How many times an editor has been painted since launch.
+pub fn paint_count() -> u64 {
+    PAINTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn diagnostic_highlight_style(
     severity: crate::DiagnosticSeverity,
     colors: crate::DiagnosticColors,
@@ -3495,6 +3504,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
         window: &mut Window,
         cx: &mut App,
     ) {
+        PAINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (focus_handle, show_cursor, disabled, selected_range, editor_style, editor_paddings) = {
             let state = self.state.read(cx);
             (

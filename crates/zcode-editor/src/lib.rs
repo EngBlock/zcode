@@ -123,6 +123,7 @@ pub(crate) fn test_init(cx: &mut App) {
 
 pub use gpui_base::{NumberInputEvent, NumberStep};
 pub use base::InputContextMenuCapabilities;
+pub use element::paint_count;
 pub use anchors::{Anchor, AnchorBias, AnchorRow};
 pub use annotations::{Block, BlockClicked, Inlay};
 pub use gutter::{
