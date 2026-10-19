@@ -4691,18 +4691,12 @@ def long_line_checks():
         z.run("keys end", "type x(", "wait 100")
         assert z.dump()["active"]["line_text"].endswith("* 2 }x()"), z.dump()["active"]["line_text"]
         undo_all()
-        # Vim's text objects go by the text too. Turning Vim on writes the
-        # run's settings.json, which later checks expect not to exist yet.
-        settings_file = json.loads(z.run("settings paths")[-1])["settings"]
-        had_settings = os.path.exists(settings_file)
+        # Vim's text objects go by the text too.
         z.run("vim on", "wait 200", "keys home", "type f(ci(", "type b: Int", "keys escape", "wait 100")
         try:
             assert z.dump()["active"]["line_text"] == "func value19(b: Int) -> Int { return (a + 19) * 2 }", z.dump()["active"]["line_text"]
         finally:
             z.run("keys escape", "vim off", "wait 100")
-            if not had_settings and os.path.exists(settings_file):
-                os.remove(settings_file)
-                z.run("wait 300")
         undo_all()
         z.run(f"open {minified}", "wait 500")
         assert z.dump()["active"]["no_syntax_tree"] == "Minified", z.dump()["active"]
@@ -4779,7 +4773,8 @@ def idle_checks(samples):
                        timeout=20, interval=0.3)
         assert not s["file_watching"]["failed"], s["file_watching"]
         paths = json.loads(z.run("settings paths")[-1])
-        had_settings = os.path.exists(paths["settings"])
+        with open(paths["settings"]) as f:
+            original = f.read()
         z.run(f"open {greeter}", "wait 300")
         with open(greeter, "a") as f:
             f.write("// changed outside zcode\n")
@@ -4791,12 +4786,9 @@ def idle_checks(samples):
         start = time.time()
         z.wait_for(lambda s: s["settings"]["tab_size"] == 3, timeout=10, interval=0.1)
         applied = time.time() - start
-        # The run's settings.json is the later checks' to make.
-        if had_settings:
-            with open(paths["settings"], "w") as f:
-                f.write("{}\n")
-        else:
-            os.remove(paths["settings"])
+        # Put back as it was (later checks expect the template's comments).
+        with open(paths["settings"], "w") as f:
+            f.write(original)
         print(f"    a file changed outside: read again in {reloaded:.2f} s; settings.json: applied in {applied:.2f} s")
         # Polling took up to 3 s and 1 s.
         assert reloaded < 2 and applied < 2, (reloaded, applied)
