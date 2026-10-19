@@ -339,12 +339,18 @@ impl Perf {
         .to_string()
     }
 
-    /// The status bar's memory text.
+    /// The status bar's memory text: the idle baseline, not the last
+    /// sample. A redraw adds compositor memory for a moment, so the last
+    /// sample's figure flips after one, and showing it redrew the window
+    /// for that, an idle window's only reason to draw.
     pub fn status_label(&self) -> String {
-        let mem = self.current();
+        let footprint = match self.baseline_footprint() {
+            0 => self.current().footprint,
+            baseline => baseline,
+        };
         match self.language_server.map(|(_, s)| s.footprint).filter(|f| *f > 0) {
-            Some(ls) => format!("{} · LSP {}", format_bytes(mem.footprint), format_bytes(ls)),
-            None => format_bytes(mem.footprint),
+            Some(ls) => format!("{} · LSP {}", format_bytes(footprint), format_bytes(ls)),
+            None => format_bytes(footprint),
         }
     }
 

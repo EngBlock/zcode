@@ -28,7 +28,8 @@ use crate::git::{self, Bases, Branch, FileStatus, Status};
 
 /// How long after a save the status is read again.
 const SAVE_REFRESH_DELAY: Duration = Duration::from_millis(300);
-/// How often the git directory is checked for outside changes.
+/// How often the git directory is checked for outside changes while
+/// FSEvents doesn't watch it.
 const GIT_DIR_POLL: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
@@ -215,14 +216,17 @@ impl Workspace {
         self._tasks.push(task);
     }
 
-    /// Polls the git directory for changes made outside zcode.
+    /// Follows the git directory for changes made outside zcode: looked at
+    /// when FSEvents says something in it changed (`fs_watch`), else polled.
     fn watch_git(&mut self, cx: &mut Context<Self>) {
         let task = cx.spawn(async move |this, cx| {
             let mut last: Option<Vec<Option<SystemTime>>> = None;
+            let changes = crate::fs_watch::Changes::new(vec![]);
             loop {
-                cx.background_executor().timer(GIT_DIR_POLL).await;
+                changes.wait(GIT_DIR_POLL, cx.background_executor()).await;
                 let Ok(dir) = this.update(cx, |this, _| this.git.git_dir.clone()) else { break };
                 let Some(dir) = dir else { continue };
+                changes.set_paths(vec![dir.clone()]);
                 let stamps = cx
                     .background_spawn(async move {
                         ["HEAD", "index", "logs/HEAD", "FETCH_HEAD", "packed-refs"]

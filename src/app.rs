@@ -518,11 +518,12 @@ pub fn run() {
             }
             perf::start_sampler(cx);
             crate::settings::watch(cx);
-            // After the first frame: the login item's checkmark (launchd is
-            // asked off the main thread) and the daily update check (a
-            // minute from now).
+            // After the first frame: file watching (FSEvents, on a thread of
+            // its own), the login item's checkmark (launchd is asked off the
+            // main thread) and the daily update check (a minute from now).
             cx.spawn(async move |cx| {
                 cx.background_executor().timer(Duration::from_millis(1500)).await;
+                crate::fs_watch::start();
                 cx.update(|cx| {
                     crate::login_item::refresh(cx);
                     crate::updates::start_automatic_checks(cx);

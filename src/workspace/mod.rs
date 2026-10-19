@@ -203,6 +203,10 @@ pub struct Workspace {
     canvas_request: Option<previews::CanvasRequest>,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
+    /// Re-renders once a second while a build or run is in progress.
+    activity_ticker: Option<Task<()>>,
+    /// FSEvents watches the project's tree whole (`fs_watch`).
+    _fs_root: crate::fs_watch::Root,
     outline_task: Option<Task<()>>,
     pub(super) index_refresh: Option<Task<()>>,
 }
@@ -373,6 +377,8 @@ impl Workspace {
             tests: Default::default(),
             _subscriptions: subscriptions,
             _tasks: vec![],
+            activity_ticker: None,
+            _fs_root: crate::fs_watch::Root::new(&project.root),
             outline_task: None,
             index_refresh: None,
         };
@@ -409,7 +415,7 @@ impl Workspace {
         mark("state");
         this.rescan(cx);
         this.refresh_scm(cx);
-        this.start_activity_ticker(cx);
+        this.follow_activity(cx);
         this.watch_files(cx);
         this.prune_missing_bookmarks(cx);
         mark("background tasks");
@@ -483,13 +489,15 @@ impl Workspace {
         self._tasks.push(task);
     }
 
-    /// Polls the project for external changes (git checkout, generators,
-    /// another editor) every few seconds: cheap, and avoids FSEvents setup
-    /// cost at startup.
+    /// Follows the open files for changes made outside zcode (git checkout,
+    /// generators, another editor, an agent): their times are looked at when
+    /// FSEvents says one may have changed (`fs_watch`, which starts after the
+    /// window does), else every few seconds.
     fn watch_files(&mut self, cx: &mut Context<Self>) {
         let task = cx.spawn(async move |this, cx| {
+            let changes = crate::fs_watch::Changes::new(vec![]);
             loop {
-                cx.background_executor().timer(Duration::from_secs(3)).await;
+                changes.wait(Duration::from_secs(3), cx.background_executor()).await;
                 let Ok(paths) = this.update(cx, |this, _| {
                     this.buffers
                         .iter()
@@ -498,6 +506,7 @@ impl Workspace {
                 }) else {
                     break;
                 };
+                changes.set_paths(paths.iter().map(|(path, _, _)| path.clone()).collect());
                 let changed: Vec<PathBuf> = cx
                     .background_spawn(async move {
                         paths
@@ -529,22 +538,29 @@ impl Workspace {
     }
 
     /// Re-renders once a second while a build or run is in progress so the
-    /// activity view's elapsed time stays current.
-    fn start_activity_ticker(&mut self, cx: &mut Context<Self>) {
-        let task = cx.spawn(async move |this, cx| {
+    /// activity view's elapsed time stays current; started when one starts
+    /// (`BuildEvent::PhaseChanged`), so an idle window has no timer.
+    pub(super) fn follow_activity(&mut self, cx: &mut Context<Self>) {
+        if self.activity_ticker.is_some() || !self.build.read(cx).phase.is_busy() {
+            return;
+        }
+        self.activity_ticker = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                let alive = this.update(cx, |this, cx| {
-                    if this.build.read(cx).phase.is_busy() {
+                let busy = this.update(cx, |this, cx| {
+                    let busy = this.build.read(cx).phase.is_busy();
+                    if busy {
                         cx.notify();
+                    } else {
+                        this.activity_ticker = None;
                     }
+                    busy
                 });
-                if alive.is_err() {
+                if !matches!(busy, Ok(true)) {
                     break;
                 }
             }
-        });
-        self._tasks.push(task);
+        }));
     }
 
     pub(super) fn new_file(&mut self, _: &NewFile, window: &mut Window, cx: &mut Context<Self>) {
@@ -926,6 +942,8 @@ impl Workspace {
         state["previews"] = self.previews_summary(cx);
         state["language_servers"] = self.lsp.read(cx).summary();
         state["build_server"] = self.build_server_status(cx);
+        // FSEvents: how many of the checks of files on disk it covers.
+        state["file_watching"] = crate::fs_watch::status();
         state["language_features"] = serde_json::json!({
             "server": self.active_item().map(|i| self.lsp.read(cx).features_for(&i.path)).unwrap_or_default().summary(),
             "inlay_hints": self.inlay_hints_summary(cx),

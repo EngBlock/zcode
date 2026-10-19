@@ -19,6 +19,7 @@ use super::graph::{BuildGraph, Inputs, Origin};
 use super::inputs::{self, Queried, Query, Stamps};
 use super::server::{self, Shared};
 use crate::build::compiledb;
+use crate::xcodeproj::XcodeProject;
 use crate::build::{BuildController, BuildEvent};
 use crate::project::{self, ProjectInfo};
 
@@ -191,17 +192,23 @@ impl BuildServer {
     }
 
     /// Looks at the projects, their synchronized folders and the database
-    /// every couple of seconds; anything changed remakes the graph, a
-    /// project file changing asks Xcode again too.
+    /// when FSEvents says the projects or folders changed (`fs_watch`), else
+    /// every couple of seconds; anything changed remakes the graph, a project
+    /// file changing asks Xcode again too. (The database is zcode's own:
+    /// `BuildEvent::CompileDatabaseUpdated` says when it's written.)
     fn poll(&mut self, cx: &mut Context<Self>) {
         self.poll_task = Some(cx.spawn(async move |this, cx| {
+            let changes = crate::fs_watch::Changes::new(vec![]);
             loop {
-                cx.background_executor().timer(POLL).await;
+                changes.wait(POLL, cx.background_executor()).await;
                 let Ok((projects, database, synchronized)) =
                     this.update(cx, |this, _| (this.projects(), compiledb::database_path(&this.cache_dir), this.synchronized.clone()))
                 else {
                     break;
                 };
+                changes.set_paths(
+                    projects.iter().map(|project| XcodeProject::pbxproj_path(project)).chain(synchronized.iter().cloned()).collect(),
+                );
                 let stamps = cx.background_spawn(async move { Stamps::read(&projects, &database, &synchronized) }).await;
                 let alive = this.update(cx, |this, cx| {
                     let Some(before) = this.stamps.replace(stamps.clone()) else { return };

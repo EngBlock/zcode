@@ -110,6 +110,7 @@ impl Workspace {
                 }
             }
             BuildEvent::PhaseChanged => {
+                self.follow_activity(cx);
                 let phase = build.read(cx).phase.clone();
                 match phase {
                     crate::build::Phase::Running { .. } => {

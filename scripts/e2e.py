@@ -4720,6 +4720,84 @@ def long_line_checks():
         z.quit()
 
 
+def interrupt_wakeups(pid):
+    """How many times `pid`'s threads have been woken by an interrupt (a
+    timer, the display link's thread) so far: `proc_pid_rusage`."""
+    import ctypes
+
+    class RusageInfoV0(ctypes.Structure):
+        _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(name, ctypes.c_uint64) for name in (
+            "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins", "wired_size",
+            "resident_size", "phys_footprint", "proc_start_abstime", "proc_exit_abstime")]
+
+    info = RusageInfoV0()
+    assert ctypes.CDLL("/usr/lib/libproc.dylib").proc_pid_rusage(pid, 0, ctypes.byref(info)) == 0
+    return info.interrupt_wkups
+
+
+def idle_checks(samples):
+    """An idle window (docs/scale.md, Performance batch 3): its display link
+    pauses while nothing is drawn, so with a caret blinking zcode wakes a few
+    times a second rather than at the display's rate, and the caret still
+    blinks; files, settings and git are followed through FSEvents rather
+    than polled, and a file changed outside zcode is read again at once."""
+    project = os.path.realpath(os.path.join(WORK, "IdleKit"))
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    z = Zcode(project)
+
+    def wakes_a_few_times_a_second():
+        z.run(f"open {greeter}", "wait 3000")
+        before, start = interrupt_wakeups(z.proc.pid), time.time()
+        time.sleep(10)
+        rate = (interrupt_wakeups(z.proc.pid) - before) / (time.time() - start)
+        # The display link alone woke zcode ~120 times a second (60 on a
+        # 60 Hz display). What's left: the caret's frames, this suite's
+        # control channel (a read every 150 ms), the memory sampler.
+        print(f"    {rate:.1f} interrupt wakeups a second, idle with the caret blinking")
+        assert rate < 40, rate
+
+    def caret_still_blinks():
+        shots = []
+        for i in range(10):
+            path = os.path.join(WORK, f"idle-{i}.png")
+            z.run(f"screenshot {path}")
+            with open(path, "rb") as f:
+                shots.append(f.read())
+            time.sleep(0.12)
+        # Shown and hidden at least once in ~1.8 s (it blinks every 500 ms).
+        assert len(set(shots)) >= 2, "the window didn't change in 1.8 s"
+
+    def files_followed_through_fsevents():
+        s = z.wait_for(lambda s: s["file_watching"]["checks"] and s["file_watching"]["watched"] == s["file_watching"]["checks"],
+                       timeout=20, interval=0.3)
+        assert not s["file_watching"]["failed"], s["file_watching"]
+        paths = json.loads(z.run("settings paths")[-1])
+        z.run(f"open {greeter}", "wait 300")
+        with open(greeter, "a") as f:
+            f.write("// changed outside zcode\n")
+        start = time.time()
+        z.wait_for(lambda s: "// changed outside zcode" in s["active"]["text"], timeout=10, interval=0.1)
+        reloaded = time.time() - start
+        with open(paths["settings"], "w") as f:
+            f.write('{ "tab_size": 3 }\n')
+        start = time.time()
+        z.wait_for(lambda s: s["settings"]["tab_size"] == 3, timeout=10, interval=0.1)
+        applied = time.time() - start
+        with open(paths["settings"], "w") as f:
+            f.write("{}\n")
+        print(f"    a file changed outside: read again in {reloaded:.2f} s; settings.json: applied in {applied:.2f} s")
+        # Polling took up to 3 s and 1 s.
+        assert reloaded < 2 and applied < 2, (reloaded, applied)
+
+    try:
+        check("Idle: with the caret blinking, zcode wakes a few times a second, not at the display's rate", wakes_a_few_times_a_second)
+        check("Idle: the caret still blinks while the display link pauses between frames", caret_still_blinks)
+        check("Idle: open files and settings are followed through FSEvents; a change outside zcode arrives at once", files_followed_through_fsevents)
+    finally:
+        z.quit()
+
+
 def vim_checks(samples):
     """Editor ▸ Vim Mode on a copy of ZKit: off by default and turned on for
     every tab; normal, insert and visual mode editing a Swift file through
@@ -7062,6 +7140,9 @@ def main():
 
     print("Long lines (a folder with a minified script):")
     long_line_checks()
+
+    print("Idle (a copy of samples/ZKit):")
+    idle_checks(samples)
 
     print("Settings, key bindings and themes (a copy of samples/ZKit):")
     settings_checks(samples)

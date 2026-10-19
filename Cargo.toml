@@ -52,6 +52,9 @@ resvg = { version = "0.46", default-features = false }
 libc = "0.2"
 log = "0.4"
 lsp-types = { version = "0.97", features = ["proposed"] }
+# FSEvents for files changed on disk (src/fs_watch.rs; CC0-1.0, already
+# built for gpui-component).
+notify = "8.2"
 nucleo-matcher = "0.3"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSResponder", "NSGraphics", "NSView"] }

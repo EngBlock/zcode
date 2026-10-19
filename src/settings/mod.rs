@@ -248,11 +248,15 @@ pub fn init(cx: &mut App) {
     cx.set_global(store);
 }
 
-/// Starts polling the files for changes, a while after startup.
+/// Follows the files for changes: read again when FSEvents says one may
+/// have changed (`fs_watch`), else polled.
 pub fn watch(cx: &mut App) {
+    let changes = crate::fs_watch::Changes::new(vec![]);
     cx.spawn(async move |cx| {
         loop {
-            cx.background_executor().timer(Duration::from_millis(WATCH_INTERVAL_MS)).await;
+            let watched = cx.update(|cx| watched_files(cx));
+            changes.set_paths(watched.into_iter().map(|(path, _)| path).collect());
+            changes.wait(Duration::from_millis(WATCH_INTERVAL_MS), cx.background_executor()).await;
             let watched = cx.update(|cx| watched_files(cx));
             let changed = cx
                 .background_executor()
@@ -274,6 +278,7 @@ pub fn watch(cx: &mut App) {
     .detach();
 }
 
+/// How often the files are polled while FSEvents doesn't cover them.
 pub const WATCH_INTERVAL_MS: u64 = 1000;
 
 fn watched_files(cx: &App) -> Vec<(PathBuf, Stamp)> {

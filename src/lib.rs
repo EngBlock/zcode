@@ -11,6 +11,7 @@ pub mod bundle;
 pub mod cli;
 pub mod debug;
 pub mod debugger;
+pub mod fs_watch;
 pub mod fuzzy;
 pub mod git;
 pub mod instance;
