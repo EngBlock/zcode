@@ -1,6 +1,6 @@
 [package]
 name = "zcode"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A fast, Zed-inspired editor for the Apple ecosystem"
 license = "MIT"
