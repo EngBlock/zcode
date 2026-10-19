@@ -258,8 +258,8 @@ if zcode is not faster.
 * sourcekit-lsp, scheme listing, simulator and device discovery, file
   scanning and git status all start after the window appears, on background
   threads. git status is read again after saves (debounced), git
-  operations, window activation and changes in the git directory (a cheap
-  poll of a few files' times); change bars come from a diff of the editor's
+  operations, window activation and changes in the git directory (FSEvents;
+  see "Idle" below); change bars come from a diff of the editor's
   text run in the background 30 ms after the last keystroke, so typing
   latency doesn't change (median keystroke to frame in a 6,000-line file:
   5.3 ms on this branch, 5.4 ms on `master`). Devices are listed again when
@@ -379,8 +379,8 @@ if zcode is not faster.
   own started at the top of `main()`, and the first window takes what it
   read (~0.06 ms on the main thread); with no files it's one failed
   `open` each. A project's `.zcode/settings.json` is read when its window
-  opens, and every file is polled off the main thread about once a second
-  after that. Cold launch, alternating runs against `master` (load average
+  opens, and every file is read again when FSEvents says it changed
+  (see "Idle" below). Cold launch, alternating runs against `master` (load average
   9–17): the welcome window's first pixels at 253.2 ms with no settings
   files and 255.0 ms with settings, a custom theme, a font and key
   bindings, against 259.0 ms on `master` (median of 20); ZKit at 262.4 /
@@ -428,6 +428,42 @@ if zcode is not faster.
   225 MB. LSP positions and the status bar's column come from the rope's
   UTF-16 and character counts rather than a walk of the line
   (`docs/scale.md`, Performance batch 2).
+* **Idle:** a window with nothing to draw doesn't wake. GPUI's macOS
+  backend kept its display link running while a window was visible, waking
+  the main thread on every refresh (120 Hz here) to find nothing to draw; a
+  patch (`vendor/gpui-pre-macos/ZCODE-PATCH.md`) pauses it after four frame
+  requests with nothing asked for, and GPUI's frame waker (any notify,
+  refresh, animation frame) starts it again with a frame at once. Open
+  files, settings files, the git directory and the build server's project
+  files are looked at when FSEvents says something under them changed
+  (`src/fs_watch.rs`, one stream on a thread of its own started 1.5 s after
+  the window), not every 1–3 s; a check polls at its old interval only where
+  the stream can't cover its files, and every 30 s anyway. The status bar's
+  memory figure is the 30 s idle baseline (the last sample flipped after
+  each redraw and so redrew the window). Over 60 s idle, against `master`
+  (alternating launches, load 1.3–2.1): the welcome window 11 ms of CPU
+  against 429–566 ms and 41 interrupt wakeups against 8,700, ZKit 35–50 ms
+  against 722–761 ms, HelloZ 36–42 ms against 734–762 ms; with a caret
+  blinking, 24 wakeups a second against 161 (the e2e check, its control
+  channel included). A file changed outside
+  zcode is read again in ~0.2 s (up to 3 s before), settings.json in ~0.2 s.
+* **Large files:** a file over 2 MB, or over 256 KB and mostly lines past
+  10,000 bytes (minified), opens with its language (comments, brackets,
+  indentation, language servers) but without a tree-sitter tree, whose
+  memory is 25–60 times the file: no syntax colors, folds or string and
+  comment context, which the status bar says ("Large file" / "Minified: no
+  syntax highlighting"). Soft wrap's index keeps lines that are one row as
+  runs of their count, so it costs what the wrapped lines do (~110 bytes a
+  line before). Heap added by opening a file, against `master`: a 15 MB
+  JSON file 22 MB against 514 MB, a 3.3 MB minified script 5 MB against
+  194 MB, a 1.2 MB Swift file (which keeps its tree) 55 MB against 61 MB.
+  Files up to 64 MB open (16 MB before; a 60 MB log adds 88 MB and types at
+  3 ms of work a key); past 16 MB a file goes to no language server and
+  gets no change bars.
+* **Tabs:** an editor in a tab no pane shows lets go of its layout, and a
+  layout's lines share their whitespace marks instead of each holding a
+  copy (a line's layout was 9.1 KB). 40 firefox-ios Swift tabs add 15 MB of
+  heap against 32 MB on `master`, about half of it their syntax trees.
 * **About memory:** while a GPUI window is frontmost and redrawing (for
   example while the caret blinks), macOS attributes about 220 MB of transient
   compositor/GPU memory to the process (the "Owned physical footprint
@@ -524,18 +560,22 @@ src/
   search.rs         parallel find-in-workspace
   bookmarks.rs      bookmarks: lines, files and saved find queries, kept in the session
   settings/         settings.json (a project's over it), keymap.json and JSON themes: JSON with comments
-                    read and edited in place, read off the main thread at launch and polled for changes;
+                    read and edited in place, read off the main thread at launch and again when they change;
                     the theme in effect; Xcode's .xccolortheme themes and .idekeybindings key bindings
                     converted (plist/ reads XML, binary and old-style property lists)
+  fs_watch.rs       files changed on disk through FSEvents (one stream, on a thread of its own): open
+                    buffers, settings, the git directory and the build server's projects are looked at
+                    when something under them changes, polled only where the stream can't cover them
   perf.rs           startup timing and memory sampling (proc_pid_rusage); how long the scan, the tree, a
                     search and Open Quickly's matching took, for the scale benchmarks
   debug.rs          scriptable UI control channel for tests (ZCODE_DEBUG_DIR); `bench …` times inputs to the
                     frame they cause and reports what scripts/bench.py polls
   screenshot.rs     zcode's own windows and simulators as PNGs (the control channel, startup bench, MCP)
 crates/
-  zcode-editor/     the code editor: rope buffer, display map (soft wrap, folding; lines over 4 KB
-                    measured per character and laid out only where visible: long_line.rs,
-                    base/long_lines.rs), highlighting,
+  zcode-editor/     the code editor: rope buffer, display map (soft wrap, its index runs of the lines
+                    that don't wrap; folding; lines over 4 KB measured per character and laid out only
+                    where visible: long_line.rs, base/long_lines.rs), highlighting (no syntax tree for
+                    large or minified files: base/large_file.rs),
                     undo, multiple cursors, edit events and a journal of edits as they're applied,
                     linked views of one buffer, multibuffers (excerpts of many
                     buffers, one undo step across them), Vim mode (a keystroke interceptor with
@@ -546,6 +586,7 @@ crates/
                     before the cursor, Wrap with Abbreviation
 vendor/
   gpui-component/   gpui-component 0.7.3 plus small patches (ZCODE-PATCH.md)
+  gpui-pre-macos/   GPUI's macOS backend 0.3.9, its display link paused while a window is idle (ZCODE-PATCH.md)
 scripts/
   e2e.py            end-to-end UI tests
   bench.py          scale benchmarks on firefox-ios (fetched into ~/Library/Caches/zcode-bench), gated against
@@ -579,7 +620,15 @@ the model Zed describes publicly (a pane of items, a tree of splits), written
 from scratch. The rest of `gpui-component` (widgets, theme,
 tree-sitter highlighter) is vendored with a startup patch, a visibility
 patch for the highlighter and one that compiles each language's queries
-once, all described in `vendor/gpui-component/ZCODE-PATCH.md`.
+once, all described in `vendor/gpui-component/ZCODE-PATCH.md`. GPUI's
+macOS backend (`gpui-pre-macos`, Zed's `gpui_macos`, Apache-2.0) is
+vendored with one patch that pauses an idle window's display link through
+the frame waker GPUI's core already has
+(`vendor/gpui-pre-macos/ZCODE-PATCH.md`). Files changed on disk come from
+FSEvents through `notify` (CC0-1.0, already built for gpui-component).
+Opening large files without a syntax tree follows VS Code's and JetBrains'
+documented behavior (limits past which they turn features off); the
+limits and the code are zcode's.
 USB devices attaching are noticed through IOKit's notifications, Apple's
 framework called directly (no new dependency).
 Long lines are measured from each character's width and laid out in pieces
@@ -1021,6 +1070,20 @@ The control channel also takes window screenshots
   need a `master` with the benchmarks' control commands; an older one is
   measured through `dump`, and only the cold open, memory, readiness and
   keystroke-to-tick gates get a relative limit from it.
+* Large files: whether a file gets a syntax tree is decided when it opens
+  (and when its whole text is replaced, as on a reload), so a file that
+  grows past 2 MB while edited keeps its tree, and one cut below keeps
+  none until it's reopened. Without a tree there are no syntax colors
+  (sourcekit-lsp's semantic tokens still color a Swift file), folds, or
+  string and comment context for auto-closing and Enter. Files past 64 MB
+  don't open. File watching: FSEvents doesn't watch the home folder itself
+  or a folder that doesn't exist yet, so a file directly in `~` and a
+  settings folder created later are polled as before; on a volume
+  FSEvents doesn't journal (some network shares) changes are noticed
+  within 30 s. An idle window's display link pauses, so GPUI no longer
+  presents unchanged frames for a second after fast input (which keeps a
+  ProMotion display at its top rate); input that changes anything draws
+  as before.
 * Build server: sourcekit-lsp doesn't prepare targets or index files
   itself (zcode doesn't offer `buildTarget/prepare`): the index is the
   index build's, so references, rename and call hierarchies reach only

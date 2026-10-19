@@ -353,6 +353,133 @@ except `listed_at_ms` (the background file scan, which the branch doesn't
 touch: 431 against 244 ms in that round, the branch's first and cold; 250
 against 284 ms over two more rounds).
 
+## Performance batch 3: idle wakeups and large-file memory
+
+Measured against a `master` release build (`ca396fe`) in alternating
+launches (M4 Max, macOS 27.2; the load average beside each).
+
+**An idle window woke at the display's rate.** GPUI's macOS backend only
+stopped a window's display link while the window was occluded, so a
+visible window with nothing to draw woke the main thread on every refresh
+(120 Hz here) to find nothing dirty. GPUI's core already calls a
+platform's frame waker whenever a window gains frame demand (a view
+notified, a refresh, a next-frame callback or animation frame, a throttled
+frame to retry), for platforms that stop asking for frames; the macOS
+window didn't provide one. A patch to the vendored backend
+(`vendor/gpui-pre-macos/ZCODE-PATCH.md`) does: after four frame requests
+in a row with no demand (~25 ms) the window's display-link subscription
+stops, and the waker starts it again and asks for a frame on the main
+queue at once, so the first frame after a pause doesn't wait for the
+restarted link.
+
+**What was left woke for nothing too.** With the link paused, a `sample`
+of an idle HelloZ window showed the main thread drawing every few seconds:
+the status bar's memory figure, from the last sample, flipped between
+two values after each redraw (the compositor's memory comes and goes with
+a frame), and each flip redrew the window. It now shows the 30 s idle
+baseline. Then the polls: the settings files every second, the git
+directory every 2 s, the open files' times every 3 s, and (with
+sourcekit-lsp connected) the build server's projects and synchronized
+folders, walked, every 2 s; and a 1 s ticker for the activity view that
+only redrew during builds. The polls are now woken by FSEvents
+(`src/fs_watch.rs`: one stream through `notify`, covering each project's
+tree whole and the folders of files outside it, made on a thread of its
+own that starts 1.5 s after the window), each keeping its check and
+polling at its old interval only where the stream can't cover its files
+(the home folder itself, a folder that doesn't exist), and every 30 s
+anyway; the ticker runs only while a build or run is busy. The memory
+sampler (every 2 s, one `proc_pid_rusage`) stays.
+
+Idle over 60 s, no file open (two alternating launches each, medians):
+
+| | `master`: CPU, interrupt wakeups, context switches | Now |
+|---|---|---|
+| Welcome window | 429–566 ms, 8,700, 17,830 | 11 ms, 41, 210 |
+| ZKit (Swift package) | 722–761 ms, 8,727, 18,250 | 35–50 ms, 49, 280 |
+| HelloZ (iOS app) | 734–762 ms, 8,735, 18,270 | 36–42 ms, 47, 270 |
+
+(load 1.3–2.1; `proc_pid_rusage` before and after, no control channel).
+`master`'s ~145 wakeups a second are the display link's (120 Hz) and the
+polls'; now less than one a second remains, mostly the memory sampler.
+
+With an editor focused and its caret blinking (the e2e check, whose
+control channel reads a file every 150 ms): 24 interrupt wakeups a second
+against 161 on `master`. A file changed outside zcode is read again in
+~0.2 s (up to 3 s before), a saved settings.json applied in ~0.2 s (up to
+1 s). Typing, caret blink, animations, terminal output, scrolling and
+resizing go through the waker like any other demand; the e2e suite's
+typing, terminal and pane checks pass unchanged.
+
+**Syntax trees were 25–57× the file.** A file over 2 MB, or over 256 KB
+and mostly on lines past 10,000 bytes (where syntax colors already stopped),
+now gets no tree-sitter tree (`crates/zcode-editor/src/base/large_file.rs`).
+It keeps its language: comments (⌘/), auto-closed brackets, indentation
+rules, Vim's text objects (all text-based) and its language servers; it
+has no syntax colors, folds, or string and comment context (which
+auto-closing then treats as code), and the status bar says "Large file" or
+"Minified: no syntax highlighting". Test and preview discovery, which parse
+Swift on their own, skip such files too.
+
+**The soft-wrap index cost ~110 bytes a line.** Its `SumTree` held a
+`LineItem` per line (length, indent, a `SmallVec` of rows, the long-line
+measurements) and its summary. Lines that are one row each are now runs of
+up to 128 lines keeping their count, bytes and longest; a line that wraps
+or is long is kept whole. An edit re-reads the lengths of the lines of the
+runs it starts and ends in from the rope.
+
+**~0.8 MB of fixed memory per open tab.** `MallocStackLogging` with
+`malloc_history`, 40 firefox-ios tabs against none: 13.7 MB of the 31.7 MB
+was allocated in `TextElement::prepaint`, one ~350 KB block per editor,
+the `Vec<LineLayout>` of its last frame. A `LineLayout` was 9.1 KB, 6 KB
+of it a copy of the layout's two shaped whitespace marks (GPUI's
+`ShapedLine` is ~3 KB, mostly 32 inline decoration runs). The marks are
+now shared by the layout's lines, and an editor in a tab no pane shows
+lets go of its last layout (`release_layout`, when the shown tab changes).
+What's left per tab is mostly its syntax tree (~7.8 MB for the 40 files'
+5,444 lines) and the window's own layout and scene.
+
+Heap added by opening a file (`heap`, fresh launches, load 3–13):
+
+| | `master` | Now |
+|---|---|---|
+| 15 MB JSON, 1.2M lines (no tree now) | 514 MB | 22 MB |
+| 3.3 MB minified script, one line (no tree) | 194 MB | 5 MB |
+| 1.2 MB Swift file, 50,000 lines (keeps its tree) | 61 MB | 55 MB |
+| 40 firefox-ios Swift tabs | 31.7 MB | 15.0 MB |
+| Resident added by the JSON file | 633 MB | 130 MB |
+| Resident added by the minified script | 213 MB | 23 MB |
+
+Files up to 64 MB open now (16 MB before): a 60 MB log adds 88 MB of heap
+and types at 3.1 ms of work a key, five Page Downs 14 ms. Past 16 MB a file
+goes to no language server and gets no change bars (a line diff at every
+pause in typing), so nothing changes for the files that opened before.
+
+The ordinary paths, alternating launches: typing near the end of the
+50,000-line Swift file 1.65–1.74 ms of work a key against 1.82–3.12 ms; in a
+small Swift file 1.6–3.2 against 1.4–1.7 ms (medians of 10 keys, the
+spread bimodal on both); five Page Downs in the JSON file 12.9–18.5 ms
+against 19.0–19.6 ms (load 1.5–3.4). Cold launch, the welcome window's
+first pixels: 246.0, 244.0, 245.2 and 241.8 ms against 242.2, 241.2, 244.8
+and 243.9 ms (four alternating rounds of 15–20, load 2–5).
+
+`scripts/bench.py`, one round against that build (load 4–5): every gate
+passed; typing 4.2 / 3.3 / 3.0 ms (strings table, view controller,
+50,000-line file) against 4.4 / 3.3 / 3.0 ms, Page Down in the JSON file
+12.1 against 13.8 ms, in the minified script 9.6 against 9.5 ms. The idle
+footprint after the open read 141 against 118 MB: how many drawables Core
+Animation still held 15 s in (one more window-sized IOSurface); 60 s in,
+both held six, 128 against 133 MB, resident 164 against 170 MB.
+
+Two e2e checks that failed on `master` pass now. "Packages: browse a
+package's sources" failed since the build server: ⌘B stopped the
+background index build and nothing started it again, so the index
+build's products (which sourcekit-lsp's arguments point at) lacked the
+package's modules and Jump to Definition found nothing; a build that stops
+it now starts it again when it's done. "Predictions: typing latency…"
+compared the time to the next display tick, which depends on where each
+keystroke lands in the display's cadence; it compares the keystroke's
+work.
+
 ## About the memory numbers
 
 The footprint after the search includes over 200 MB of compositor memory that

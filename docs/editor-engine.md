@@ -670,6 +670,33 @@ kerning across a tile edge can be off by a fraction of a character there.
 `laid_out_bytes()` reports what the last frame shaped (the control
 channel's `dump`).
 
+### Large files (`base/large_file.rs`) and the wrap index
+
+tree-sitter's tree costs 25–60 times the text it parses, so when a code
+editor's highlighter would first be made, `NoSyntaxTree::for_text` decides
+whether the text gets one: not past 2 MB (`Large`), nor past 256 KB when
+most of it is on lines over 10,000 bytes, where syntax colors stop anyway
+(`Minified`). Without one the editor keeps its language (its comment
+tokens, brackets, indentation rules and the app's language servers) but
+has no highlighter: no syntax colors, no fold candidates, and the syntax
+context auto-closing and Enter ask for is `Code` without a parse. The
+choice holds until the highlighter is reset (a new language, or the whole
+text replaced, as `set_value` does on a reload). `no_syntax_tree()` says
+why there's none, for the app's status bar.
+
+Soft wrap's index (`TextWrapper::lines`, a `SumTree`) is of `LineRun`s: a
+line that wraps or is long is kept whole as its `LineItem`, and
+consecutive lines that are one row each are one `Plain` run of up to 128
+lines keeping their count, their bytes and their longest; their lengths
+are the rope's. `line(row)` hands back a `Cow`, borrowed for a kept line
+and made from its length for a plain one. An edit replaces the runs it
+starts and ends in, re-reading their other lines' lengths from the rope.
+
+An editor that isn't shown can `release_layout()` its last frame's
+shaped lines (the app does for tabs no pane shows); the next frame that
+draws it lays it out again. A layout's lines share one shaped set of
+whitespace marks.
+
 ## How the upcoming features hook in
 
 | Feature (roadmap) | Hooks |
@@ -733,6 +760,9 @@ the next frame).
   (~2 MB of monospaced text) are 2 px apart, so far into such a line a
   tile can sit a pixel or two off its neighbor (each tile's own glyphs
   stay evenly spaced; the end of a 3.3 MB line looks right).
+* Whether a file has a syntax tree is decided when its highlighter is
+  made (on opening, or after the whole text is replaced): a file edited
+  past 2 MB keeps its tree.
 * Anchors come back exactly when undo replays the history entry that moved
   them; `set_value` (a reload) clears the history and keeps line anchors on
   their rows instead, so a line deleted before a reload stays deleted.
