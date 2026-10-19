@@ -195,9 +195,9 @@ impl ServerSpec {
 
     /// Whether documents no pane shows are closed at this server
     /// ([`super::store::LspStore::set_shown`]). sourcekit-lsp's sourcekitd
-    /// (and clangd behind it) keep each open document's AST, ~55 MB for a
-    /// large Swift file; the web's servers hold little per document, and
-    /// tsserver may drop and rebuild a closed file's inferred project.
+    /// (and clangd behind it) build each open document's AST; the web's
+    /// servers hold little per document, and tsserver may drop and rebuild a
+    /// closed file's inferred project.
     pub fn closes_hidden_documents(&self) -> bool {
         self.is_sourcekit()
     }

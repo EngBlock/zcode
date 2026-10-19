@@ -3418,7 +3418,8 @@ def hidden_tab_checks(samples):
         return out
 
     def published(name):
-        return [json.loads(l)["count"] for l in open(diagnostics) if json.loads(l)["uri"].endswith("/" + name)]
+        entries = [json.loads(line) for line in open(diagnostics)]
+        return [e["count"] for e in entries if e["uri"].endswith("/" + name)]
 
     def documents(s=None):
         return (s or z.dump())["lsp_documents"]

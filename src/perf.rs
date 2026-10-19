@@ -134,7 +134,7 @@ fn sourcekit_services_of(clients: &[i32]) -> Vec<i32> {
     clients.sort_unstable();
     let mut running = pids_with_path_suffix("/SourceKitService");
     running.sort_unstable();
-    let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut known = KNOWN.lock().unwrap();
     if let Some(k) = known.as_ref().filter(|k| k.clients == clients && k.running == running) {
         return k.ours.clone();
     }

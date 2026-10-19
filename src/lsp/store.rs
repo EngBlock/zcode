@@ -224,9 +224,8 @@ struct Document {
 /// Documents shown last, besides the shown ones, that stay open at a server
 /// that closes hidden documents: a few tab switches back and forth (a file
 /// and its test, a header and its implementation, the last definition
-/// jumped to) don't reopen anything. Each costs sourcekitd its AST, ~55 MB
-/// for a large Swift file (firefox-ios: 1.3 GB of SourceKitService with 20
-/// tabs, 207 MB with one).
+/// jumped to) don't reopen anything, which costs sourcekitd the file's AST
+/// again (~1.3 s for a 5,000-line file).
 pub const KEEP_RECENT: usize = 4;
 
 /// One server, as the status bar and `dump` show it.
@@ -1339,7 +1338,7 @@ impl LspStore {
         }
         open.sort();
         closed.sort();
-        json!({ "open": open, "closed": closed, "keep_recent": KEEP_RECENT })
+        json!({ "open": open, "closed": closed })
     }
 
     /// Every server and what it's doing, for `dump`.
