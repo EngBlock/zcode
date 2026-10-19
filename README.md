@@ -31,6 +31,15 @@ lists zcode for `.xcodeproj`, `.xcworkspace`, Swift sources and folders.
 `scripts/package.py release` does bundle, sign, notarize, zip, dmg and the
 update feed in one go (`--dry-run` prints what it would run).
 
+Releases are made by tag: bump the version in `Cargo.toml`, commit, and push
+`v<version>` (`git tag v0.2.0 && git push origin v0.2.0`).
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds,
+signs with the Developer ID, notarizes and publishes the zip, the dmg and
+`appcast.json` as a GitHub release; the in-app update reads
+`releases/latest/download/appcast.json`, so a tag with a hyphen
+(`v0.3.0-beta.1`) is a prerelease that no one is offered. The secrets it
+needs are listed at the top of the workflow.
+
 ## Documentation
 
 * [Features](docs/features.md): everything zcode does, area by area, with

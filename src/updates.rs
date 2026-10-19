@@ -34,7 +34,7 @@ use serde::Deserialize;
 /// Where releases are announced, unless `ZCODE_UPDATE_FEED` says otherwise.
 pub const DEFAULT_FEED: &str = match option_env!("ZCODE_UPDATE_FEED") {
     Some(url) => url,
-    None => "https://github.com/zcode-editor/zcode/releases/latest/download/appcast.json",
+    None => "https://github.com/EngBlock/zcode/releases/latest/download/appcast.json",
 };
 
 /// The environment variable that names the feed at run time.
