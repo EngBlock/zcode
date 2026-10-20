@@ -432,9 +432,7 @@ pub fn run() {
 
             cx.on_action(|_: &Quit, cx| quit(cx));
             cx.on_action(|_: &OpenProject, cx| prompt_open(cx));
-            cx.on_action(|_: &About, cx| {
-                cx.open_url("https://github.com/zed-industries/zed/tree/main/crates/gpui");
-            });
+            cx.on_action(|_: &About, cx| crate::about::open(cx));
             cx.on_action(|_: &CheckForUpdates, cx| crate::updates::check(true, cx));
             cx.on_action(|_: &InstallCli, cx| crate::cli::install_action(cx));
             cx.on_action(|_: &ToggleOpenAtLogin, cx| crate::login_item::toggle(cx));
