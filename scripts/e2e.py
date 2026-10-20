@@ -7465,6 +7465,13 @@ def settings_checks(samples):
         z.run("vim on", "wait 200", "keys escape space f", "wait 300")
         assert z.dump()["modal_open"], "space f opened Open Quickly in normal mode"
         z.run("keys escape", "vim off", "wait 200")
+        # A block that isn't one (bindings as a list, a bare string, a number for
+        # a context) is said; the other blocks' bindings still apply.
+        write(keymap_file, '[{"bindings":{"cmd-shift-8":"OpenSettings"}},{"context":"Editor","bindings":["oops"]},"bare",{"context":5,"bindings":{}}]\n')
+        st = settings(wait_settings(lambda st: st["user_bindings"] == 1 and len(st["problems"]) == 3))
+        messages = [p["message"] for p in st["problems"]]
+        assert [m.split(":")[1].strip() for m in messages] == ["block 2", "block 3", "block 4"], messages
+        assert all(m.endswith("its bindings aren’t used") for m in messages), messages
         write(keymap_file, "[]\n")
         wait_settings(lambda st: st["user_bindings"] == 0 and st["problems"] == [])
         z.run("keys cmd-1", "wait 200")

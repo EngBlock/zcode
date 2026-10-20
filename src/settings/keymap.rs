@@ -17,7 +17,8 @@
 //! `Terminal`, `Navigator` (with `navigator == project|find|…`),
 //! `PlistEditor`, `Picker`, `Workspace` and the sheets'. Later blocks win
 //! over earlier ones, and every block over zcode's own bindings. A binding
-//! that can't be made is reported and the rest still apply.
+//! that can't be made, or a block that can't be read, is reported and the
+//! rest still apply.
 
 use std::rc::Rc;
 
@@ -35,6 +36,10 @@ pub struct KeymapContent {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct Block {
+    /// Where it is in the file, from 1 (the blocks that can't be read are
+    /// left out).
+    #[serde(skip)]
+    pub number: usize,
     pub context: Option<String>,
     pub bindings: serde_json::Map<String, Value>,
     /// Marks a block an import from Xcode wrote (its key bindings file), so
@@ -46,13 +51,24 @@ pub struct Block {
 
 impl Content for KeymapContent {
     fn read(text: &str, _project: bool) -> Result<(Self, Vec<String>), jsonc::ParseError> {
-        let blocks: Vec<Block> = jsonc::parse(text)?;
+        // A block that isn't one is said and left out; the others apply.
+        let values: Vec<Value> = jsonc::parse(text)?;
+        let mut blocks = vec![];
         let mut warnings = vec![];
-        for (ix, block) in blocks.iter().enumerate() {
+        for (ix, value) in values.into_iter().enumerate() {
+            let mut block: Block = match serde_json::from_value(value) {
+                Ok(block) => block,
+                Err(err) => {
+                    warnings.push(format!("block {}: {err}; its bindings aren’t used", ix + 1));
+                    continue;
+                }
+            };
+            block.number = ix + 1;
             // Zed's own flag; zcode binds keys as written.
             for key in block.other.keys().filter(|k| *k != "use_key_equivalents") {
                 warnings.push(format!("block {}: unknown key “{key}”", ix + 1));
             }
+            blocks.push(block);
         }
         Ok((KeymapContent { blocks }, warnings))
     }
@@ -122,13 +138,13 @@ fn build(cx: &App) -> (Vec<KeyBinding>, Vec<String>) {
 pub fn bindings_for(content: &KeymapContent, cx: &App) -> (Vec<KeyBinding>, Vec<String>) {
     let mut bindings = vec![];
     let mut problems = vec![];
-    for (ix, block) in content.blocks.iter().enumerate() {
+    for block in &content.blocks {
         let predicate = match block.context.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
             None => None,
             Some(context) => match KeyBindingContextPredicate::parse(context) {
                 Ok(predicate) => Some(Rc::new(predicate)),
                 Err(err) => {
-                    problems.push(format!("block {}: context “{context}”: {err}", ix + 1));
+                    problems.push(format!("block {}: context “{context}”: {err}", block.number));
                     continue;
                 }
             },
@@ -238,6 +254,16 @@ mod tests {
         assert_eq!(content.blocks[1].context.as_deref(), Some("Editor && vim_mode == normal"));
         assert_eq!(warnings, ["block 3: unknown key “colour”"]);
         assert!(KeymapContent::read("{ \"bindings\": {} }", false).is_err());
+        // A malformed block is said; the others are kept, numbered as in the file.
+        let text = r#"[{"bindings":{"cmd-shift-8":"OpenSettings"}},{"context":"Editor","bindings":["oops"]},"bare",{"context":5,"bindings":{}},{"context":"Terminal","bindings":{"cmd-k":null}}]"#;
+        let (content, warnings) = KeymapContent::read(text, false).unwrap();
+        assert_eq!(content.blocks.iter().map(|b| b.number).collect::<Vec<_>>(), [1, 5]);
+        assert_eq!(content.blocks[0].bindings.len(), 1);
+        assert_eq!(content.blocks[1].context.as_deref(), Some("Terminal"));
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(warnings[0].starts_with("block 2: invalid type: sequence, expected a map"), "{warnings:?}");
+        assert!(warnings[1].starts_with("block 3: ") && warnings[2].starts_with("block 4: "), "{warnings:?}");
+        assert!(warnings.iter().all(|w| w.ends_with("its bindings aren’t used")), "{warnings:?}");
         assert_eq!(KeymapContent::read("", false).unwrap().0, KeymapContent::default());
     }
 
