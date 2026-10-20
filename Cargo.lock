@@ -9138,7 +9138,7 @@ dependencies = [
 
 [[package]]
 name = "zcode"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "agent-client-protocol-schema",
  "alacritty_terminal",
