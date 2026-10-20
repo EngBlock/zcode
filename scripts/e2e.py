@@ -15,6 +15,7 @@ import base64
 import json
 import os
 import plistlib
+import re
 import socket
 import stat
 import statistics
@@ -2519,7 +2520,8 @@ def classic_project_checks(z, samples):
         z.run(f"open {content}:{launched}", "wait 300", "keys cmd-\\")
         z.run(f"open {content}:{arguments}", "wait 300", "keys cmd-\\", "action zcode::EditBreakpoint", "wait 300",
               "breakpoint add-action log launched with @CommandLine.arguments.count@ argument(s), hit %H",
-              "breakpoint auto-continue on", "breakpoint close")
+              "breakpoint auto-continue on", "keys escape", "wait 200")
+        assert not z.dump()["modal_open"], "Escape closes the breakpoint editor"
         z.run("action zcode::ClearConsole", "keys cmd-r")
         s = stopped(z, variables=False)
         assert f"ContentView.swift:{launched}" in s["debugger"]["frames"][0], s["debugger"]
@@ -2634,6 +2636,8 @@ def package_checks(z, samples):
             interval=0.5,
         )
         assert any(v.startswith("i = ") for v in s["debugger"]["variables"]), s["debugger"]
+        # The Debug navigator's thread row, as Xcode names it (not lldb's thread id).
+        assert re.fullmatch(r"Thread 1( Queue : .+)?", s["debugger"]["thread"]), s["debugger"]["thread"]
         z.run("keys f6")
         z.wait_for(lambda s: s["debugger"]["frames"] and f"main.swift:{loop_line + 1}" in s["debugger"]["frames"][0],
                    timeout=20, interval=0.5)
@@ -2746,15 +2750,17 @@ def package_checks(z, samples):
         z.run(f"double-click {x} {y}", "wait 300")
         s = z.dump()
         assert s["breakpoints"]["editor"]["title"] == f"main.swift:{tick_line}" and s["breakpoints"]["list"][0]["enabled"], s["breakpoints"]
-        z.run("screenshot " + os.path.join(WORK, "breakpoint-editor.png"), "breakpoint close")
+        z.run("screenshot " + os.path.join(WORK, "breakpoint-editor.png"))
+        click_breakpoint_done(z)
         z.run(f"right-click {x} {y}", "wait 300")
         assert z.dump()["breakpoints"]["menu_open"], "the breakpoint's menu"
         z.run("keys escape", "wait 200")
 
     def conditional_breakpoint_and_console():
-        z.run(f"open {main}:{tick_line}", "wait 300", "action zcode::EditBreakpoint", "wait 300",
-              "breakpoint condition i == 2", "breakpoint close")
-        assert z.dump()["breakpoints"]["list"][0]["condition"] == "i == 2"
+        # The condition field has the focus; Return closes the editor.
+        z.run(f"open {main}:{tick_line}", "wait 300", "action zcode::EditBreakpoint", "wait 300", "type i == 2", "keys enter", "wait 200")
+        s = z.dump()
+        assert s["breakpoints"]["list"][0]["condition"] == "i == 2" and not s["modal_open"], (s["breakpoints"], s["modal_open"])
         z.run("action zcode::ClearConsole", "keys cmd-r")
         s = stopped(z)
         assert "i = 2" in s["debugger"]["variables"] and "tick 1" in s["console_tail"] and "tick 2" not in s["console_tail"], s
@@ -2794,7 +2800,7 @@ def package_checks(z, samples):
 
     def ignore_count():
         z.run(f"open {main}:{tick_line}", "wait 300", "action zcode::EditBreakpoint", "wait 300",
-              "breakpoint condition", "breakpoint ignore 1", "breakpoint close")
+              "breakpoint condition", "breakpoint ignore 1", "keys escape", "wait 200")
         assert z.dump()["breakpoints"]["list"][0]["ignore"] == 1
         z.run("action zcode::ClearConsole", "keys cmd-r")
         assert "i = 2" in stopped(z)["debugger"]["variables"], "the first hit is ignored"
@@ -2806,7 +2812,7 @@ def package_checks(z, samples):
     def log_message_and_auto_continue():
         z.run(f"open {main}:{tick_line}", "wait 300", "action zcode::EditBreakpoint", "wait 300", "breakpoint ignore 0",
               "breakpoint add-action log tick @i * 10@ in %B, hit %H", "breakpoint add-action command p i + 100",
-              "breakpoint auto-continue on", "breakpoint close")
+              "breakpoint auto-continue on", "keys escape", "wait 200")
         bp = z.dump()["breakpoints"]["list"][0]
         assert bp["auto_continue"] and [a["type"] for a in bp["actions"]] == ["log", "command"], bp
         z.run("action zcode::ClearConsole", "keys cmd-r")
@@ -2818,15 +2824,19 @@ def package_checks(z, samples):
     def symbolic_breakpoint():
         z.run("action zcode::DeleteAllBreakpoints", "keys cmd-alt-\\", "wait 300")
         assert z.dump()["breakpoints"]["editor"]["title"] == "Symbolic Breakpoint", z.dump()["breakpoints"]
-        z.run("breakpoint symbol Greeter.greeting", "breakpoint module zhello", "breakpoint close")
-        assert [b["title"] for b in z.dump()["breakpoints"]["list"]] == ["Greeter.greeting"]
+        # Typing goes to the symbol; Escape keeps it.
+        z.run("type Greeter.greeting", "breakpoint module zhello", "keys escape", "wait 200")
+        s = z.dump()
+        assert [b["title"] for b in s["breakpoints"]["list"]] == ["Greeter.greeting"] and not s["modal_open"], s["breakpoints"]
         z.run("action zcode::ClearConsole", "keys cmd-r")
         s = stopped(z)
         assert "Greeter.greeting" in s["debugger"]["frames"][0] and "Greeter.swift:" in s["debugger"]["frames"][0], s["debugger"]
         z.run("keys ctrl-cmd-y")
         debug_run_ends(z)
         # In another module it doesn't resolve, so the run doesn't stop.
-        z.run("breakpoint edit 0", "wait 300", "breakpoint module Foundation", "breakpoint close", "action zcode::ClearConsole", "keys cmd-r")
+        z.run("breakpoint edit 0", "wait 300", "breakpoint module Foundation")
+        click_breakpoint_done(z)
+        z.run("action zcode::ClearConsole", "keys cmd-r")
         debug_run_ends(z)
 
     def swift_error_and_exception_breakpoints():
@@ -2839,7 +2849,8 @@ def package_checks(z, samples):
         # The throwing line is shown, as in Xcode.
         assert s["active"]["path"] == main and s["active"]["line"] == throw_line, s["active"]
         # An exception breakpoint added while paused reaches lldb at once.
-        z.run("action zcode::CreateExceptionBreakpoint", "wait 300", "breakpoint exception Objective-C", "breakpoint close")
+        z.run("action zcode::CreateExceptionBreakpoint", "wait 300", "breakpoint exception Objective-C")
+        click_breakpoint_done(z)
         assert [b["title"] for b in z.dump()["breakpoints"]["list"]] == ["Swift Error", "All Objective-C Exceptions"]
         z.run("console breakpoint list")
         listed = "\n".join(console_output(z, "breakpoint list"))
@@ -2850,7 +2861,7 @@ def package_checks(z, samples):
     def breakpoints_left_for_relaunch():
         # Disabled, so later runs don't stop: checked after a relaunch.
         z.run(f"open {main}:{tick_line}", "wait 300", "keys cmd-\\", "action zcode::EditBreakpoint", "wait 300",
-              "breakpoint condition i > 1", "breakpoint add-action sound Pop", "breakpoint close")
+              "breakpoint condition i > 1", "breakpoint add-action sound Pop", "keys enter", "wait 200")
         for ix in range(3):
             z.run(f"breakpoint enable {ix} off")
         assert not any(b["enabled"] for b in z.dump()["breakpoints"]["list"])
@@ -2891,6 +2902,14 @@ def package_checks(z, samples):
     check("Swift package: Run… (⌥⌘R) with arguments and environment kept in the session", package_run_with_options)
     check("Swift package: the debugger (lldb-dap) launches with them too", package_debug_with_options)
     check("Swift package: Test… (⌥⌘U) with the Test action's own environment", package_test_with_options)
+
+
+def click_breakpoint_done(z):
+    """Closes the breakpoint editor with a click on its Done button."""
+    done = z.dump()["breakpoints"]["editor"]["done"]
+    z.run(f"click {done['x']} {done['y']}", "wait 200")
+    s = z.dump()
+    assert s["breakpoints"]["editor"] is None and not s["modal_open"], "Done closes the breakpoint editor"
 
 
 def bookmark_rows(z):
@@ -4061,7 +4080,7 @@ def bookmark_checks(samples):
     def dialogs_and_gutter_menu():
         z.run(f"open {main}:{tick_line}", "wait 300", "keys ctrl-alt-cmd-'", "wait 300")
         assert z.dump()["bookmarks"]["dialog"] == {"heading": "Add Line Bookmark", "title": 'print("tick \\(i)")'}, z.dump()["bookmarks"]["dialog"]
-        z.run("bookmark title Each tick", "keys enter", "wait 200")
+        z.run("type Each tick", "keys enter", "wait 200")
         s = z.dump()
         assert ("main.swift", tick_line, "Each tick") in bookmark_list(s) and not s["modal_open"], bookmark_list(s)
         z.run(f"open {tests}", "wait 300", "keys ctrl-alt-shift-cmd-'", "wait 300")
@@ -4555,6 +4574,19 @@ def multibuffer_checks(samples):
         bps = z.dump()["breakpoints"]["list"]
         assert [b["enabled"] for b in bps if b["title"] == f"Greeter.swift:{line}"] == [False], bps
         z.run("screenshot " + os.path.join(WORK, "multibuffer-gutter.png"))
+        # ⌘\ and ⌃⌘' on an excerpt line act on its file's line.
+        other = next(n for n in m["numbers"] if n["file"] == "Greeter.swift" and n["line"] != line)
+        x, y = row_of(m, "Greeter.swift", other["line"])
+        z.run(f"click {x} {y}", "keys cmd-\\", "wait 300")
+        s = z.dump()
+        bps = s["breakpoints"]["list"]
+        assert [b["enabled"] for b in bps if b["title"] == f"Greeter.swift:{other['line']}"] == [True], bps
+        assert other["row"] in [row for lane, row in mb(s)["painted_gutter"] if lane == "multibuffer-breakpoints"], mb(s)["painted_gutter"]
+        z.run("keys cmd-\\", "wait 200")
+        assert not any(b["title"] == f"Greeter.swift:{other['line']}" for b in z.dump()["breakpoints"]["list"]), "⌘\\ again removes it"
+        z.run("keys ctrl-cmd-'", "wait 300")
+        text = open(greeter).read().splitlines()[other["line"] - 1].strip()
+        assert ("Greeter.swift", other["line"], text) in bookmark_list(z.dump()), bookmark_list(z.dump())
 
     def issues_in_editor():
         line = line_of(greeter, "public let name")
@@ -4635,7 +4667,7 @@ def multibuffer_checks(samples):
         check("Multibuffer: typing in an excerpt edits the file (unsaved); the file's edits show there; the file's ⌘Z undoes both", edits_both_ways)
         check("Multibuffer: Find and Replace in Workspace (⌥⇧⌘F) Replace All is one ⌘Z across files, each file's ⌘Z agrees; ⌘S saves", replace_all_one_step)
         check("Multibuffer: ⌥↩, a header and a line number open the file there; ⇧↩ and a header's ↕ show more lines", open_and_expand)
-        check("Multibuffer: change bars and breakpoints on excerpt lines; a breakpoint toggles there", gutter_marks)
+        check("Multibuffer: change bars and breakpoints on excerpt lines; a breakpoint toggles there; ⌘\\ and ⌃⌘' on an excerpt line", gutter_marks)
         check("Multibuffer: Show Issues in Editor, each message under its line, fixed in place", issues_in_editor)
         check("Multibuffer: a search over 400 files opens a page of 25 and adds more as it scrolls; typing stays fast", many_files_a_page_at_a_time)
     finally:

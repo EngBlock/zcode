@@ -950,6 +950,7 @@ impl Workspace {
         // The running program: the app lldb-dap launched or attached to on
         // this Mac, else what Run started (the app, simctl or devicectl).
         state["run_pid"] = self.debugger.read(cx).local_debuggee_pid().or(build.run_pid()).into();
+        state["debugger"]["thread"] = self.debugger.read(cx).stopped_thread_label().into();
         state["timings"] = perf.timings_json();
         state["profile"] = self.profile_summary(cx);
         state["archives"] = self.archives_summary(cx);

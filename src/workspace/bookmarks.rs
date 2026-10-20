@@ -238,28 +238,33 @@ impl Workspace {
 
     /// Edit ▸ Bookmark Line (⌃⌘'), or With Dialog (⌃⌥⌘'). With the Find
     /// navigator focused it bookmarks the search, as Xcode does with the
-    /// query selected there.
+    /// query selected there; in a multibuffer, the excerpt line's file and
+    /// line.
     pub(super) fn bookmark_line(&mut self, with_dialog: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.show_navigator && self.navigator == NavigatorTab::Find && self.find.input.read(cx).focus_handle(cx).is_focused(window) {
             self.bookmark_find_results(window, cx);
             return;
         }
-        let Some(buffer) = self.active_item().filter(|b| b.shown_plist().is_none()) else {
+        let (path, line, editor) = match self.active_item() {
             // A property list has no lines to bookmark; its file can be.
-            if self.active_item().is_some() {
+            Some(buffer) if buffer.shown_plist().is_some() => {
                 self.bookmark_file(with_dialog, window, cx);
+                return;
             }
-            return;
+            Some(buffer) => (buffer.path.clone(), buffer.editor.read(cx).cursor_position().line, buffer.editor.clone()),
+            None => match self.multibuffer_cursor_line(cx) {
+                Some(found) => found,
+                None => return,
+            },
         };
-        let state = buffer.editor.read(cx);
-        let line = state.cursor_position().line;
+        let state = editor.read(cx);
         let selected = state.selected_text().to_string();
         let title = if selected.trim().is_empty() || selected.contains('\n') {
-            describe(&state.text().slice_line(line as usize).to_string())
+            describe(&state.text().slice_line(state.cursor_position().line as usize).to_string())
         } else {
             describe(&selected)
         };
-        let location = Location::Line { path: buffer.path.clone(), line: line + 1 };
+        let location = Location::Line { path, line: line + 1 };
         self.new_bookmark(location, title, with_dialog, window, cx);
     }
 

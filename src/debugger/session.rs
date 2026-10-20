@@ -850,6 +850,13 @@ impl Debugger {
         }
     }
 
+    /// The Debug navigator's row for the thread that stopped.
+    pub fn stopped_thread_label(&self) -> Option<String> {
+        let DebugState::Stopped { thread_id, .. } = &self.state else { return None };
+        let name = self.threads.iter().find(|(id, _)| id == thread_id).map(|(_, name)| name.as_str());
+        Some(thread_label(*thread_id, name.unwrap_or_default()))
+    }
+
     /// The debuggee's pid when it runs on this Mac.
     pub fn local_debuggee_pid(&self) -> Option<i32> {
         self.local_debuggee.as_ref().map(|p| p.pid)
@@ -1058,10 +1065,37 @@ fn parse_variables(body: &Value, depth: usize) -> Vec<Variable> {
         .unwrap_or_default()
 }
 
+/// How the Debug navigator names a thread, as Xcode does. lldb-dap's name is
+/// already "Thread 1", "Thread 1 Queue: com.apple.main-thread (serial)" or
+/// the one the program gave it; its id (the system's thread id) is only
+/// for a thread with no name.
+pub fn thread_label(id: i64, name: &str) -> String {
+    match name.trim() {
+        "" => format!("Thread {id}"),
+        name => name.replacen(" Queue: ", " Queue : ", 1),
+    }
+}
+
 /// What an lldb command printed, or its error.
 fn command_output(result: anyhow::Result<Value>) -> String {
     match result {
         Ok(body) => body.get("result").and_then(Value::as_str).unwrap_or("").trim_end().to_string(),
         Err(err) => format!("{err:#}").trim_end().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::thread_label;
+
+    #[test]
+    fn thread_labels() {
+        assert_eq!(thread_label(1407330, "Thread 1"), "Thread 1");
+        assert_eq!(
+            thread_label(1407330, "Thread 1 Queue: com.apple.main-thread (serial)"),
+            "Thread 1 Queue : com.apple.main-thread (serial)"
+        );
+        assert_eq!(thread_label(7, "worker"), "worker");
+        assert_eq!(thread_label(7, ""), "Thread 7");
     }
 }

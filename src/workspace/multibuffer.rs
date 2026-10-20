@@ -261,6 +261,15 @@ impl Workspace {
         }
     }
 
+    /// The file and 0-based line at the active multibuffer's cursor, and
+    /// the multibuffer's editor (where the cursor is on that line).
+    pub(super) fn multibuffer_cursor_line(&self, cx: &App) -> Option<(PathBuf, u32, Entity<EditorState>)> {
+        let view = self.active_multibuffer()?.read(cx);
+        let row = view.host.read(cx).cursor_position().line;
+        let (source, line) = view.editor.read(cx).source_row(row, cx)?;
+        Some((view.paths.get(&source)?.clone(), line, view.host.clone()))
+    }
+
     /// Every open multibuffer.
     pub(super) fn multibuffers(&self) -> Vec<Entity<MultiBufferView>> {
         self.panes
