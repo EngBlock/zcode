@@ -236,6 +236,18 @@ pub fn check(manual: bool, cx: &mut App) {
                 }
             });
         }
+        // The thread ended without a settled state (it panicked): say so,
+        // rather than stay Checking and turn every later check away.
+        cx.update(|cx| {
+            if matches!(state(cx), State::Checking | State::Downloading(_) | State::Installing(_)) {
+                let manual = cx.default_global::<Updates>().manual;
+                cx.default_global::<Updates>().state = Some(State::Failed("the update check stopped unexpectedly".into()));
+                match manual {
+                    true => crate::app::notify(Notification::error("Couldn’t check for updates: the check stopped unexpectedly"), cx),
+                    false => log::warn!("update check stopped unexpectedly"),
+                }
+            }
+        });
     })
     .detach();
 }
@@ -546,7 +558,7 @@ pub fn command(arg: &str, cx: &mut App) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_newer, parse_feed, sha256_hex, team_in};
+    use super::{get, is_newer, parse_feed, sha256_hex, team_in};
 
     #[test]
     fn versions_compare_as_numbers() {
@@ -583,6 +595,13 @@ mod tests {
     fn sha256_matches_the_standard() {
         assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
         assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    #[test]
+    fn https_fails_rather_than_panics() {
+        // ureq panics on an https URL when its native-tls feature is off;
+        // a closed port is an error either way.
+        assert!(get("https://127.0.0.1:1/appcast.json").is_err());
     }
 
     #[test]
