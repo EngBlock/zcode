@@ -75,6 +75,9 @@ objc2-core-graphics = { version = "0.3", default-features = false, features = [
     "CGPDFPage",
 ] }
 parking_lot = "0.12"
+# The poller alacritty_terminal's PTY registers with, named to wrap that PTY
+# (a web app's script's output read as lines); already built for it.
+polling = "3"
 # A window's AppKit view, for its window number (screenshots).
 raw-window-handle = "0.6"
 regex = "1"

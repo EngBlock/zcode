@@ -13,6 +13,7 @@
 pub mod colors;
 mod element;
 pub mod keys;
+mod lines;
 pub mod links;
 mod view;
 
@@ -31,6 +32,7 @@ use alacritty_terminal::term::{Config, Term};
 use alacritty_terminal::tty;
 use parking_lot::Mutex;
 
+pub use lines::LineSplitter;
 pub use view::{TerminalEvent, TerminalView};
 
 /// Lines of scrollback each terminal keeps.
@@ -46,16 +48,20 @@ pub struct Spawn {
     pub command: Option<(String, Vec<String>)>,
     /// The `terminal.shell` setting.
     pub shell: Option<(String, Vec<String>)>,
+    /// `Some`: `PATH` is these folders, then the login shell's (`zcode`
+    /// started from the Dock has only the system's); `None`: zcode's own,
+    /// which a login shell replaces anyway.
+    pub path: Option<Vec<PathBuf>>,
 }
 
 impl Spawn {
     pub fn shell(dir: PathBuf) -> Self {
-        Self { dir, command: None, shell: None }
+        Self { dir, command: None, shell: None, path: None }
     }
 
     /// `/bin/sh -c <script>`.
     pub fn script(dir: PathBuf, script: &str) -> Self {
-        Self { dir, command: Some(("/bin/sh".into(), vec!["-c".into(), script.into()])), shell: None }
+        Self { dir, command: Some(("/bin/sh".into(), vec!["-c".into(), script.into()])), shell: None, path: None }
     }
 
     /// Whether this is the user's shell: typing `exit` in it closes its tab.
@@ -128,6 +134,100 @@ impl EventListener for Listener {
     }
 }
 
+/// Runs `f` (a fork) with no signals blocked on this thread, then blocks
+/// again what was.
+fn with_no_signals_blocked<T>(f: impl FnOnce() -> T) -> T {
+    unsafe {
+        let mut none: libc::sigset_t = std::mem::zeroed();
+        let mut was: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut none);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &none, &mut was);
+        let result = f();
+        libc::pthread_sigmask(libc::SIG_SETMASK, &was, std::ptr::null_mut());
+        result
+    }
+}
+
+/// Where a terminal's output goes as lines besides its grid. Lines are
+/// dropped while it's full rather than holding up the PTY.
+pub type OutputTap = smol::channel::Sender<String>;
+
+/// Starts the thread that reads `pty` into `term`; its sender, and the
+/// thread that ends with it.
+fn spawn_event_loop<T>(term: Arc<FairMutex<Term<Listener>>>, listener: Listener, pty: T) -> std::io::Result<(EventLoopSender, JoinHandle<()>)>
+where
+    T: tty::EventedPty + alacritty_terminal::event::OnResize + Send + 'static,
+{
+    let event_loop = EventLoop::new(term, listener, pty, true, false)?;
+    let sender = event_loop.channel();
+    let handle = event_loop.spawn();
+    // The thread hands back the PTY when it ends; dropping it there (not
+    // wherever the handle goes) keeps its `wait` off the UI.
+    let reader = std::thread::Builder::new().name("terminal".into()).spawn(move || drop(handle.join()))?;
+    Ok((sender, reader))
+}
+
+/// A PTY whose output is also read as lines (`OutputTap`).
+struct TapPty {
+    pty: tty::Pty,
+    reader: TapReader,
+}
+
+/// Reads the PTY (through its own descriptor of it) and passes what came
+/// on, line by line, to the tap.
+struct TapReader {
+    file: std::fs::File,
+    splitter: LineSplitter,
+    lines: OutputTap,
+}
+
+impl std::io::Read for TapReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.file.read(buf)?;
+        for line in self.splitter.feed(&buf[..read]) {
+            self.lines.try_send(line).ok();
+        }
+        Ok(read)
+    }
+}
+
+impl tty::EventedReadWrite for TapPty {
+    type Reader = TapReader;
+    type Writer = std::fs::File;
+
+    unsafe fn register(&mut self, poll: &Arc<polling::Poller>, interest: polling::Event, mode: polling::PollMode) -> std::io::Result<()> {
+        unsafe { self.pty.register(poll, interest, mode) }
+    }
+
+    fn reregister(&mut self, poll: &Arc<polling::Poller>, interest: polling::Event, mode: polling::PollMode) -> std::io::Result<()> {
+        self.pty.reregister(poll, interest, mode)
+    }
+
+    fn deregister(&mut self, poll: &Arc<polling::Poller>) -> std::io::Result<()> {
+        self.pty.deregister(poll)
+    }
+
+    fn reader(&mut self) -> &mut TapReader {
+        &mut self.reader
+    }
+
+    fn writer(&mut self) -> &mut std::fs::File {
+        self.pty.writer()
+    }
+}
+
+impl tty::EventedPty for TapPty {
+    fn next_child_event(&mut self) -> Option<tty::ChildEvent> {
+        self.pty.next_child_event()
+    }
+}
+
+impl alacritty_terminal::event::OnResize for TapPty {
+    fn on_resize(&mut self, size: WindowSize) {
+        self.pty.on_resize(size)
+    }
+}
+
 /// The grid's size in cells, and a cell's in points (for programs that ask).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GridSize {
@@ -164,9 +264,10 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Starts `spawn` on a new PTY of `size`. This forks, so it's called
-    /// off the main thread.
-    pub(crate) fn start(spawn: Spawn, size: GridSize) -> std::io::Result<(Terminal, smol::channel::Receiver<Notice>)> {
+    /// Starts `spawn` on a new PTY of `size`, its output also handed to
+    /// `tap` line by line when there's one. This forks (and may ask the
+    /// login shell for its `PATH`), so it's called off the main thread.
+    pub(crate) fn start(spawn: Spawn, size: GridSize, tap: Option<OutputTap>) -> std::io::Result<(Terminal, smol::channel::Receiver<Notice>)> {
         let (notices, receiver) = smol::channel::unbounded();
         let output_pending = Arc::new(AtomicBool::new(false));
         let pty_sender = Arc::new(OnceLock::new());
@@ -188,22 +289,27 @@ impl Terminal {
             ("TERM_PROGRAM", "zcode"),
             ("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION")),
         ];
-        let options = tty::Options {
-            shell,
-            working_directory: Some(spawn.dir.clone()),
-            drain_on_exit: true,
-            env: env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-        };
-        let pty = tty::new(&options, size.window_size(), 0)?;
+        let mut env: std::collections::HashMap<String, String> = env.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        if let Some(dirs) = &spawn.path {
+            let login = crate::acp::agents::login_path();
+            let dirs = dirs.iter().map(|d| d.to_string_lossy().into_owned()).chain(std::iter::once(login.to_string()));
+            env.insert("PATH".into(), dirs.collect::<Vec<_>>().join(":"));
+        }
+        let options = tty::Options { shell, working_directory: Some(spawn.dir.clone()), drain_on_exit: true, env };
+        // The child gets the forking thread's signal mask, and GCD's threads
+        // block SIGHUP and most others: a program that doesn't reset it (a
+        // dev server, unlike a shell) would never get the hang-up.
+        let pty = with_no_signals_blocked(|| tty::new(&options, size.window_size(), 0))?;
         let pid = pty.child().id() as i32;
         let controller = std::os::fd::AsRawFd::as_raw_fd(pty.file());
-        let event_loop = EventLoop::new(term.clone(), listener, pty, true, false)?;
-        let sender = event_loop.channel();
+        let (sender, reader) = match tap {
+            Some(lines) => {
+                let reader = TapReader { file: pty.file().try_clone()?, splitter: LineSplitter::default(), lines };
+                spawn_event_loop(term.clone(), listener, TapPty { pty, reader })?
+            }
+            None => spawn_event_loop(term.clone(), listener, pty)?,
+        };
         pty_sender.set(sender.clone()).ok();
-        let handle = event_loop.spawn();
-        // The thread hands back the PTY when it ends; dropping it there
-        // (not wherever the handle goes) keeps its `wait` off the UI.
-        let reader = std::thread::Builder::new().name("terminal".into()).spawn(move || drop(handle.join()))?;
         Ok((
             Terminal {
                 term,
@@ -300,25 +406,32 @@ impl Drop for Terminal {
 }
 
 /// `SIGHUP` to the process and its group (it leads a session of its own),
-/// then `SIGKILL` if it outlives a second. Reaps it.
+/// then `SIGKILL` to whatever of the group outlives a second (a dev
+/// server's child that ignores the hang-up, even once its parent is gone).
+/// Reaps the process.
 fn hang_up(pid: i32) {
     unsafe {
         libc::killpg(pid, libc::SIGHUP);
         libc::kill(pid, libc::SIGHUP);
     }
+    let mut reaped = false;
     for _ in 0..20 {
         let mut status = 0;
         // Gone already (reaped by the reader thread) or reaped now.
-        if unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } != 0 {
+        reaped = reaped || unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) } != 0;
+        let group_left = unsafe { libc::killpg(pid, 0) } == 0;
+        if reaped && !group_left {
             return;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     unsafe {
         libc::killpg(pid, libc::SIGKILL);
-        libc::kill(pid, libc::SIGKILL);
-        let mut status = 0;
-        libc::waitpid(pid, &mut status, 0);
+        if !reaped {
+            libc::kill(pid, libc::SIGKILL);
+            let mut status = 0;
+            libc::waitpid(pid, &mut status, 0);
+        }
     }
 }
 
@@ -380,7 +493,7 @@ mod tests {
     fn a_command_runs_in_its_folder_on_a_pty_of_the_grid_s_size() {
         let dir = std::env::temp_dir().canonicalize().unwrap();
         let spawn = Spawn::script(dir.clone(), "pwd; stty size; printf '\\033[31mred\\033[0m'; exec sleep 5");
-        let (terminal, notices) = Terminal::start(spawn, SIZE).unwrap();
+        let (terminal, notices) = Terminal::start(spawn, SIZE, None).unwrap();
         assert!(wait_until(|| screen_text(&terminal).contains("red")), "{}", screen_text(&terminal));
         let text = screen_text(&terminal);
         assert!(text.contains(dir.to_str().unwrap()) && text.contains("10 120"), "{text}");
@@ -395,7 +508,7 @@ mod tests {
     #[test]
     fn output_is_announced_once_until_the_ui_has_seen_it() {
         let spawn = Spawn::script(std::env::temp_dir(), "yes | head -n 20000; sleep 5");
-        let (terminal, notices) = Terminal::start(spawn, SIZE).unwrap();
+        let (terminal, notices) = Terminal::start(spawn, SIZE, None).unwrap();
         assert!(wait_until(|| screen_text(&terminal).contains('y')));
         std::thread::sleep(Duration::from_millis(300));
         let count = std::iter::from_fn(|| notices.try_recv().ok()).filter(|n| matches!(n, Notice::Output)).count();
@@ -409,7 +522,7 @@ mod tests {
     fn stopping_hangs_up_the_processes_on_it() {
         let marker = std::env::temp_dir().join(format!("zcode-terminal-test-{}", std::process::id()));
         let script = format!("sleep 300 & echo $! > {}; wait", marker.display());
-        let (terminal, _notices) = Terminal::start(Spawn::script(std::env::temp_dir(), &script), SIZE).unwrap();
+        let (terminal, _notices) = Terminal::start(Spawn::script(std::env::temp_dir(), &script), SIZE, None).unwrap();
         assert!(wait_until(|| std::fs::read_to_string(&marker).is_ok_and(|s| s.ends_with('\n'))));
         let child: i32 = std::fs::read_to_string(&marker).unwrap().trim().parse().unwrap();
         std::fs::remove_file(&marker).ok();
@@ -420,8 +533,55 @@ mod tests {
     }
 
     #[test]
+    fn output_reaches_a_tap_as_lines_with_the_path_asked_for() {
+        let bin = std::env::temp_dir().join(format!("zcode-terminal-bin-{}", std::process::id()));
+        std::fs::create_dir_all(&bin).unwrap();
+        let mut spawn = Spawn::script(std::env::temp_dir(), "printf 'a\\033[31mb\\033[0m\\r\\n'; echo \"$PATH\"; trap '' HUP; sleep 300 & echo $!; wait");
+        spawn.path = Some(vec![bin.clone()]);
+        let (tap, lines) = smol::channel::bounded(16);
+        let (terminal, _notices) = Terminal::start(spawn, SIZE, Some(tap)).unwrap();
+        let mut seen = vec![];
+        assert!(wait_until(|| {
+            seen.extend(std::iter::from_fn(|| lines.try_recv().ok()));
+            seen.len() >= 3
+        }));
+        assert_eq!(seen[0], "ab");
+        assert!(seen[1].starts_with(&format!("{}:", bin.display())), "{}", seen[1]);
+        // A child that ignores the hang-up ends with the rest of its group.
+        let child: i32 = seen[2].trim().parse().unwrap();
+        assert!(wait_until(|| screen_text(&terminal).contains(&seen[2])), "the grid still gets it");
+        terminal.stop();
+        assert!(wait_until(|| unsafe { libc::kill(child, 0) } != 0), "the child that ignored SIGHUP is gone");
+        std::fs::remove_dir_all(&bin).ok();
+    }
+
+    #[test]
+    fn programs_start_with_no_signals_blocked() {
+        // zcode starts terminals from GCD's threads, which block most signals.
+        let probe = std::thread::spawn(|| {
+            unsafe {
+                let mut blocked: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut blocked);
+                libc::sigaddset(&mut blocked, libc::SIGHUP);
+                libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, std::ptr::null_mut());
+            }
+            let spawn = Spawn::script(std::env::temp_dir(), "python3 -c 'import signal; print(sorted(int(s) for s in signal.pthread_sigmask(signal.SIG_BLOCK, [])))'");
+            let (tap, lines) = smol::channel::bounded(16);
+            let (terminal, _notices) = Terminal::start(spawn, SIZE, Some(tap)).unwrap();
+            (terminal, lines)
+        });
+        let (_terminal, lines) = probe.join().unwrap();
+        let mut seen = vec![];
+        assert!(wait_until(|| {
+            seen.extend(std::iter::from_fn(|| lines.try_recv().ok()));
+            seen.iter().any(|l| l.starts_with('['))
+        }), "{seen:?}");
+        assert!(seen.iter().any(|l| l == "[]"), "nothing blocked: {seen:?}");
+    }
+
+    #[test]
     fn exit_codes_reach_the_ui() {
-        let (_terminal, notices) = Terminal::start(Spawn::script(std::env::temp_dir(), "exit 3"), SIZE).unwrap();
+        let (_terminal, notices) = Terminal::start(Spawn::script(std::env::temp_dir(), "exit 3"), SIZE, None).unwrap();
         let mut code = None;
         assert!(wait_until(|| {
             while let Ok(notice) = notices.try_recv() {

@@ -58,6 +58,7 @@ mod source_control;
 mod terminals;
 mod vim;
 mod test_gutter;
+mod web_runs;
 mod testing;
 
 use std::path::{Path, PathBuf};
@@ -167,6 +168,8 @@ pub struct Workspace {
     console: console::Console,
     /// The debug area's terminals.
     terminals: terminals::TerminalsState,
+    /// Web apps' scripts Run started, and their `package.json` files.
+    web: web_runs::WebRuns,
     /// The agent panel (⌘0), made when first shown.
     agent: agent::AgentState,
     pub show_inspector: bool,
@@ -341,6 +344,7 @@ impl Workspace {
             bookmarks_ui: Default::default(),
             console: Default::default(),
             terminals: Default::default(),
+            web: Default::default(),
             agent: Default::default(),
             show_inspector: saved.show_inspector.unwrap_or(false),
             inspected: None,
@@ -400,6 +404,9 @@ impl Workspace {
                 }
                 build.scheme = saved.scheme.clone();
             });
+        }
+        if saved.run_script.is_some() {
+            this.build.update(cx, |build, _| build.script = saved.run_script.clone());
         }
         if saved.test_plan.is_some() {
             this.build.update(cx, |build, _| build.test_plan = saved.test_plan.clone());
@@ -491,6 +498,7 @@ impl Workspace {
                 this.update_tree(cx);
                 this.refresh_packages(cx);
                 this.refresh_tests(cx);
+                this.refresh_web_apps(cx);
                 cx.notify();
             })
             .ok();
@@ -735,6 +743,7 @@ impl Workspace {
             active_file: self.active_item().map(|item| item.path.clone()),
             panes: Some(layout),
             scheme: build.scheme.clone(),
+            run_script: build.script.clone(),
             destination: build.destination.as_ref().map(|d| d.id.clone()),
             configuration: Some(build.configuration.clone()),
             test_plan: build.test_plan.clone(),
@@ -964,6 +973,8 @@ impl Workspace {
         state["git"] = self.git_summary(cx);
         state["multibuffer"] = self.multibuffer_summary(cx);
         state["terminals"] = self.terminals_summary(window, cx);
+        state["web"] = self.web_summary(cx);
+        state["scheme_menu"] = self.scheme_menu_summary(cx).into();
         state["vim"] = self.vim_summary(window, cx);
         state["settings"] = self.settings_summary(window, cx);
         state["agent"] = self.agent_summary(window, cx);

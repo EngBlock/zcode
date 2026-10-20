@@ -74,7 +74,7 @@ in the same repository; editing it shouldn't need VS Code.
 2. Linked editing of tag pairs (`textDocument/linkedEditingRange`), ESLint
    fix-all on save, updating zcode's copies of the servers.
 3. Run the web app: `package.json` scripts in a picker (`npm run dev` in a
-   terminal tab), the dev server's URL opened, its errors as issues.
+   terminal tab), the dev server's URL opened, its errors as issues. ✅
 
 ## Foundations
 

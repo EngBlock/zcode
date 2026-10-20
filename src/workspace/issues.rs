@@ -32,7 +32,7 @@ impl Workspace {
     }
 
     /// Combined, de-duplicated issues: live (LSP) diagnostics plus the last
-    /// build's issues.
+    /// build's issues and those of the web apps' scripts.
     pub fn all_issues(&self, cx: &App) -> Vec<Issue> {
         let mut issues: Vec<Issue> = vec![];
         for (path, diagnostics) in self.lsp.read(cx).diagnostics() {
@@ -53,7 +53,8 @@ impl Workspace {
             }
         }
         issues.extend(self.packages.issues.iter().cloned());
-        for issue in &self.build.read(cx).issues {
+        // The scheme's build's, then the web apps' scripts'.
+        for issue in self.build.read(cx).issues.iter().chain(self.web_issues()) {
             if issue.severity == Severity::Note {
                 continue;
             }
@@ -102,6 +103,7 @@ impl Workspace {
             .read(cx)
             .issues
             .iter()
+            .chain(self.web_issues())
             .filter(|i| i.path.as_deref().map(|p| self.resolve_issue_path(p)).as_deref() == Some(path));
         for issue in build_issues {
             let line = issue.line.unwrap_or(1).saturating_sub(1);

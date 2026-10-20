@@ -409,6 +409,13 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let build = self.build.clone();
+        // A script's "scheme" is its line in package.json.
+        if action == SchemeAction::Run
+            && let Some((app, script)) = build.read(cx).chosen_script().map(|(a, s)| (a.clone(), s.name.clone()))
+        {
+            self.show_script_definition(&app, &script, window, cx);
+            return;
+        }
         if !build.read(cx).can_build() {
             return;
         }

@@ -36,16 +36,16 @@ always works on its own window's project.
 
 | Tool | What it does |
 |---|---|
-| `XcodeListSchemes`, `XcodeSwitchScheme` | The schemes, configurations and test plans, and which are chosen; choose a scheme as the toolbar does |
+| `XcodeListSchemes`, `XcodeSwitchScheme` | The schemes and the web apps' `package.json` scripts (`web: dev`, with each run target's kind), configurations and test plans, and which are chosen; choose one as the toolbar does |
 | `XcodeListRunDestinations`, `XcodeSwitchRunDestination` | My Mac, simulators (booted or not) and devices for the scheme; choose one |
 | `BuildProject` | Product ▸ Build: waits, then success, the errors and warnings (file, line, column) and the log's file |
-| `RunProject` | Product ▸ Run (under the debugger when breakpoints are set): returns once it's running, with its first console output |
-| `StopProject` | Product ▸ Stop: the build, the app and the debugger |
+| `RunProject` | Product ▸ Run (under the debugger when breakpoints are set): returns once it's running, with its first console output. A script runs in the debug area's terminal beside a running app; it returns its first output, its dev server's URL and the errors it printed |
+| `StopProject` | Product ▸ Stop: the chosen run target's run (a script's, or the build, the app and the debugger), or `scheme`'s |
 | `RunAllTests`, `RunSomeTests` | Product ▸ Test, or some tests by the Test navigator's names: every test's result and duration, the failures at their lines |
 | `GetTestList` | The tests found in source, with where they are and their latest results |
 | `XcodeListNavigatorIssues` | The Issue navigator: live sourcekit-lsp diagnostics and the last build's issues, for a file or all |
 | `GetBuildLog` | The build log, condensed or raw, filtered; the last builds' reports and log files |
-| `GetConsoleOutput` | The app's and the debugger's console |
+| `GetConsoleOutput` | The app's and the debugger's console and the scripts running; with `scheme`, a script's output |
 | `XcodeGetCurrentFile` | The focused editor's file, cursor, selection and selected text, unsaved changes, and its text if asked |
 | `OpenFile` | Opens a file at a line and column, so you see it |
 | `EvaluateInDebugger` | An LLDB command (`po`, `p`, `v`, `bt`, `expr`) in the paused frame, shown in the console |

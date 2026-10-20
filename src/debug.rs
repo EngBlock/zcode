@@ -27,6 +27,9 @@
 //!   membership <target> on|off toggle a Target Membership checkbox in the inspector
 //!   run-test <Target/Class/test> run a test, class or target as the Test navigator's play button does
 //!   destination <name|id>     choose a run destination, as its menu item does
+//!   scheme <name>              choose a run target, as the scheme menu's item does: a scheme, or a web
+//!                              app's script (`web: dev`); `dump` has `scheme_menu` and `web`
+//!   web-url <n>                open the n-th running script's URL again, as its activity view chip does
 //!   edit-scheme <field> [<value>]  edit the open scheme editor (see `EditSchemeDialog::set_field`)
 //!   breakpoint <field> [<value>]   edit the open breakpoint editor (see `BreakpointEditor::set_field`)
 //!   console <command>          run a command at the LLDB console's prompt
@@ -733,6 +736,18 @@ fn run_command(
                 .ok_or(format!("no destination {arg}"))?;
             build.update(cx, |build, cx| build.set_destination(destination, cx));
             Ok(String::new())
+        }
+        "scheme" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            let build = workspace.read(cx).build.clone();
+            let choice = build.read(cx).find_choice(arg).ok_or(format!("no scheme or script {arg}"))?;
+            build.update(cx, |build, cx| build.choose(choice, cx));
+            Ok(String::new())
+        }
+        "web-url" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            let n: usize = arg.trim().parse().map_err(|_| "usage: web-url <n>")?;
+            workspace.update(cx, |ws, cx| ws.open_running_web_url(n, cx)).map(|url| url.to_string())
         }
         "membership" => {
             let (target, state) = arg.rsplit_once(' ').ok_or("usage: membership <target> on|off")?;

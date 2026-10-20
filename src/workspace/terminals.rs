@@ -22,7 +22,16 @@ use crate::terminal::{Spawn, TerminalEvent, TerminalView};
 
 pub(super) struct PanelTerminal {
     pub view: Entity<TerminalView>,
+    /// A web app's script Run started (`web_runs.rs`), which the session
+    /// doesn't bring back as a shell.
+    pub run: bool,
     _subscriptions: Vec<Subscription>,
+}
+
+impl PanelTerminal {
+    pub fn new(view: Entity<TerminalView>, subscriptions: Vec<Subscription>, run: bool) -> Self {
+        Self { view, run, _subscriptions: subscriptions }
+    }
 }
 
 /// The debug area's terminals and the one shown.
@@ -37,14 +46,19 @@ impl Workspace {
         let font_size = self.font_size;
         spawn.shell = self.settings.current.terminal_shell.clone();
         let view = cx.new(|cx| TerminalView::new(spawn, font_size, cx));
+        let subscriptions = self.terminal_subscriptions(&view, window, cx);
+        (view, subscriptions)
+    }
+
+    /// What the workspace follows of a terminal: its events and focus.
+    pub(super) fn terminal_subscriptions(&mut self, view: &Entity<TerminalView>, window: &mut Window, cx: &mut Context<Self>) -> Vec<Subscription> {
         let id = view.entity_id();
         let focus = view.read(cx).focus_handle(cx);
-        let subscriptions = vec![
-            cx.subscribe_in(&view, window, Self::on_terminal_event),
+        vec![
+            cx.subscribe_in(view, window, Self::on_terminal_event),
             // A terminal in a pane makes its pane the focused one.
             cx.on_focus_in(&focus, window, move |this, window, cx| this.view_focused(id, window, cx)),
-        ];
-        (view, subscriptions)
+        ]
     }
 
     fn on_terminal_event(&mut self, view: &Entity<TerminalView>, event: &TerminalEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -55,7 +69,10 @@ impl Workspace {
                 self.open_file(path.clone(), target, true, window, cx);
             }
             TerminalEvent::Exited { close: true } => self.close_terminal(view.entity_id(), window, cx),
-            TerminalEvent::Exited { close: false } => cx.notify(),
+            TerminalEvent::Exited { close: false } => {
+                self.web_run_exited(view.entity_id(), cx);
+                cx.notify();
+            }
         }
     }
 
@@ -69,7 +86,7 @@ impl Workspace {
     /// A new terminal in the debug area, shown and focused.
     pub fn new_panel_terminal(&mut self, spawn: Spawn, window: &mut Window, cx: &mut Context<Self>) {
         let (view, subscriptions) = self.new_terminal_view(spawn, window, cx);
-        self.terminals.panel.push(PanelTerminal { view, _subscriptions: subscriptions });
+        self.terminals.panel.push(PanelTerminal::new(view, subscriptions, false));
         self.terminals.active = self.terminals.panel.len() - 1;
         self.show_panel_terminal(window, cx);
     }
@@ -118,6 +135,7 @@ impl Workspace {
 
     /// Closes a terminal, in the debug area or a pane, ending its processes.
     pub(super) fn close_terminal(&mut self, view: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        self.web_terminal_closed(view);
         if let Some(ix) = self.terminals.panel.iter().position(|t| t.view.entity_id() == view) {
             let closed = self.terminals.panel.remove(ix);
             let had_focus = closed.view.read(cx).focus_handle(cx).contains_focused(window, cx);
@@ -244,7 +262,7 @@ impl Workspace {
     /// The debug area's terminals as the session keeps them: the folder
     /// each shell is in.
     pub(super) fn panel_terminal_dirs(&self, cx: &App) -> Vec<PathBuf> {
-        self.terminals.panel.iter().map(|t| t.view.read(cx).current_dir()).collect()
+        self.terminals.panel.iter().filter(|t| !t.run).map(|t| t.view.read(cx).current_dir()).collect()
     }
 
     /// A pane's terminals as the session keeps them.
@@ -281,7 +299,7 @@ impl Workspace {
     pub(super) fn restore_panel_terminals(&mut self, dirs: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
         for dir in dirs.iter().filter(|dir| dir.is_dir()) {
             let (view, subscriptions) = self.new_terminal_view(Spawn::shell(dir.clone()), window, cx);
-            self.terminals.panel.push(PanelTerminal { view, _subscriptions: subscriptions });
+            self.terminals.panel.push(PanelTerminal::new(view, subscriptions, false));
         }
     }
 

@@ -16,6 +16,9 @@ pub struct ProjectSession {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub panes: Option<PaneLayout>,
     pub scheme: Option<String>,
+    /// The web app's script Run runs instead of the scheme, when chosen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_script: Option<crate::build::web::ScriptId>,
     pub destination: Option<String>,
     pub configuration: Option<String>,
     /// The chosen test plan, when not the scheme's default.

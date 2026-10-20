@@ -162,5 +162,13 @@
   // build settings, so new files and target changes count at once), or
   // "compilation_database", the one the index build writes. A project with
   // a build server of its own (buildServer.json, .bsp/) keeps it.
-  "sourcekit_build_settings": "build_server"
+  "sourcekit_build_settings": "build_server",
+  // Running a web app's package.json scripts (the scheme menu's web app
+  // sections, ⌘R).
+  "web": {
+    // Open the first local URL a script prints (its dev server's) in your
+    // browser, once per window (not again when it runs again); the
+    // activity view shows it either way.
+    "open_dev_server_url": true
+  }
 }

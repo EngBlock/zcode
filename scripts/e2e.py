@@ -3591,6 +3591,273 @@ def web_language_checks(samples):
     check("ESLint's diagnostics (pulled) and Tailwind's classes, from the app's own packages", eslint_and_tailwind)
 
 
+FAKE_PACKAGE_MANAGER = """#!/usr/bin/env python3
+# A stand-in for npm and pnpm (by the name it's run as): records how zcode
+# ran it, then runs the package.json script as they do, with sh.
+import json, os, sys
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "pm.jsonl"), "a") as f:
+    f.write(json.dumps({"pm": os.path.basename(sys.argv[0]), "args": sys.argv[1:], "cwd": os.getcwd(),
+                        "path": os.environ.get("PATH", ""), "tty": os.isatty(1)}) + "\\n")
+assert sys.argv[1] == "run", sys.argv
+script = json.load(open("package.json"))["scripts"][sys.argv[2]]
+os.execv("/bin/sh", ["sh", "-c", script])
+"""
+
+FAKE_VITE = """#!/usr/bin/env python3
+# A stand-in for Vite's dev server: a child process (as esbuild is), the
+# banner with its URL in Vite's colors, a TypeScript error as
+# vite-plugin-checker prints tsc's, then it serves until it's stopped.
+import os, subprocess, time
+here = os.path.dirname(os.path.abspath(__file__))
+child = subprocess.Popen(["sleep", "600"])
+with open(os.path.join(here, "vite.pids"), "w") as f:
+    f.write(f"{os.getpid()} {child.pid}\\n")
+print("\\x1b[2J\\x1b[3J\\x1b[H", end="")
+print("\\n  \\x1b[1;32mVITE\\x1b[0m v7.0.0  ready in \\x1b[1m312\\x1b[0m ms\\n")
+print("  \\x1b[32m\\u279c\\x1b[0m  \\x1b[1mLocal\\x1b[0m:   \\x1b[36mhttp://localhost:\\x1b[1m5173\\x1b[22m/\\x1b[0m")
+print("  \\x1b[32m\\u279c\\x1b[0m  \\x1b[2mNetwork\\x1b[0m: use --host to expose")
+print("src/counter.ts(3,11): error TS2322: Type 'string' is not assignable to type 'number'.", flush=True)
+while True:
+    time.sleep(1)
+"""
+
+
+def web_run_checks(samples):
+    """Running a web app's scripts with the toolbar's Run, on a copy of
+    samples/HelloWeb: a fake pnpm and npm on PATH (scripts run as theirs
+    do, with sh) and a fake Vite in web/node_modules/.bin that prints its
+    URL and a TypeScript error and keeps running with a child. The scheme
+    menu's web section, a script run beside the package's running app
+    (neither stops the other), the URL opened once (recorded through
+    ZCODE_OPEN_URL_LOG, never a browser), the error in the Issue navigator
+    and the editor, Stop ending the dev server and its child, the choice
+    after a relaunch, MCP, and a plain folder with a package.json."""
+    from mcp_client import McpClient
+    project = os.path.realpath(os.path.join(WORK, "HelloWebRun"))
+    shutil.copytree(os.path.join(samples, "HelloWeb"), project, ignore=shutil.ignore_patterns("node_modules", ".build", "dist"))
+    web = os.path.join(project, "web")
+    counter = os.path.join(web, "src", "counter.ts")
+    # The package's app keeps running, as an app using the dev server would.
+    main_swift = os.path.join(project, "Sources", "HelloWeb", "main.swift")
+    with open(main_swift) as f:
+        source = f.read()
+    with open(main_swift, "w") as f:
+        f.write("import Foundation\n\n" + source + '\nprint("app serving")\nfflush(stdout)\nThread.sleep(forTimeInterval: 600)\n')
+    tools = os.path.realpath(tempfile.mkdtemp(prefix="zcode-e2e-web-run-"))
+    for name in ("pnpm", "npm"):
+        path = os.path.join(tools, name)
+        with open(path, "w") as f:
+            f.write(FAKE_PACKAGE_MANAGER)
+        os.chmod(path, 0o755)
+    pm_log = os.path.join(tools, "pm.jsonl")
+    urls = os.path.join(tools, "urls.log")
+    bin_dir = os.path.join(web, "node_modules", ".bin")
+    os.makedirs(bin_dir)
+    with open(os.path.join(bin_dir, "vite"), "w") as f:
+        f.write(FAKE_VITE)
+    os.chmod(os.path.join(bin_dir, "vite"), 0o755)
+    # pnpm's lockfile: zcode runs the scripts with pnpm.
+    open(os.path.join(web, "pnpm-lock.yaml"), "w").close()
+    # A configuration of its own in which zcode doesn't install the web's
+    # language servers (with the fake npm) when counter.ts opens.
+    config = os.path.join(tools, "config")
+    os.makedirs(config)
+    with open(os.path.join(config, "settings.json"), "w") as f:
+        json.dump({"auto_install_language_servers": False}, f)
+    # PATH is zcode's own (no login shell), with the fakes first.
+    env = {"PATH": tools + ":" + os.environ["PATH"], "ZCODE_AGENT_NO_LOGIN_SHELL": "1", "ZCODE_OPEN_URL_LOG": urls,
+           "ZCODE_CONFIG_DIR": config}
+    z = Zcode(project, env)
+    state = {"z": z}
+
+    def runs(s=None):
+        return (s or state["z"].dump())["web"]["runs"]
+
+    def run_named(name, s=None):
+        return next((r for r in runs(s) if r["name"] == name), None)
+
+    def vite_pids():
+        return [int(p) for p in open(os.path.join(bin_dir, "vite.pids")).read().split()]
+
+    def alive(pid):
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+
+    def opened():
+        return open(urls).read().splitlines() if os.path.exists(urls) else []
+
+    def last_run_call():
+        calls = [json.loads(l) for l in open(pm_log).read().splitlines()]
+        return [c for c in calls if c["args"][:1] == ["run"]][-1]
+
+    def scheme_menu():
+        s = z.wait_for(lambda s: s["web"]["loaded"] and s["scheme_menu"] and "Schemes | HelloWeb ✓" in s["scheme_menu"], timeout=120)
+        assert s["scheme_menu"] == ["Schemes | HelloWeb ✓", "web | dev", "web | build", "web | preview"], s["scheme_menu"]
+        app = s["web"]["apps"][0]
+        assert app["label"] == "web" and app["dir"] == web and app["manager"] == "pnpm", app
+        assert app["scripts"] == ["dev: vite", "build: vue-tsc -b && vite build", "preview: vite preview"], app
+
+    check("Run web apps: the scheme menu has a section per web app with its package.json scripts; pnpm from its lockfile", scheme_menu)
+
+    def beside_the_app():
+        # The package's app first, running.
+        z.run("keys cmd-r")
+        app_pid = running_app_pid(z, timeout=300)
+        console_has(z, "app serving", timeout=60)
+        z.run("scheme web: dev")
+        s = z.dump()
+        assert "web | dev ✓" in s["scheme_menu"] and s["web"]["chosen"] == "web: dev", s["scheme_menu"]
+        assert s["scheme"] == "HelloWeb", "builds and tests keep the package's scheme"
+        z.run("keys cmd-r")
+        s = z.wait_for(lambda s: (run_named("web: dev", s) or {}).get("url"), timeout=30, interval=0.3)
+        run = run_named("web: dev", s)
+        assert run["url"] == "http://localhost:5173/" and run["state"] == "running", run
+        assert "  ➜  Local:   http://localhost:5173/" in run["lines"], run["lines"]
+        # The app goes on.
+        assert s["phase"].startswith("Running") and alive(app_pid) and s["run_pid"] == app_pid, (s["phase"], s["run_pid"])
+        # pnpm run dev, in web/, with web/node_modules/.bin first on PATH, on a terminal.
+        call = last_run_call()
+        assert call["pm"] == "pnpm" and call["args"] == ["run", "dev"] and call["cwd"] == web and call["tty"], call
+        assert call["path"].split(":")[0] == bin_dir and tools in call["path"].split(":"), call["path"]
+        # Shown in the debug area's Terminal tab, named for the script; the editor keeps the keyboard.
+        terminal = next(t for t in s["terminals"]["list"] if t["title"] == "web: dev")
+        assert terminal["location"] == "panel" and terminal["shown"] and not terminal["focused"], terminal
+        assert s["show_debug_area"], "Run shows the debug area"
+        # Opened once in the browser (recorded instead).
+        time.sleep(1)
+        assert opened() == ["http://localhost:5173/"], opened()
+        state["app_pid"] = app_pid
+
+    check("Run web apps: ⌘R runs the chosen script with its package manager in a debug area terminal while the app keeps running; its URL opens once", beside_the_app)
+
+    def url_in_the_activity_view():
+        z.run("web-url 0")
+        time.sleep(0.3)
+        assert opened() == ["http://localhost:5173/"] * 2, opened()
+
+    check("Run web apps: the activity view's chip opens the dev server's URL again", url_in_the_activity_view)
+
+    def errors_as_issues():
+        s = z.wait_for(lambda s: any("TS2322" not in i and "counter.ts:3" in i for i in s["issues"]), timeout=20)
+        issue = next(i for i in s["issues"] if "counter.ts:3" in i)
+        assert issue == "Error counter.ts:3 Type 'string' is not assignable to type 'number'.", s["issues"]
+        assert run_named("web: dev", s)["issues"] == [f"Error {counter}:3:11 Type 'string' is not assignable to type 'number'."], run_named("web: dev", s)
+        # In the editor too, at its line.
+        z.run(f"open {counter}:1")
+        z.wait_for(lambda s: s["active"] and s["active"]["path"] == counter and s["active"]["diagnostics"] >= 1, timeout=20)
+
+    check("Run web apps: a TypeScript error the script prints is in the Issue navigator and the editor at its file and line", errors_as_issues)
+
+    def app_again_keeps_the_dev_server():
+        dev = vite_pids()
+        z.run("scheme HelloWeb", "keys cmd-r")
+        # The app restarts; the dev server doesn't.
+        z.wait_for(lambda s: s["run_pid"] and s["run_pid"] != state["app_pid"], timeout=300, interval=0.5)
+        process_gone(state["app_pid"])
+        assert all(alive(p) for p in dev) and run_named("web: dev")["state"] == "running"
+        # ⌘. with the app chosen stops the app only.
+        app_pid = running_app_pid(z)
+        z.run("keys cmd-.")
+        process_gone(app_pid)
+        s = z.dump()
+        assert all(alive(p) for p in dev) and run_named("web: dev", s)["state"] == "running", run_named("web: dev", s)
+
+    check("Run web apps: running and stopping the app leave the dev server running", app_again_keeps_the_dev_server)
+
+    def stop_ends_the_dev_server():
+        dev = vite_pids()
+        z.run("scheme web: dev", "keys cmd-.")
+        for pid in dev:
+            process_gone(pid)
+        s = z.wait_for(lambda s: run_named("web: dev", s)["state"] == "stopped", timeout=10)
+        terminal = next(t for t in s["terminals"]["list"] if t["title"].startswith("web: dev"))
+        assert terminal["title"] == "web: dev (ended)" and "[Stopped]" in terminal["lines"], terminal
+        # Its issues stay until it runs again, as a build's do.
+        assert any("counter.ts:3" in i for i in s["issues"]), s["issues"]
+
+    check("Run web apps: Stop (⌘.) with the script chosen ends it and its child", stop_ends_the_dev_server)
+
+    def mcp_runs_scripts():
+        c = McpClient([BINARY, "mcp"], env=dict(os.environ, ZCODE_CONFIG_DIR=config), cwd=project)
+        try:
+            c.initialize()
+            r = c.call("XcodeListSchemes")["structuredContent"]
+            assert r["schemes"] == ["HelloWeb", "web: dev", "web: build", "web: preview"] and r["scheme"] == "web: dev", r
+            dev = next(t for t in r["run_targets"] if t["name"] == "web: dev")
+            assert dev["kind"] == "web_script" and dev["package_manager"] == "pnpm" and dev["command"] == "vite" and not dev["running"], dev
+            assert r["run_targets"][0] == {"name": "HelloWeb", "kind": "swift_package_product"}, r["run_targets"][0]
+            r = c.call("RunProject", {"scheme": "web: dev", "wait_seconds": 2})["structuredContent"]
+            assert r["status"] == "running" and r["kind"] == "web_script" and r["url"] == "http://localhost:5173/", r
+            assert r["error_count"] == 1 and r["errors"][0]["path"] == counter and r["errors"][0]["line"] == 3, r["errors"]
+            out = c.call("GetConsoleOutput", {"scheme": "web: dev", "max_lines": 20})["structuredContent"]
+            assert out["running"] and "  ➜  Local:   http://localhost:5173/" in out["lines"], out
+            plain = c.call("GetConsoleOutput")["structuredContent"]
+            assert plain["web_scripts"][0]["name"] == "web: dev" and plain["web_scripts"][0]["running"], plain["web_scripts"]
+            issues = c.call("XcodeListNavigatorIssues", {"severity": "error"})["structuredContent"]["issues"]
+            assert any(i["path"] == counter and i["line"] == 3 and i["source"] == "build" for i in issues), issues
+            dev = vite_pids()
+            assert c.call("StopProject", {"scheme": "web: dev"})["structuredContent"] == {"stopped": True}
+            for pid in dev:
+                process_gone(pid)
+        finally:
+            c.close()
+
+    check("Run web apps: MCP lists scripts as run targets, RunProject runs one (URL, errors), GetConsoleOutput reads it, StopProject stops it", mcp_runs_scripts)
+
+    def chosen_after_a_relaunch():
+        z.quit()
+        z2 = Zcode(project, env)
+        state["z"] = z2
+        s = z2.wait_for(lambda s: s["web"]["loaded"] and s["scheme_menu"], timeout=60)
+        assert "web | dev ✓" in s["scheme_menu"] and s["web"]["chosen"] == "web: dev", s["scheme_menu"]
+        # The run itself isn't brought back, as a shell or otherwise.
+        assert not s["web"]["runs"] and not [t for t in s["terminals"]["list"] if t["location"] == "panel"], s["terminals"]
+        z2.run("keys cmd-r")
+        z2.wait_for(lambda s: (run_named("web: dev", s) or {}).get("url"), timeout=30, interval=0.3)
+        dev = vite_pids()
+        # Quitting ends it.
+        z2.quit()
+        for pid in dev:
+            process_gone(pid)
+
+    check("Run web apps: the chosen script comes back after a relaunch; quitting ends its run", chosen_after_a_relaunch)
+
+    def plain_folder():
+        folder = os.path.realpath(os.path.join(WORK, "plain-site"))
+        os.makedirs(folder)
+        with open(os.path.join(folder, "package.json"), "w") as f:
+            json.dump({"name": "plain-site", "scripts": {"start": "echo serving at http://127.0.0.1:4000. && exec sleep 600",
+                                                          "fail": "echo src/a.ts:2:5 - error TS2304: Cannot find name x. && exit 2"}}, f)
+        z3 = Zcode(folder, env)
+        try:
+            s = z3.wait_for(lambda s: s["web"]["loaded"], timeout=60)
+            assert s["kind"] == "Folder" and s["scheme_menu"] == ["plain-site | start ✓", "plain-site | fail"], s["scheme_menu"]
+            z3.run("keys cmd-r")
+            s = z3.wait_for(lambda s: (run_named("plain-site: start", s) or {}).get("url"), timeout=30, interval=0.3)
+            assert run_named("plain-site: start", s)["url"] == "http://127.0.0.1:4000", runs(s)
+            call = last_run_call()
+            assert call["pm"] == "npm" and call["args"] == ["run", "start"] and call["cwd"] == folder, call
+            pid = run_named("plain-site: start", s)["pid"]
+            # A script that fails: its error and its exit code.
+            z3.run("scheme fail", "keys cmd-r")
+            expected = ["Error :0:0 plain-site: fail exited with code 2", f"Error {folder}/src/a.ts:2:5 Cannot find name x."]
+            s = z3.wait_for(lambda s: (run_named("plain-site: fail", s) or {}).get("issues") == expected, timeout=30, interval=0.3)
+            assert run_named("plain-site: fail", s)["state"] == "exited 2", run_named("plain-site: fail", s)
+            assert run_named("plain-site: start", s)["state"] == "running", "the other script goes on"
+            # ⌘. with nothing chosen running stops what runs.
+            z3.run("keys cmd-.")
+            process_gone(pid)
+        finally:
+            z3.quit()
+
+    check("Run web apps: a plain folder with a package.json runs its scripts (npm without a lockfile); a failing one's errors and exit code", plain_folder)
+    state["z"].quit()
+    shutil.rmtree(tools, ignore_errors=True)
+
+
 def hidden_tab_checks(samples):
     """Hidden tabs at the language server (docs/scale.md, Performance
     batch 4): sourcekit-lsp keeps open only the files panes show, the four
@@ -7699,6 +7966,9 @@ def main():
 
     print("Web languages (a copy of samples/HelloWeb: a Swift package with a Vite app in web/):")
     web_language_checks(samples)
+
+    print("Running web apps (a copy of samples/HelloWeb with a fake pnpm and Vite; a plain folder):")
+    web_run_checks(samples)
 
     print("Hidden tabs at the language server (a copy of samples/ZKit, sourcekit-lsp through lsp_proxy.py):")
     hidden_tab_checks(samples)

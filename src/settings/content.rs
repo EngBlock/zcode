@@ -59,6 +59,9 @@ pub struct Settings {
     pub formatter: Formatter,
     /// Where sourcekit-lsp gets an Xcode project's build settings.
     pub sourcekit_build_settings: SourcekitBuildSettings,
+    /// Open a web app's dev server's URL in the browser when its script
+    /// prints it.
+    pub open_dev_server_url: bool,
 }
 
 /// Where sourcekit-lsp gets an Xcode project's build settings.
@@ -231,6 +234,7 @@ impl Default for Settings {
             auto_install_language_servers: true,
             formatter: Formatter::Auto,
             sourcekit_build_settings: SourcekitBuildSettings::BuildServer,
+            open_dev_server_url: true,
         }
     }
 }
@@ -326,6 +330,13 @@ pub struct SettingsContent {
     pub sourcekit_build_settings: Option<SourcekitBuildSettings>,
     pub distribution: Option<DistributionContent>,
     pub auto_update: Option<bool>,
+    pub web: Option<WebContent>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct WebContent {
+    pub open_dev_server_url: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
@@ -427,6 +438,7 @@ pub const KNOWN_KEYS: &[(&str, &[&str])] = &[
     ("auto_install_language_servers", &[]),
     ("formatter", &[]),
     ("sourcekit_build_settings", &[]),
+    ("web", &["open_dev_server_url"]),
 ];
 
 /// Settings a project's file can't change: they're the app's, not a window's.
@@ -553,6 +565,9 @@ impl Settings {
         }
         take!(formatter);
         take!(sourcekit_build_settings);
+        if let Some(open) = content.web.as_ref().and_then(|w| w.open_dev_server_url) {
+            self.open_dev_server_url = open;
+        }
         // A project's file can't name programs to run.
         for (id, server) in content.lsp.iter().flatten() {
             let mine = self.lsp.entry(id.clone()).or_default();

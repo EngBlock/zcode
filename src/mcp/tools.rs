@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use super::protocol::ToolOutput;
 use super::server::Call;
 use crate::build::log::{LineStyle, Severity, TestStatus};
-use crate::build::{BuildAction, Phase};
+use crate::build::{BuildAction, Choice, Phase};
 use crate::workspace::{McpPermission, Workspace, issue_json};
 
 pub enum ToolError {
@@ -62,7 +62,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 
 fn selection_properties() -> Value {
     json!({
-        "scheme": { "type": "string", "description": "A scheme from XcodeListSchemes, chosen first (as XcodeSwitchScheme does). Defaults to the current one." },
+        "scheme": { "type": "string", "description": "A scheme (or a web app's script, `web: dev`) from XcodeListSchemes, chosen first (as XcodeSwitchScheme does). Defaults to the current one." },
         "destination": { "type": "string", "description": "A run destination's id or name from XcodeListRunDestinations, chosen first. Defaults to the current one." },
     })
 }
@@ -83,7 +83,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "XcodeListSchemes",
         title: "List Schemes",
-        description: "The project's schemes, build configurations and test plans, and which are chosen.",
+        description: "The project's schemes and its web apps' package.json scripts (`web: dev`; run_targets gives each one's kind), build configurations and test plans, and which are chosen. A script runs with RunProject like a scheme, beside a running app.",
         read_only: true,
         asks: false,
         schema: || schema(json!({}), &[]),
@@ -91,7 +91,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "XcodeSwitchScheme",
         title: "Switch Scheme",
-        description: "Chooses the scheme in zcode's toolbar (Product ▸ Scheme).",
+        description: "Chooses the scheme, or a web app's script (`web: dev`), in zcode's toolbar (Product ▸ Scheme).",
         read_only: false,
         asks: false,
         schema: || schema(json!({ "scheme": { "type": "string" } }), &["scheme"]),
@@ -123,7 +123,7 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "RunProject",
         title: "Run",
-        description: "Product ▸ Run (⌘R): builds, then launches the app (on a simulator, booting it, or on the Mac), under the debugger when breakpoints are set. Returns once it's running (plus wait_seconds of its console output) or the build or launch failed. The app keeps running: StopProject ends it.",
+        description: "Product ▸ Run (⌘R): builds, then launches the app (on a simulator, booting it, or on the Mac), under the debugger when breakpoints are set. Returns once it's running (plus wait_seconds of its console output) or the build or launch failed. The app keeps running: StopProject ends it. With a web app's script chosen (`web: dev`), runs it with its package manager in a terminal of zcode's debug area, beside a running app (neither stops the other), and returns its output after wait_seconds (or once it ended), its dev server's URL and the errors it printed; a dev server keeps running until StopProject ends it.",
         read_only: false,
         asks: true,
         schema: || {
@@ -135,10 +135,10 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "StopProject",
         title: "Stop",
-        description: "Product ▸ Stop (⌘.): stops the build, the running app and the debugger.",
+        description: "Product ▸ Stop (⌘.): stops the chosen run target's run: a web app's script's when it's chosen and running, otherwise the build, the running app and the debugger (and when none of those is going, the scripts). With scheme, that scheme's (the build, app and debugger) or that script's.",
         read_only: false,
         asks: true,
-        schema: || schema(json!({}), &[]),
+        schema: || schema(json!({ "scheme": { "type": "string", "description": "A scheme or a web app's script (`web: dev`) to stop instead of the chosen one." } }), &[]),
     },
     Tool {
         name: "RunAllTests",
@@ -204,10 +204,18 @@ pub const TOOLS: &[Tool] = &[
     Tool {
         name: "GetConsoleOutput",
         title: "Get Console Output",
-        description: "The running (or last run) app's console output and the debugger's.",
+        description: "The running (or last run) app's console output and the debugger's, and which web app scripts run (web_scripts); with scheme naming a script (`web: dev`), that script's output, URL and issues instead.",
         read_only: true,
         asks: false,
-        schema: || schema(json!({ "max_lines": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "The last this many lines (default 200)." } }), &[]),
+        schema: || {
+            schema(
+                json!({
+                    "max_lines": { "type": "integer", "minimum": 1, "maximum": 5000, "description": "The last this many lines (default 200)." },
+                    "scheme": { "type": "string", "description": "A web app's script (`web: dev`) whose output to read." },
+                }),
+                &[],
+            )
+        },
     },
     Tool {
         name: "XcodeGetCurrentFile",
@@ -335,10 +343,11 @@ pub async fn call(name: &str, args: &Value, call: &Rc<Call>, cx: &mut AsyncApp) 
         "ProfileProject" => profile(args, &workspace, call, cx).await,
         "ArchiveProject" => archive(args, &workspace, call, cx).await,
         "StopProject" => {
+            let scheme = string(args, "scheme")?;
             let permission = permit(call, &workspace, name, "Stop".into(), args, cx).await?;
-            let stopped = cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(cx)));
-            finish(&permission, true, cx);
-            json(json!({ "stopped": stopped }))
+            let stopped = cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(scheme.as_deref(), cx)));
+            finish(&permission, stopped.is_ok(), cx);
+            json(json!({ "stopped": stopped? }))
         }
         "GetTestList" => json(cx.update(|cx| workspace.read(cx).mcp_test_list(cx))),
         "XcodeListNavigatorIssues" => {
@@ -403,16 +412,25 @@ pub async fn call(name: &str, args: &Value, call: &Rc<Call>, cx: &mut AsyncApp) 
         }
         "GetConsoleOutput" => {
             let max = integer(args, "max_lines")?.unwrap_or(200).clamp(1, 5000) as usize;
-            json(cx.update(|cx| {
+            let scheme = string(args, "scheme")?;
+            let value = cx.update(|cx| {
                 let ws = workspace.read(cx);
                 let build = ws.build.read(cx);
+                if let Some(name) = &scheme {
+                    let Some(Choice::Script(id)) = build.find_choice(name) else {
+                        return Err(ToolError::InvalidParams(format!("“{name}” isn’t a web app’s script; XcodeListSchemes lists them (the app's console needs no scheme).")));
+                    };
+                    return ws.mcp_web_run(&id, max, cx).ok_or_else(|| ToolError::Failed(format!("“{name}” hasn’t run in this window.")));
+                }
                 let console = &build.console;
-                json!({
+                Ok(json!({
                     "running": matches!(build.phase, Phase::Running { .. }),
                     "total_lines": console.len(),
                     "lines": &console[console.len().saturating_sub(max)..],
-                })
-            }))
+                    "web_scripts": ws.mcp_web_runs(cx),
+                }))
+            })?;
+            json(value)
         }
         "OpenFile" => {
             let path = string(args, "path")?.ok_or_else(|| ToolError::InvalidParams("path is required".into()))?;
@@ -510,7 +528,11 @@ fn finish(permission: &Option<McpPermission>, ok: bool, cx: &mut AsyncApp) {
 
 async fn wait_for_schemes(workspace: &Entity<Workspace>, call: &Call, cx: &mut AsyncApp) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(120);
-    while cx.update(|cx| workspace.read(cx).build.read(cx).schemes_loading) {
+    // The schemes, and the web apps' scripts (read after the project's scan).
+    while cx.update(|cx| {
+        let build = workspace.read(cx).build.read(cx);
+        build.schemes_loading || !build.web_apps_loaded
+    }) {
         if call.cancelled() {
             return Err(ToolError::Cancelled);
         }
@@ -525,10 +547,35 @@ async fn wait_for_schemes(workspace: &Entity<Workspace>, call: &Call, cx: &mut A
 fn schemes(workspace: &Entity<Workspace>, cx: &gpui_kit::App) -> Value {
     let ws = workspace.read(cx);
     let build = ws.build.read(cx);
+    let scheme_kind = match ws.project.kind {
+        crate::project::ProjectKind::SwiftPackage => "swift_package_product",
+        _ => "xcode_scheme",
+    };
+    let targets: Vec<Value> = build
+        .choices()
+        .into_iter()
+        .map(|choice| match &choice {
+            Choice::Scheme(name) => json!({ "name": name, "kind": scheme_kind }),
+            Choice::Script(id) => {
+                let (app, script) = build.web_script(id).expect("a listed script");
+                json!({
+                    "name": build.choice_name(&choice),
+                    "kind": "web_script",
+                    "folder": app.dir,
+                    "script": script.name,
+                    "command": script.command,
+                    "package_manager": app.manager.name(),
+                    "running": ws.mcp_script_running(id),
+                })
+            }
+        })
+        .collect();
     json!({
         "project": { "root": ws.project.root, "name": ws.project.name, "kind": project_kind(&ws.project.kind) },
-        "schemes": build.schemes.schemes,
-        "scheme": build.scheme,
+        // Schemes, then scripts: every name XcodeSwitchScheme and RunProject take.
+        "schemes": targets.iter().map(|t| t["name"].clone()).collect::<Vec<_>>(),
+        "scheme": build.choice().map(|c| build.choice_name(&c)),
+        "run_targets": targets,
         "configurations": build.schemes.configurations,
         "configuration": build.configuration,
         "test_plans": build.test_plans.iter().map(|p| json!({ "name": p.name, "default": p.is_default })).collect::<Vec<_>>(),
@@ -595,6 +642,9 @@ async fn product(action: BuildAction, tool: &str, args: &Value, workspace: &Enti
     };
     wait_for_schemes(workspace, call, cx).await?;
     cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_select(scheme.as_deref(), destination.as_deref(), cx)))?;
+    if action == BuildAction::Run && cx.update(|cx| workspace.read(cx).build.read(cx).script.is_some()) {
+        return run_script(tool, args, wait, workspace, call, cx).await;
+    }
     let scheme_name = cx.update(|cx| workspace.read(cx).build.read(cx).scheme.clone()).unwrap_or_default();
     let title = match (action, tests.len()) {
         (BuildAction::Test, 0) => format!("Test “{scheme_name}”"),
@@ -642,7 +692,7 @@ async fn run_product(action: BuildAction, tests: &[String], wait: f64, workspace
             return Err(ToolError::Failed("Another build, run or test started in zcode and replaced this one.".into()));
         }
         if call.cancelled() {
-            cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(cx)));
+            cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop_build(cx)));
             return Err(ToolError::Cancelled);
         }
         let done = match action {
@@ -665,7 +715,7 @@ async fn run_product(action: BuildAction, tests: &[String], wait: f64, workspace
         while Instant::now() < until {
             cx.background_executor().timer(Duration::from_millis(200)).await;
             if call.cancelled() {
-                cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(cx)));
+                cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop_build(cx)));
                 return Err(ToolError::Cancelled);
             }
             if !cx.update(|cx| workspace.read(cx).build.read(cx).phase.is_busy()) {
@@ -674,6 +724,69 @@ async fn run_product(action: BuildAction, tests: &[String], wait: f64, workspace
         }
     }
     Ok(ToolOutput::json(cx.update(|cx| product_result(action, reports_before, started, workspace, cx))))
+}
+
+/// RunProject with a web app's script chosen: runs it, then waits `wait`
+/// seconds (or until it ends) and reports its output, URL and issues.
+async fn run_script(tool: &str, args: &Value, wait: f64, workspace: &Entity<Workspace>, call: &Call, cx: &mut AsyncApp) -> Result<ToolOutput> {
+    let name = cx.update(|cx| {
+        let build = workspace.read(cx).build.read(cx);
+        build.choice().map(|c| build.choice_name(&c)).unwrap_or_default()
+    });
+    let permission = permit(call, workspace, tool, format!("Run “{name}”"), args, cx).await?;
+    let window = cx.update(|cx| workspace.read(cx).window);
+    let started = Instant::now();
+    let id = cx
+        .update(|cx| window.update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.mcp_run_script(window, cx))))
+        .map_err(|e| e.to_string())
+        .and_then(|started| started);
+    let id = match id {
+        Ok(id) => id,
+        Err(message) => {
+            finish(&permission, false, cx);
+            return Err(message.into());
+        }
+    };
+    call.progress(&format!("Running {name}"));
+    let until = Instant::now() + Duration::from_secs_f64(wait);
+    while Instant::now() < until {
+        cx.background_executor().timer(Duration::from_millis(200)).await;
+        if call.cancelled() {
+            cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(Some(&name), cx))).ok();
+            finish(&permission, false, cx);
+            return Err(ToolError::Cancelled);
+        }
+        if !cx.update(|cx| workspace.read(cx).mcp_script_running(&id)) {
+            break;
+        }
+    }
+    let value = cx.update(|cx| {
+        let mut run = workspace.read(cx).mcp_web_run(&id, 200, cx).unwrap_or_else(|| json!({}));
+        let issues = run["issues"].as_array().cloned().unwrap_or_default();
+        let (errors, warnings): (Vec<Value>, Vec<Value>) = issues.into_iter().partition(|i| i["severity"] == "error");
+        let running = run["running"] == true;
+        let state = run["state"].as_str().unwrap_or_default().to_string();
+        let success = running || state == "exited 0" || state == "exited";
+        json!({
+            "action": "run",
+            "kind": "web_script",
+            "scheme": name,
+            "status": if running { "running" } else if success { "finished" } else { "failed" },
+            "success": success,
+            "state": state,
+            "url": run["url"].take(),
+            "command": run["command"].take(),
+            "duration_seconds": round(started.elapsed().as_secs_f64()),
+            "error_count": errors.len(),
+            "warning_count": warnings.len(),
+            "errors": errors,
+            "warnings": warnings.into_iter().take(100).collect::<Vec<_>>(),
+            "console": run["lines"].take(),
+            "note": if running { "The script keeps running in zcode's debug area: GetConsoleOutput with this scheme reads its output, StopProject ends it." } else { "" },
+        })
+    });
+    finish(&permission, value["success"] == true, cx);
+    Ok(ToolOutput::json(value))
 }
 
 fn product_result(action: BuildAction, reports_before: usize, started: Instant, workspace: &Entity<Workspace>, cx: &gpui_kit::App) -> Value {
@@ -775,7 +888,7 @@ async fn profile(args: &Value, workspace: &Entity<Workspace>, call: &Call, cx: &
             return Err(ToolError::Failed("Another build, run or test started in zcode and replaced this one.".into()));
         }
         if call.cancelled() {
-            cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(cx)));
+            cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop_build(cx)));
             finish(&permission, false, cx);
             return Err(ToolError::Cancelled);
         }
@@ -859,7 +972,7 @@ async fn archive(args: &Value, workspace: &Entity<Workspace>, call: &Call, cx: &
             return Err(ToolError::Failed("Another build, run or test started in zcode and replaced this one.".into()));
         }
         if call.cancelled() {
-            cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop(cx)));
+            cx.update(|cx| workspace.update(cx, |ws, cx| ws.mcp_stop_build(cx)));
             finish(&permission, false, cx);
             return Err(ToolError::Cancelled);
         }
