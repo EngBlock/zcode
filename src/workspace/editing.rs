@@ -28,6 +28,40 @@ fn line_block(text: &Rope, selection: &Range<usize>) -> Range<usize> {
     start..end
 }
 
+/// What ⌥↑ (`up`) or ⌥↓ moves: the lines `rows`, and the line above or
+/// below that they swap with, in a text of `lines` lines. Both widen to
+/// whole folded blocks (a fold's first line through its last), so a fold
+/// moves as one line and is never split. `None` at the top or the bottom.
+fn line_move(
+    folds: &[zcode_editor::FoldRange],
+    rows: std::ops::RangeInclusive<usize>,
+    lines: usize,
+    up: bool,
+) -> Option<(std::ops::RangeInclusive<usize>, std::ops::RangeInclusive<usize>)> {
+    let widen = |rows: std::ops::RangeInclusive<usize>| {
+        let (mut first, mut last) = rows.into_inner();
+        while let Some(fold) = folds
+            .iter()
+            .find(|f| f.start_line <= last && f.end_line >= first && (f.start_line < first || f.end_line > last))
+        {
+            first = first.min(fold.start_line);
+            last = last.max(fold.end_line);
+        }
+        first..=last
+    };
+    let moved = widen(rows);
+    let past = if up {
+        widen(moved.start().checked_sub(1)?..=moved.start() - 1)
+    } else {
+        let next = moved.end() + 1;
+        if next >= lines {
+            return None;
+        }
+        widen(next..=next)
+    };
+    Some((moved, past))
+}
+
 /// The line containing `offset`, including its trailing newline when it has
 /// one.
 fn whole_line(text: &Rope, offset: usize) -> Range<usize> {
@@ -87,10 +121,22 @@ fn comment_style(language: &str, text: &str, offset: usize) -> Option<CommentSty
 }
 
 /// Comments or uncomments every line of `block` (Xcode's ⌘/): a prefix after
-/// the block's indentation, or each line wrapped in a block comment.
+/// the block's indentation, or each line wrapped in a block comment. Blank
+/// lines are left alone, unless every line is blank: then each gets an
+/// empty comment to type in.
 pub fn toggle_comment_text(block: &str, style: CommentStyle) -> String {
     let lines: Vec<&str> = block.split('\n').collect();
     let non_blank: Vec<&&str> = lines.iter().filter(|l| !l.trim().is_empty()).collect();
+    if non_blank.is_empty() {
+        return lines
+            .iter()
+            .map(|line| match style {
+                CommentStyle::Line(prefix) => format!("{line}{prefix} "),
+                CommentStyle::Block(open, close) => format!("{line}{open}  {close}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
     let commented = |line: &str| match style {
         CommentStyle::Line(prefix) => line.trim_start().starts_with(prefix),
         CommentStyle::Block(open, close) => line.trim_start().starts_with(open) && line.trim_end().ends_with(close),
@@ -245,11 +291,26 @@ impl Workspace {
             let text = state.text().clone();
             let block = line_block(&text, &state.selected_range());
             let Some(style) = comment_style(&language, &text.to_string(), block.start) else { return };
+            let selection = state.selected_range();
             let original = text.slice(block.clone()).to_string();
             let replacement = toggle_comment_text(&original, style);
             state.set_selected_range(block.clone(), cx);
             state.replace(replacement.clone(), window, cx);
-            state.set_selected_range(block.start..block.start + replacement.len(), cx);
+            if selection.is_empty() && original.trim().is_empty() {
+                // An empty comment on a blank line: the cursor goes inside it.
+                let inside = match style {
+                    CommentStyle::Line(_) => replacement.len(),
+                    CommentStyle::Block(_, close) => replacement.len() - close.len() - 1,
+                };
+                state.set_selected_range(block.start + inside..block.start + inside, cx);
+            } else {
+                // Whole lines selected (to the start of the line after them)
+                // stay selected with their newline, so ⌘D or ⌥↓ next still
+                // takes whole lines.
+                let whole_lines = !selection.is_empty() && selection.end == block.end + 1;
+                let end = block.start + replacement.len() + usize::from(whole_lines);
+                state.set_selected_range(block.start..end, cx);
+            }
         });
     }
 
@@ -274,33 +335,47 @@ impl Workspace {
         });
     }
 
+    /// ⌥↑ / ⌥↓: the selected lines swap with the visible line above or
+    /// below. A folded block (its first line through its last) moves as one
+    /// line and stays folded, and so does one it moves past.
     fn move_lines(&mut self, up: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.transact_in_active_editor(window, cx, |state, _, window, cx| {
             let text = state.text().clone();
             let selection = state.selected_range();
             let block = line_block(&text, &selection);
-            let first_row = text.offset_to_point(block.start).row;
-            let last_row = text.offset_to_point(block.end).row;
-            let lines = text.lines_len();
-            if (up && first_row == 0) || (!up && last_row + 1 >= lines) {
-                return;
-            }
-            let block_text = text.slice(block.clone()).to_string();
-            if up {
-                let prev_start = text.line_start_offset(first_row - 1);
-                let prev = text.slice(prev_start..block.start - 1).to_string();
-                state.set_selected_range(prev_start..block.end, cx);
-                state.replace(format!("{block_text}\n{prev}"), window, cx);
-                let shift = prev.len() + 1;
-                state.set_selected_range(selection.start - shift..selection.end - shift, cx);
+            let folds = state.folded_lines();
+            let rows = text.offset_to_point(block.start).row..=text.offset_to_point(block.end).row;
+            let Some((moved, past)) = line_move(&folds, rows, text.lines_len(), up) else { return };
+            let moved_range = text.line_start_offset(*moved.start())..text.line_end_offset(*moved.end());
+            let past_range = text.line_start_offset(*past.start())..text.line_end_offset(*past.end());
+            let moved_text = text.slice(moved_range.clone()).to_string();
+            let past_text = text.slice(past_range.clone()).to_string();
+            // The folds inside `rows`, `delta` lines on.
+            let refold = |rows: &std::ops::RangeInclusive<usize>, delta: isize| -> Vec<(usize, usize)> {
+                folds
+                    .iter()
+                    .filter(|f| rows.contains(&f.start_line) && rows.contains(&f.end_line))
+                    .map(|f| (f.start_line.saturating_add_signed(delta), f.end_line.saturating_add_signed(delta)))
+                    .collect()
+            };
+            let (moved_lines, past_lines) = (moved.clone().count() as isize, past.clone().count() as isize);
+            let (shift, folds_after): (isize, Vec<(usize, usize)>) = if up {
+                state.set_selected_range(past_range.start..moved_range.end, cx);
+                state.replace(format!("{moved_text}\n{past_text}"), window, cx);
+                let folds = [refold(&moved, -past_lines), refold(&past, moved_lines)].concat();
+                (-(past_text.len() as isize + 1), folds)
             } else {
-                let next_end = text.line_end_offset(last_row + 1);
-                let next = text.slice(block.end + 1..next_end).to_string();
-                state.set_selected_range(block.start..next_end, cx);
-                state.replace(format!("{next}\n{block_text}"), window, cx);
-                let shift = next.len() + 1;
-                state.set_selected_range(selection.start + shift..selection.end + shift, cx);
+                state.set_selected_range(moved_range.start..past_range.end, cx);
+                state.replace(format!("{past_text}\n{moved_text}"), window, cx);
+                let folds = [refold(&moved, past_lines), refold(&past, -moved_lines)].concat();
+                (past_text.len() as isize + 1, folds)
+            };
+            for (start, end) in folds_after {
+                state.fold_lines(zcode_editor::FoldRange::new(start, end), cx);
             }
+            let start = selection.start.saturating_add_signed(shift);
+            let end = selection.end.saturating_add_signed(shift);
+            state.set_selected_range(start..end, cx);
         });
     }
 
@@ -572,7 +647,8 @@ impl Workspace {
     pub(super) fn expand_abbreviation(&mut self, _: &ExpandAbbreviation, window: &mut Window, cx: &mut Context<Self>) {
         let Some(editor) = self.active_editor() else { return };
         let language = self.active_buffer().map(|b| b.language.clone()).unwrap_or_default();
-        let options = crate::languages::emmet::options(self.settings.current.tab_size, self.settings.current.hard_tabs);
+        let tab = self.active_tab(cx);
+        let options = crate::languages::emmet::options(tab.tab_size as u32, tab.hard_tabs);
         let (text, cursor) = {
             let state = editor.read(cx);
             (state.text().clone(), state.cursor())
@@ -609,7 +685,8 @@ impl Workspace {
         };
         let line_start = text.line_start_offset(text.offset_to_point(range.start).row);
         let indent: String = text.slice(line_start..range.start).to_string().chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-        let options = crate::languages::emmet::options(self.settings.current.tab_size, self.settings.current.hard_tabs);
+        let tab = self.active_tab(cx);
+        let options = crate::languages::emmet::options(tab.tab_size as u32, tab.hard_tabs);
         let delegate = pickers::WrapDelegate::new(cx.weak_entity(), editor, range, text, syntax, options, indent);
         let picker = cx.new(|cx| crate::picker::Picker::new(delegate, window, cx));
         self.show_modal(picker, window, cx);
@@ -635,7 +712,7 @@ impl Workspace {
                     json!({
                         "textDocument": { "uri": path_to_uri(&path).as_str() },
                         "range": { "start": offset_to_lsp(&text, block.start), "end": offset_to_lsp(&text, block.end) },
-                        "options": self.formatting_options(),
+                        "options": self.formatting_options(&path, cx),
                     }),
                 );
                 let task = cx.background_spawn(async move { Ok(serde_json::from_value(request.await?).unwrap_or_default()) });
@@ -813,6 +890,38 @@ mod tests {
         assert_eq!(comment_style("text", "", 0), None);
     }
     use zcode_editor::Rope;
+
+    #[test]
+    fn blank_lines_get_an_empty_comment() {
+        let line = CommentStyle::Line("//");
+        assert_eq!(toggle_comment_text("", line), "// ");
+        assert_eq!(toggle_comment_text("  \n", line), "  // \n// ");
+        assert_eq!(toggle_comment_text("// ", line), "");
+        assert_eq!(toggle_comment_text("", CommentStyle::Block("/*", "*/")), "/*  */");
+        // Among other lines, blank ones stay blank.
+        assert_eq!(toggle_comment_text("a\n\nb", line), "// a\n\n// b");
+    }
+
+    #[test]
+    fn a_folded_block_moves_as_one_line() {
+        use zcode_editor::FoldRange;
+        // Lines 1–3 folded (line 2 hidden).
+        let folds = [FoldRange::new(1, 3)];
+        // Down from the header: the whole block passes line 4.
+        assert_eq!(super::line_move(&folds, 1..=1, 6, false), Some((1..=3, 4..=4)));
+        // Up from the header: past line 0.
+        assert_eq!(super::line_move(&folds, 1..=1, 6, true), Some((1..=3, 0..=0)));
+        // Lines around it pass the block as a whole, from above and below.
+        assert_eq!(super::line_move(&folds, 0..=0, 6, false), Some((0..=0, 1..=3)));
+        assert_eq!(super::line_move(&folds, 4..=4, 6, true), Some((4..=4, 1..=3)));
+        // The closing line takes its block with it.
+        assert_eq!(super::line_move(&folds, 3..=3, 6, false), Some((1..=3, 4..=4)));
+        // Nothing to move past at either end.
+        assert_eq!(super::line_move(&folds, 4..=5, 6, false), None);
+        assert_eq!(super::line_move(&[FoldRange::new(0, 2)], 1..=1, 6, true), None);
+        // Without folds, one line at a time.
+        assert_eq!(super::line_move(&[], 2..=2, 6, false), Some((2..=2, 3..=3)));
+    }
 
     #[test]
     fn comments_and_uncomments() {

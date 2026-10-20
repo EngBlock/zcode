@@ -65,6 +65,10 @@ pub struct Buffer {
     /// Shows an edit in the file's live previews (`rendered_view.rs`) once
     /// typing pauses.
     pub(super) rendered_refresh: Option<Task<()>>,
+    /// What its `.editorconfig` files and its text, when it opened, say about
+    /// its indentation (`Workspace::tab_for`).
+    pub(super) editorconfig: crate::settings::indentation::EditorConfigIndent,
+    pub(super) detected_indent: Option<zcode_editor::DetectedIndent>,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -245,6 +249,8 @@ impl Workspace {
             },
         };
         let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let editorconfig = crate::settings::indentation::editorconfig(path);
+        let detected_indent = zcode_editor::detect_indent(&text);
         let language = Self::language_for(path);
         // Package sources, the SDK's interfaces, and the files zcode shows
         // (Open Default Settings) can't be edited.
@@ -281,6 +287,8 @@ impl Workspace {
             tokens: Default::default(),
             previews: Default::default(),
             rendered_refresh: None,
+            editorconfig,
+            detected_indent,
             _subscriptions: vec![subscription],
         });
         self.follow_open_files();
@@ -361,7 +369,11 @@ impl Workspace {
             EditorState::link(&shared, &editor, window, cx);
             editor
         };
-        editor.update(cx, |state, cx| state.set_read_only(read_only, cx));
+        let tab = self.tab_for(path, cx);
+        editor.update(cx, |state, cx| {
+            state.set_read_only(read_only, cx);
+            state.set_tab_size(tab, cx);
+        });
         self.install_gutter_lanes(&editor, cx);
 
         if served_language(path, editor.read(cx).text().len()).is_some() {
@@ -374,7 +386,7 @@ impl Workspace {
                 })
             };
             let emmet = crate::languages::emmet::syntax_language(language).map(|language| {
-                let options = crate::languages::emmet::options(self.settings.current.tab_size, self.settings.current.hard_tabs);
+                let options = crate::languages::emmet::options(tab.tab_size as u32, tab.hard_tabs);
                 Rc::new(crate::languages::emmet::EmmetCompletions { language, options }) as Rc<dyn crate::lsp::LocalCompletions>
             });
             DocumentProviders::new(self.lsp.downgrade(), path.to_path_buf(), apply_edit).with_local(emmet).install(&editor, cx);
@@ -615,7 +627,7 @@ impl Workspace {
         let (_, server) = servers.iter().find(|(_, s)| s.name() == "biome").or(servers.first())?.clone();
         let request = server.request_raw(
             "textDocument/formatting",
-            serde_json::json!({ "textDocument": { "uri": lsp::path_to_uri(path).as_str() }, "options": self.formatting_options() }),
+            serde_json::json!({ "textDocument": { "uri": lsp::path_to_uri(path).as_str() }, "options": self.formatting_options(path, cx) }),
         );
         Some(cx.background_spawn(async move { Ok(serde_json::from_value(request.await?).unwrap_or_default()) }))
     }
@@ -662,9 +674,43 @@ impl Workspace {
         }
     }
 
-    /// The editor's indentation, for the language server's formatting.
-    pub(super) fn formatting_options(&self) -> serde_json::Value {
-        serde_json::json!({ "tabSize": self.settings.current.tab_size, "insertSpaces": !self.settings.current.hard_tabs })
+    /// `path`'s indentation, for the language server's formatting.
+    pub(super) fn formatting_options(&self, path: &Path, cx: &App) -> serde_json::Value {
+        let tab = self.tab_for(path, cx);
+        serde_json::json!({ "tabSize": tab.tab_size, "insertSpaces": !tab.hard_tabs })
+    }
+
+    /// How `path` is indented (`crate::settings::indentation`): what the
+    /// settings files and its `.editorconfig` say, else what its text said
+    /// when it opened.
+    pub(super) fn tab_for(&self, path: &Path, cx: &App) -> zcode_editor::TabSize {
+        let settings = crate::settings::indent_settings(&self.project.root, &self.settings.current, cx);
+        let (editorconfig, detected) =
+            self.buffer(path).map(|b| (b.editorconfig, b.detected_indent)).unwrap_or_default();
+        let (tab_size, hard_tabs) = crate::settings::indentation::resolve(&settings, editorconfig, detected);
+        zcode_editor::TabSize { tab_size: tab_size as usize, hard_tabs }
+    }
+
+    /// The active editor's indentation (the settings' outside a file).
+    pub(super) fn active_tab(&self, cx: &App) -> zcode_editor::TabSize {
+        self.active_editor()
+            .and_then(|editor| editor.read(cx).current_tab_size())
+            .unwrap_or_else(|| self.editor_config().tab())
+    }
+
+    /// Gives every file's editors its indentation, after the settings
+    /// changed.
+    pub(super) fn apply_file_indentation(&self, cx: &mut App) {
+        let mut views: Vec<(Entity<EditorState>, zcode_editor::TabSize)> =
+            self.buffers.iter().map(|b| (b.editor.clone(), self.tab_for(&b.path, cx))).collect();
+        for pane in &self.panes {
+            for item in pane.items.iter().filter_map(super::Item::editor) {
+                views.push((item.editor.clone(), self.tab_for(&item.path, cx)));
+            }
+        }
+        for (editor, tab) in views {
+            editor.update(cx, |state, cx| state.set_tab_size(tab, cx));
+        }
     }
 
     /// Open As ▸ Source Code (`as_source`) or ▸ Property List for a tab.
@@ -786,13 +832,17 @@ impl Workspace {
                 self.open_file(path.clone(), None, false, window, cx);
             }
             if let Some(buffer) = self.buffer(&path) {
+                // One undo step for the file, however many edits (Re-Indent
+                // changes each line it fixes).
                 buffer.editor.update(cx, |state, cx| {
-                    for edit in &edits {
-                        let text = state.text().clone();
-                        let range = lsp::lsp_range_to_offsets(&text, edit.range);
-                        state.set_selected_range(range, cx);
-                        state.replace(edit.new_text.clone(), window, cx);
-                    }
+                    state.transact(window, cx, |state, window, cx| {
+                        for edit in &edits {
+                            let text = state.text().clone();
+                            let range = lsp::lsp_range_to_offsets(&text, edit.range);
+                            state.set_selected_range(range, cx);
+                            state.replace(edit.new_text.clone(), window, cx);
+                        }
+                    });
                 });
             } else if let Ok(contents) = std::fs::read_to_string(&path) {
                 let mut text = zcode_editor::Rope::from(contents.as_str());

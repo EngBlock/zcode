@@ -12,6 +12,7 @@
 //! off the main thread (`watch`).
 
 pub mod content;
+pub mod indentation;
 pub mod jsonc;
 pub mod keymap;
 pub mod themes;
@@ -179,6 +180,15 @@ impl Settings {
             None => store.user_settings.clone(),
         }
     }
+}
+
+/// What `root`'s window's settings files say about indentation, with the
+/// settings they give (`indentation::resolve` decides a file's).
+pub fn indent_settings(root: &Path, settings: &Settings, cx: &App) -> indentation::IndentSettings {
+    let pinned = |content: &SettingsContent| indentation::Pinned { tab_size: content.tab_size, hard_tabs: content.hard_tabs };
+    let Some(store) = cx.try_global::<SettingsStore>() else { return indentation::IndentSettings::new(settings, Default::default(), Default::default()) };
+    let project = store.projects.get(root).map(|p| pinned(&p.content)).unwrap_or_default();
+    indentation::IndentSettings::new(settings, pinned(&store.user.content), project)
 }
 
 impl SettingsStore {

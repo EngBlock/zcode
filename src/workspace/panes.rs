@@ -166,6 +166,9 @@ impl Workspace {
                 }
                 Target::LspRange(range) => lsp::lsp_range_to_offsets(&text, range),
             };
+            // A target inside a fold (⌘L, a definition, an issue) opens it.
+            state.unfold_at(zcode_editor::RopeExt::offset_to_position(&text, range.start), cx);
+            state.unfold_at(zcode_editor::RopeExt::offset_to_position(&text, range.end), cx);
             state.set_selected_range(range.start..range.start, cx);
             // Selected, the symbol would be Vim's visual mode: its cursor
             // goes to the start instead.

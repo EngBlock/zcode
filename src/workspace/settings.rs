@@ -90,6 +90,8 @@ impl Workspace {
         let problems = store.problems(Some(&self.project.root));
         let new = Settings::for_project(&self.project.root, cx);
         let old = std::mem::replace(&mut self.settings.current, new.clone());
+        // Indentation is each file's own, from what the files say now.
+        self.apply_file_indentation(cx);
         if old != new {
             self.apply_settings(&old, window, cx);
             // The menu bar shows the front window's.
@@ -130,6 +132,7 @@ impl Workspace {
             for editor in self.all_editors(cx) {
                 config.apply(&editor, window, cx);
             }
+            self.apply_file_indentation(cx);
         }
         if new.soft_wrap != self.soft_wrap {
             self.soft_wrap = new.soft_wrap;

@@ -49,6 +49,60 @@ impl TabSize {
     }
 }
 
+/// How a file's lines are indented, as [`detect_indent`] reads it.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum DetectedIndent {
+    Tabs,
+    /// Spaces, this many a level.
+    Spaces(usize),
+}
+
+/// How `text` is indented, from its first lines: tabs when more lines start
+/// with a tab than with spaces, otherwise the most common step between
+/// consecutive lines' indentation (2 to 8 spaces; ties go to the smaller).
+/// `None` when nothing is indented. One-space steps and the `*` lines of
+/// block comments are alignment, not indentation, and don't count.
+///
+/// Reads at most the first 2,000 lines, so opening a large file costs the
+/// same.
+pub fn detect_indent(text: &str) -> Option<DetectedIndent> {
+    const MAX_LINES: usize = 2000;
+    let (mut tab_lines, mut space_lines) = (0usize, 0usize);
+    let mut steps = [0usize; 9];
+    let mut previous: Option<usize> = Some(0);
+    for line in text.lines().take(MAX_LINES) {
+        let content = line.trim_start_matches([' ', '\t']);
+        if content.is_empty() || content.starts_with('*') {
+            continue;
+        }
+        let indent = &line[..line.len() - content.len()];
+        if indent.starts_with('\t') {
+            tab_lines += 1;
+            previous = None;
+            continue;
+        }
+        if indent.contains('\t') {
+            previous = None;
+            continue;
+        }
+        if !indent.is_empty() {
+            space_lines += 1;
+        }
+        if let Some(previous) = previous {
+            let step = indent.len().abs_diff(previous);
+            if (2..steps.len()).contains(&step) {
+                steps[step] += 1;
+            }
+        }
+        previous = Some(indent.len());
+    }
+    if tab_lines > space_lines {
+        return Some(DetectedIndent::Tabs);
+    }
+    let (width, count) = steps.iter().enumerate().rev().max_by_key(|(_, count)| **count)?;
+    (*count > 0).then_some(DetectedIndent::Spaces(width))
+}
+
 impl LayoutMode {
     /// Whether this layout indents blocks.
     ///
@@ -201,8 +255,11 @@ impl<M: InputModeKind> InputBaseState<M> {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Tab types the edit prediction on screen, if there is one.
-        if M::accept_edit_prediction(self, window, cx) {
+        // Tab accepts the completion the menu has selected, as Return does
+        // (Xcode), or types the edit prediction on screen, if there is one.
+        if M::handle_context_menu_action(self, Box::new(IndentInline), window, cx)
+            || M::accept_edit_prediction(self, window, cx)
+        {
             return;
         }
         self.indent(false, window, cx);
@@ -470,6 +527,45 @@ mod tests {
             hard_tabs: true,
         };
         assert_eq!(tab.to_string(), "\t");
+    }
+
+    /// Tab with the completion menu open accepts the selected completion,
+    /// as Return does; closed, it indents.
+    #[gpui::test]
+    fn tab_accepts_a_completion(cx: &mut gpui::TestAppContext) {
+        let (editor, mut cx) = crate::test_support::open_editor(cx, "fo");
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| {
+                state.focus(window, cx);
+                state.set_selected_range(2..2, cx);
+                let item = lsp_types::CompletionItem { label: "foo".into(), ..Default::default() };
+                state.present_completion_items(0, "fo", vec![item], cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| editor.update(cx, |state, cx| state.indent_inline(&crate::IndentInline, window, cx)));
+        cx.run_until_parked();
+        editor.read_with(&cx, |state, _| {
+            assert_eq!(state.text().to_string(), "foo");
+            assert!(!state.completion_menu_state().open);
+        });
+        cx.update(|window, cx| editor.update(cx, |state, cx| state.indent_inline(&crate::IndentInline, window, cx)));
+        editor.read_with(&cx, |state, _| assert_eq!(state.text().to_string(), "foo  "));
+    }
+
+    #[test]
+    fn indentation_is_detected() {
+        use super::{DetectedIndent, detect_indent};
+        let two = "function a() {\n  if (x) {\n    y();\n  }\n}\n";
+        assert_eq!(detect_indent(two), Some(DetectedIndent::Spaces(2)));
+        let four = "struct A {\n    func b() {\n        c()\n    }\n}\n";
+        assert_eq!(detect_indent(four), Some(DetectedIndent::Spaces(4)));
+        let tabs = "func a() {\n\tif x {\n\t\ty()\n\t}\n}\n";
+        assert_eq!(detect_indent(tabs), Some(DetectedIndent::Tabs));
+        assert_eq!(detect_indent("a\nb\n\nc\n"), None);
+        // A block comment's ` *` alignment doesn't make a 4-space file 1 or 3.
+        let doc = "/**\n * Doc.\n */\nclass A {\n    /**\n     * More.\n     */\n    b() {\n        c();\n    }\n}\n";
+        assert_eq!(detect_indent(doc), Some(DetectedIndent::Spaces(4)));
     }
 
     #[test]

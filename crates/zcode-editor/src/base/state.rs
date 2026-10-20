@@ -284,6 +284,9 @@ pub struct InputBaseState<M: InputModeKind> {
     pub(crate) scroll_handle: ScrollHandle,
     /// The deferred scroll offset to apply on next layout.
     pub(crate) deferred_scroll_offset: Option<Point<Pixels>>,
+    /// Scroll the cursor into view once the next layout is painted: the
+    /// rows it is on moved (wrapping turned on or off).
+    pub(crate) reveal_cursor_after_layout: bool,
     /// The size of the scrollable content.
     pub(crate) scroll_size: gpui::Size<Pixels>,
     pub(super) editor_scrollbar_snapshot: Cell<Option<EditorScrollbarSnapshot>>,
@@ -674,6 +677,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             longest_line_width: Cell::new(None),
             editor_paddings: Edges::default(),
             deferred_scroll_offset: None,
+            reveal_cursor_after_layout: false,
             placeholder: SharedString::default(),
             mask_pattern: MaskPattern::default(),
             mask_pattern_set: false,
@@ -1535,6 +1539,13 @@ impl<M: InputModeKind> InputBaseState<M> {
             current_indent.push(c);
         }
 
+        // Inside the indentation, the whitespace after the cursor stays
+        // where it is and moves down with the line: the new line takes only
+        // what is before the cursor, or the line would be indented twice.
+        if offset >= current_line_start_pos && offset - current_line_start_pos < current_indent.len() {
+            return current_indent[..offset - current_line_start_pos].to_string();
+        }
+
         for c in self.text.slice(next_line_start_pos..).chars() {
             if !c.is_whitespace() {
                 break;
@@ -1703,6 +1714,69 @@ impl<M: InputModeKind> InputBaseState<M> {
             }
         }
         None
+    }
+
+    /// A closing bracket typed first on its line (only indentation before
+    /// it) lines up with the line its opening bracket is on, as in Xcode:
+    /// the indentation to replace and the opening line's. `None` when the
+    /// line is already indented that way, smart indent is off, the cursor is
+    /// in a string or comment, or no unmatched opening bracket is near.
+    fn electric_outdent(&self, range: &Range<usize>, typed: &str) -> Option<(Range<usize>, String)> {
+        /// How far back the opening bracket is looked for.
+        const MAX_SCAN: usize = 64 * 1024;
+        if self.silent_replace_text
+            || self.ime_marked_range.is_some()
+            || !self.is_code_editor()
+            || !self.mode.is_smart_indent()
+            || !self.selections.is_single()
+            || !range.is_empty()
+            || range.start != self.cursor()
+        {
+            return None;
+        }
+        let rules = self.mode.language_config()?;
+        let pair = rules.brackets.iter().find(|p| {
+            p.close.as_ref() == typed && p.close.chars().count() == 1 && p.open.chars().count() == 1 && p.open != p.close
+        })?;
+        let (open, close) = (pair.open.chars().next()?, pair.close.chars().next()?);
+        let cursor = range.start;
+        let line_start = self.text.line_start_offset(self.text.offset_to_point(cursor).row);
+        let before = self.text.slice(line_start..cursor).to_string();
+        if !before.chars().all(|c| c == ' ' || c == '\t')
+            || M::editing_syntax_context(self, cursor) != crate::SyntaxContext::Code
+        {
+            return None;
+        }
+        let mut depth = 0usize;
+        let mut offset = line_start;
+        let mut opener = None;
+        for c in self.text.chars_at(line_start).reversed() {
+            offset -= c.len_utf8();
+            if line_start - offset > MAX_SCAN {
+                break;
+            }
+            if (c != open && c != close)
+                || M::editing_syntax_context(self, offset) != crate::SyntaxContext::Code
+            {
+                continue;
+            }
+            if c == close {
+                depth += 1;
+            } else if depth == 0 {
+                opener = Some(offset);
+                break;
+            } else {
+                depth -= 1;
+            }
+        }
+        let opener_line = self.text.line_start_offset(self.text.offset_to_point(opener?).row);
+        let indent: String = self
+            .text
+            .slice(opener_line..)
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect();
+        (indent != before).then_some((line_start..cursor, indent))
     }
 
     fn text_before_matches(&self, offset: usize, text: &str) -> bool {
@@ -3396,13 +3470,17 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
     }
 
+    /// One step back for ←, ⇧← and Backspace: a whole grapheme cluster.
     pub(super) fn previous_boundary(&self, offset: usize) -> usize {
-        let offset = self.cursor_boundary(offset.saturating_sub(1), Bias::Left);
+        let previous = crate::base::text_boundary::previous_grapheme_boundary(&self.text, offset);
+        let offset = self.cursor_boundary(previous, Bias::Left);
         self.clamp_offset_to_visible_backward(offset)
     }
 
+    /// One step forward for →, ⇧→ and forward delete: a whole grapheme cluster.
     pub(super) fn next_boundary(&self, offset: usize) -> usize {
-        let offset = self.cursor_boundary(offset.saturating_add(1), Bias::Right);
+        let next = crate::base::text_boundary::next_grapheme_boundary(&self.text, offset);
+        let offset = self.cursor_boundary(next, Bias::Right);
         self.clamp_offset_to_visible_forward(offset)
     }
 
@@ -4124,6 +4202,13 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
                         vec![selection_before],
                         self.selections.iter().copied().collect(),
                     );
+                } else if let Some((indentation, indent)) = self.electric_outdent(&range, new_text) {
+                    let typed_at = indentation.start + indent.len();
+                    self.replace_text_in_ranges(&[(indentation, format!("{indent}{new_text}"))], window, cx);
+                    if !self.silent_replace_text {
+                        M::on_text_typed(self, &(typed_at..typed_at), new_text, window, cx);
+                    }
+                    return;
                 } else {
                     self.replace_text_in_ranges(
                         &[(range.clone(), new_text.to_string())],
@@ -9965,6 +10050,183 @@ mod tests {
         assert_cursors(&mut cx, &view.input, "fn main() {\n  |");
     }
 
+    /// Sets the text with `|` at the cursor (the text keeps empty lines,
+    /// unlike `setup_cursors`).
+    fn setup_marked<M: InputModeKind>(cx: &mut VisualTestContext, input: &Entity<InputBaseState<M>>, marked: &str) {
+        let at = marked.find('|').unwrap();
+        let text = marked.replace('|', "");
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.set_value(&text, window, cx);
+                state.set_selected_range(at..at, cx);
+            });
+        });
+    }
+
+    #[track_caller]
+    fn assert_marked<M: InputModeKind>(cx: &mut VisualTestContext, input: &Entity<InputBaseState<M>>, expected: &str) {
+        let actual = input.read_with(cx, |state, _| {
+            let mut text = state.text.to_string();
+            text.insert(state.cursor(), '|');
+            text
+        });
+        assert_eq!(actual, expected);
+    }
+
+    fn press_enter<M: InputModeKind>(cx: &mut VisualTestContext, input: &Entity<InputBaseState<M>>) {
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                state.enter(&Enter { secondary: false, shift: false }, window, cx);
+            });
+        });
+    }
+
+    fn type_text<M: InputModeKind>(cx: &mut VisualTestContext, input: &Entity<InputBaseState<M>>, text: &str) {
+        cx.update(|window, cx| {
+            input.update(cx, |state, cx| {
+                for c in text.chars() {
+                    state.replace_text_in_range(None, &c.to_string(), window, cx);
+                }
+            });
+        });
+    }
+
+    /// Enter inside a line's indentation leaves the rest of it where it is,
+    /// instead of indenting the line twice.
+    #[gpui::test]
+    fn test_enter_inside_indentation_keeps_it(cx: &mut TestAppContext) {
+        let view = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        setup_marked(&mut cx, &view.input, "a\n|    b\n");
+        press_enter(&mut cx, &view.input);
+        assert_marked(&mut cx, &view.input, "a\n\n|    b\n");
+        setup_marked(&mut cx, &view.input, "a\n  |  b\n");
+        press_enter(&mut cx, &view.input);
+        assert_marked(&mut cx, &view.input, "a\n  \n  |  b\n");
+        // A deeper next line doesn't change that.
+        setup_marked(&mut cx, &view.input, "if x {\n|  b\n    c\n");
+        press_enter(&mut cx, &view.input);
+        assert_marked(&mut cx, &view.input, "if x {\n\n|  b\n    c\n");
+        // At the end of the indentation it is kept, as before.
+        setup_marked(&mut cx, &view.input, "a\n    |b\n");
+        press_enter(&mut cx, &view.input);
+        assert_marked(&mut cx, &view.input, "a\n    \n    |b\n");
+    }
+
+    /// A closing bracket typed first on a line lines up with its opening
+    /// line; undo puts the indentation back with the bracket.
+    #[gpui::test]
+    fn test_closing_bracket_outdents_to_its_opening_line(cx: &mut TestAppContext) {
+        let view = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        setup_marked(&mut cx, &view.input, "  fn a() {\n    b()\n    |");
+        type_text(&mut cx, &view.input, "}");
+        assert_marked(&mut cx, &view.input, "  fn a() {\n    b()\n  }|");
+        cx.update(|window, cx| view.input.update(cx, |state, cx| state.on_action_undo(&Undo, window, cx)));
+        assert_eq!(view.input.read_with(&cx, |state, _| state.text.to_string()), "  fn a() {\n    b()\n    ");
+        // Nested: the bracket matches the innermost open one; `)` and `]` too.
+        setup_marked(&mut cx, &view.input, "x {\n  y {\n    z()\n  }\n  w(\n    1,\n      |");
+        type_text(&mut cx, &view.input, ")");
+        assert_marked(&mut cx, &view.input, "x {\n  y {\n    z()\n  }\n  w(\n    1,\n  )|");
+        setup_marked(&mut cx, &view.input, "x {\n  y {\n    z()\n  }\n    |");
+        type_text(&mut cx, &view.input, "}");
+        assert_marked(&mut cx, &view.input, "x {\n  y {\n    z()\n  }\n}|");
+        // After other text on the line, or with nothing open, it is typed as is.
+        setup_marked(&mut cx, &view.input, "a {\n    b |");
+        type_text(&mut cx, &view.input, "}");
+        assert_marked(&mut cx, &view.input, "a {\n    b }|");
+        setup_marked(&mut cx, &view.input, "a\n    |");
+        type_text(&mut cx, &view.input, "}");
+        assert_marked(&mut cx, &view.input, "a\n    }|");
+        // Off with smart indent.
+        cx.update(|window, cx| view.input.update(cx, |state, cx| state.set_smart_indent(false, window, cx)));
+        setup_marked(&mut cx, &view.input, "a {\n    |");
+        type_text(&mut cx, &view.input, "}");
+        assert_marked(&mut cx, &view.input, "a {\n    }|");
+    }
+
+    /// ←, →, ⇧→ and deleting step over whole grapheme clusters.
+    #[gpui::test]
+    fn test_movement_steps_by_grapheme_cluster(cx: &mut TestAppContext) {
+        let view = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        setup_marked(&mut cx, &view.input, "|a👍🏽b");
+        cx.update(|window, cx| {
+            view.input.update(cx, |state, cx| {
+                state.right(&MoveRight, window, cx);
+                state.right(&MoveRight, window, cx);
+            })
+        });
+        type_text(&mut cx, &view.input, "Z");
+        assert_marked(&mut cx, &view.input, "a👍🏽Z|b");
+        cx.update(|window, cx| {
+            view.input.update(cx, |state, cx| {
+                state.left(&MoveLeft, window, cx);
+                state.backspace(&Backspace, window, cx);
+            })
+        });
+        assert_marked(&mut cx, &view.input, "a|Zb");
+        setup_marked(&mut cx, &view.input, "|e\u{301}x");
+        cx.update(|window, cx| view.input.update(cx, |state, cx| state.right(&MoveRight, window, cx)));
+        assert_marked(&mut cx, &view.input, "e\u{301}|x");
+        cx.update(|window, cx| view.input.update(cx, |state, cx| state.delete(&Delete, window, cx)));
+        assert_marked(&mut cx, &view.input, "e\u{301}|");
+        setup_marked(&mut cx, &view.input, "|👨‍👩‍👧‍👦!");
+        cx.update(|window, cx| view.input.update(cx, |state, cx| state.select_right(&SelectRight, window, cx)));
+        view.input.read_with(&cx, |state, _| {
+            assert_eq!(state.selected_text().to_string(), "👨‍👩‍👧‍👦");
+        });
+    }
+
+    /// Turning wrapping on with the cursor at the end of a long line keeps
+    /// the cursor on screen, though its row moved far down.
+    #[gpui::test]
+    fn test_wrapping_keeps_the_cursor_in_view(cx: &mut TestAppContext) {
+        let text = format!("a\nb\n{}\nc\n", "word ".repeat(4000));
+        let (editor, mut cx) = crate::test_support::open_editor(cx, &text);
+        let end = text.len() - "\nc\n".len();
+        cx.update(|window, cx| {
+            editor.update(cx, |state, cx| {
+                state.set_soft_wrap(false, window, cx);
+                state.focus(window, cx);
+                state.move_to(end, None, cx);
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| editor.update(cx, |state, cx| state.set_soft_wrap(true, window, cx)));
+        cx.run_until_parked();
+        editor.read_with(&cx, |state, _| {
+            let line_height = state.last_layout.as_ref().unwrap().line_height;
+            let row = state.display_map.buffer_pos_to_display_pos(crate::BufferPoint::new(2, end - 4)).row;
+            let y = line_height * row as f32;
+            let top = -state.scroll_handle.offset().y;
+            let height = state.input_bounds.size.height;
+            assert!(row > 50, "the line wraps into many rows: {row}");
+            assert!(y >= top && y + line_height <= top + height, "caret row at {y:?}, view {top:?}..{:?}", top + height);
+        });
+    }
+
+    /// The folds a command puts back after moving folded text.
+    #[gpui::test]
+    fn test_fold_lines(cx: &mut TestAppContext) {
+        use crate::FoldRange;
+        let view = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        cx.update(|window, cx| {
+            view.input.update(cx, |state, cx| {
+                state.set_value("a\nb {\nc\n}\nd", window, cx);
+                // Not a candidate yet: folded all the same.
+                state.fold_lines(FoldRange::new(1, 3), cx);
+                assert_eq!(state.folded_lines(), vec![FoldRange::new(1, 3)]);
+                assert!(state.display_map.is_buffer_line_hidden(2));
+                // Too short to fold, or past the end: nothing.
+                state.fold_lines(FoldRange::new(0, 1), cx);
+                state.fold_lines(FoldRange::new(3, 9), cx);
+                assert_eq!(state.folded_lines(), vec![FoldRange::new(1, 3)]);
+            });
+        });
+    }
+
     #[gpui::test]
     fn test_block_indent_tracks_all_preceding_edits(cx: &mut TestAppContext) {
         let view = multi_line(cx);
@@ -10916,6 +11178,7 @@ impl<M: crate::MultiLineMode> InputBaseState<M> {
 
     /// Update the soft wrap mode, default is true.
     pub fn set_soft_wrap(&mut self, wrap: bool, _: &mut Window, cx: &mut Context<Self>) {
+        let changed = self.soft_wrap != wrap;
         self.soft_wrap = wrap;
         if wrap {
             let wrap_width = self
@@ -10933,6 +11196,9 @@ impl<M: crate::MultiLineMode> InputBaseState<M> {
         } else {
             self.display_map.on_layout_changed(None, cx);
         }
+        // The cursor's row moves (a long line becomes many rows, or one):
+        // keep it on screen once the new rows are laid out.
+        self.reveal_cursor_after_layout |= changed;
         cx.notify();
     }
 
@@ -11114,6 +11380,23 @@ impl InputBaseState<crate::EditorMode> {
         }
         cx.notify();
         true
+    }
+
+    /// The folded ranges, by first line. A fold hides the lines between
+    /// its first and last.
+    pub fn folded_lines(&self) -> Vec<crate::FoldRange> {
+        self.display_map.folded_ranges().to_vec()
+    }
+
+    /// Folds `range` (lines, 0-based), as the gutter's chevron does: for a
+    /// command that moved folded text and puts the fold back where the text
+    /// went, before the highlighter has found the range there.
+    pub fn fold_lines(&mut self, range: crate::FoldRange, cx: &mut Context<Self>) {
+        if !self.mode.is_folding() || range.end_line >= self.text.lines_len() || range.end_line < range.start_line + 2 {
+            return;
+        }
+        self.display_map.fold_range(range);
+        cx.notify();
     }
 
     /// Set enable/disable line number.

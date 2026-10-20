@@ -213,6 +213,20 @@ impl FoldMap {
         }
     }
 
+    /// Folds `range`, making it the candidate at its first line if the
+    /// candidates (not reparsed yet) have another or none.
+    pub(super) fn fold_range(&mut self, range: FoldRange) {
+        match find_line(&self.candidates, range.start_line) {
+            Ok(index) => self.candidates[index] = range,
+            Err(index) => self.candidates.insert(index, range),
+        }
+        match find_line(&self.folded, range.start_line) {
+            Ok(index) => self.folded[index] = range,
+            Err(index) => self.folded.insert(index, range),
+        }
+        self.needs_rebuild = true;
+    }
+
     /// Toggle fold at the given start_line
     pub(super) fn toggle_fold(&mut self, start_line: usize) {
         let is_folded = self.is_folded_at(start_line);

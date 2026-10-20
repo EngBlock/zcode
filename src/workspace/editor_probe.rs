@@ -103,7 +103,11 @@ impl Workspace {
             "cursor_shape": format!("{:?}", state.cursor_shape()),
             "cursor": state.cursor(),
             "caret": caret.map(|b| serde_json::json!({ "x": f32::from(b.origin.x), "y": f32::from(b.origin.y), "w": f32::from(b.size.width) })),
+            // Where the caret is drawn, after scrolling (`caret` is in the text).
+            "caret_on_screen_y": state.prepaint_caret_geometry().map(|g| f32::from(g.cursor_bounds().origin.y + g.scroll_offset().y)),
             "rows": state.gutter_geometry().rows.iter().map(|&(row, top, _)| serde_json::json!([row + 1, f32::from(top)])).collect::<Vec<_>>(),
+            // Folded lines, first to last, 1-based.
+            "folds": state.folded_lines().iter().map(|f| serde_json::json!([f.start_line + 1, f.end_line + 1])).collect::<Vec<_>>(),
         })
     }
 }
