@@ -17,10 +17,11 @@ use super::RemoteAction;
 
 use super::edit_scheme::SchemeAction;
 use super::pickers::{self, destination_icon};
+use super::web_runs::RunState;
 use super::{NavigatorTab, SplitAxis, Workspace};
 use crate::actions::*;
 use crate::build::log::{LineStyle, Severity};
-use crate::build::{BuildAction, Phase};
+use crate::build::{BuildAction, BuildController, Choice, Phase};
 use crate::debugger::DebugState;
 use crate::lsp::LspStatus;
 use crate::lsp::hierarchy::HierarchyKind;
@@ -37,6 +38,21 @@ pub enum DebugTab {
 
 const LOG_LINE_HEIGHT: f32 = 18.;
 
+/// The scheme menu's sections and their items: the project's schemes,
+/// then a section per web app (its folder) with its scripts.
+pub(super) fn scheme_menu_sections(build: &BuildController) -> Vec<(String, Vec<(String, Choice)>)> {
+    let mut sections = vec![];
+    if build.can_build() {
+        let schemes = build.schemes.schemes.iter().map(|s| (s.clone(), Choice::Scheme(s.clone()))).collect();
+        sections.push(("Schemes".to_string(), schemes));
+    }
+    for app in &build.web_apps {
+        let scripts = app.scripts.iter().map(|s| (s.name.clone(), Choice::Script(app.id(&s.name)))).collect();
+        sections.push((app.label.clone(), scripts));
+    }
+    sections
+}
+
 impl Workspace {
     // ------------------------------------------------------------------
     // Toolbar
@@ -44,85 +60,106 @@ impl Workspace {
     fn render_toolbar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let build = self.build.read(cx);
-        let busy = build.phase.is_busy();
+        let stoppable = build.phase.is_busy() || self.debugger.read(cx).state.is_active() || self.any_web_running();
         let can_build = build.can_build();
-        let scheme_label = build
-            .scheme
-            .clone()
-            .unwrap_or_else(|| if build.schemes_loading { "Loading…".into() } else { "No Scheme".into() });
+        let can_run = build.can_run();
+        let chosen_script = build.script.clone();
+        let script_app = build.chosen_script().map(|(app, _)| format!("{} ({})", app.label, app.manager));
+        let scheme_label = match &chosen_script {
+            Some(id) => id.script.clone(),
+            None => build.scheme.clone().unwrap_or_else(|| {
+                if build.schemes_loading || (!can_build && !build.web_apps_loaded) { "Loading…".into() } else { "No Scheme".into() }
+            }),
+        };
+        let has_choices = can_build || !build.web_apps.is_empty();
         let destination = build.destination.clone();
 
         let build_entity = self.build.clone();
         let scheme_button = Button::new("scheme")
             .label(scheme_label)
-            .icon(IconName::Hammer)
+            .icon(if chosen_script.is_some() { IconName::Globe } else { IconName::Hammer })
             .ghost()
             .small()
-            .disabled(!can_build)
+            .disabled(!has_choices)
             .dropdown_menu(move |menu, _, cx| {
                 let state = build_entity.read(cx);
-                let mut menu = menu.label("Schemes");
-                for scheme in state.schemes.schemes.clone() {
-                    let checked = state.scheme.as_ref() == Some(&scheme);
-                    let build = build_entity.clone();
-                    let name = scheme.clone();
-                    menu = menu.item(PopupMenuItem::new(scheme).checked(checked).on_click(move |_, _, cx| {
-                        build.update(cx, |b, cx| b.set_scheme(name.clone(), cx));
-                    }));
+                let chosen = state.choice();
+                let mut menu = menu.scrollable(true).max_h(px(560.));
+                for (ix, (section, items)) in scheme_menu_sections(state).into_iter().enumerate() {
+                    if ix > 0 {
+                        menu = menu.separator();
+                    }
+                    menu = menu.label(section);
+                    for (label, choice) in items {
+                        let checked = chosen.as_ref() == Some(&choice);
+                        let build = build_entity.clone();
+                        menu = menu.item(PopupMenuItem::new(label).checked(checked).on_click(move |_, _, cx| {
+                            build.update(cx, |b, cx| b.choose(choice.clone(), cx));
+                        }));
+                    }
                 }
-                menu = menu.separator().label("Build Configuration");
-                for configuration in state.schemes.configurations.clone() {
-                    let checked = state.configuration == configuration;
-                    let build = build_entity.clone();
-                    let name = configuration.clone();
-                    menu = menu.item(PopupMenuItem::new(configuration).checked(checked).on_click(
-                        move |_, _, cx| {
-                            build.update(cx, |b, cx| b.set_configuration(name.clone(), cx));
-                        },
-                    ));
+                if state.can_build() {
+                    menu = menu.separator().label("Build Configuration");
+                    for configuration in state.schemes.configurations.clone() {
+                        let checked = state.configuration == configuration;
+                        let build = build_entity.clone();
+                        let name = configuration.clone();
+                        menu = menu.item(PopupMenuItem::new(configuration).checked(checked).on_click(
+                            move |_, _, cx| {
+                                build.update(cx, |b, cx| b.set_configuration(name.clone(), cx));
+                            },
+                        ));
+                    }
                 }
                 menu
             });
 
         let build_entity = self.build.clone();
-        let destination_button = Button::new("destination")
-            .label(
-                destination
-                    .as_ref()
-                    .map(|d| d.name.clone())
-                    .unwrap_or_else(|| "No Destination".into()),
-            )
-            .when_some(destination.as_ref(), |b, d| b.icon(destination_icon(d)))
-            .ghost()
-            .small()
-            .disabled(!can_build)
-            .dropdown_menu(move |menu, _, cx| {
-                build_entity.update(cx, |build, cx| build.destinations_shown(cx));
-                let state = build_entity.read(cx);
-                let current = state.destination.as_ref().map(|d| d.id.clone());
-                let mut menu = menu.scrollable(true).max_h(px(480.));
-                let mut last_group = String::new();
-                for destination in state.destinations.clone() {
-                    let group = destination.group();
-                    if group != last_group {
-                        menu = menu.label(group.clone());
-                        last_group = group;
+        let destination_button = match script_app {
+            // A script runs here, in the debug area's terminal: nothing to choose.
+            Some(app) => Button::new("destination").label(app).icon(IconName::SquareTerminal).ghost().small().dropdown_menu(|menu, _, _| {
+                menu.label("A script runs in the debug area’s terminal, on this Mac:")
+                    .label("there’s no run destination to choose.")
+            }),
+            None => Button::new("destination")
+                .label(
+                    destination
+                        .as_ref()
+                        .map(|d| d.name.clone())
+                        .unwrap_or_else(|| "No Destination".into()),
+                )
+                .when_some(destination.as_ref(), |b, d| b.icon(destination_icon(d)))
+                .ghost()
+                .small()
+                .disabled(!can_build)
+                .dropdown_menu(move |menu, _, cx| {
+                    build_entity.update(cx, |build, cx| build.destinations_shown(cx));
+                    let state = build_entity.read(cx);
+                    let current = state.destination.as_ref().map(|d| d.id.clone());
+                    let mut menu = menu.scrollable(true).max_h(px(480.));
+                    let mut last_group = String::new();
+                    for destination in state.destinations.clone() {
+                        let group = destination.group();
+                        if group != last_group {
+                            menu = menu.label(group.clone());
+                            last_group = group;
+                        }
+                        let checked = current.as_ref() == Some(&destination.id);
+                        let build = build_entity.clone();
+                        let label = destination.menu_label();
+                        let icon = destination_icon(&destination);
+                        menu = menu.item(PopupMenuItem::new(label).icon(icon).checked(checked).on_click(
+                            move |_, _, cx| {
+                                build.update(cx, |b, cx| b.set_destination(destination.clone(), cx));
+                            },
+                        ));
                     }
-                    let checked = current.as_ref() == Some(&destination.id);
-                    let build = build_entity.clone();
-                    let label = destination.menu_label();
-                    let icon = destination_icon(&destination);
-                    menu = menu.item(PopupMenuItem::new(label).icon(icon).checked(checked).on_click(
-                        move |_, _, cx| {
-                            build.update(cx, |b, cx| b.set_destination(destination.clone(), cx));
-                        },
-                    ));
-                }
-                menu.separator().item(PopupMenuItem::new("Refresh Destinations").on_click({
-                    let build = build_entity.clone();
-                    move |_, _, cx| build.update(cx, |b, cx| b.reload(cx))
-                }))
-            });
+                    menu.separator().item(PopupMenuItem::new("Refresh Destinations").on_click({
+                        let build = build_entity.clone();
+                        move |_, _, cx| build.update(cx, |b, cx| b.reload(cx))
+                    }))
+                }),
+        };
 
         TitleBar::new()
             .h(px(40.))
@@ -147,7 +184,7 @@ impl Workspace {
                             .icon(IconName::Play)
                             .ghost()
                             .small()
-                            .disabled(!can_build)
+                            .disabled(!can_run)
                             .tooltip("Run (⌘R)")
                             .on_click(cx.listener(|this, _, window, cx| this.start_build(BuildAction::Run, window, cx))),
                     )
@@ -156,7 +193,7 @@ impl Workspace {
                             .icon(IconName::Square)
                             .ghost()
                             .small()
-                            .disabled(!busy)
+                            .disabled(!stoppable)
                             .tooltip("Stop (⌘.)")
                             .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
                     )
@@ -296,6 +333,44 @@ impl Workspace {
             ),
             Phase::Stopped => ("Stopped".into(), false),
         };
+        // A script's run: what the activity says when it's what Run runs
+        // (and the scheme isn't building), or when nothing else is going
+        // on; otherwise a chip beside it.
+        let build_quiet = !build.phase.is_busy() && self.packages.activity.is_none() && !build.indexing;
+        let script_chosen = build.script.is_some();
+        let shown_run = self.shown_web_run(cx).filter(|run| build_quiet && (script_chosen || run.is_running()));
+        let (status, busy) = match shown_run {
+            Some(run) => (
+                match run.state {
+                    RunState::Running => format!("Running {}", run.name),
+                    RunState::Exited(Some(0) | None) => format!("Finished running {}", run.name),
+                    RunState::Exited(Some(code)) => format!("{} exited with code {code}", run.name),
+                    RunState::Stopped => format!("Stopped {}", run.name),
+                },
+                run.is_running(),
+            ),
+            None if build_quiet && script_chosen && matches!(build.phase, Phase::Idle) => ("Ready".into(), false),
+            None => (status, busy),
+        };
+        let shown_id = shown_run.map(|run| run.view.entity_id());
+        // Running scripts' URLs (or names, until they print one): click to
+        // open again.
+        let chips: Vec<(usize, String, Option<String>)> = self
+            .web
+            .runs
+            .iter()
+            .enumerate()
+            .filter(|(_, run)| run.is_running() && (run.parser.url.is_some() || Some(run.view.entity_id()) != shown_id))
+            .take(2)
+            .map(|(ix, run)| {
+                let url = run.parser.url.clone();
+                let label = match &url {
+                    Some(url) => url.split_once("://").map(|(_, rest)| rest).unwrap_or(url).trim_end_matches('/').to_string(),
+                    None => run.id.script.clone(),
+                };
+                (ix, label, url)
+            })
+            .collect();
         let issues = self.all_issues(cx);
         let errors = issues.iter().filter(|i| i.severity == Severity::Error).count();
         let warnings = issues.iter().filter(|i| i.severity == Severity::Warning).count();
@@ -314,6 +389,36 @@ impl Workspace {
             .child(div().text_color(theme.muted_foreground).child("|"))
             .when(busy, |el| el.child(Spinner::new().xsmall()))
             .child(div().flex_1().truncate().child(status))
+            .children(chips.into_iter().map(|(ix, label, url)| {
+                h_flex()
+                    .id(("web-run-chip", ix))
+                    .flex_shrink_0()
+                    .max_w(px(150.))
+                    .gap_0p5()
+                    .px_1()
+                    .rounded(theme.radius)
+                    .text_color(theme.link)
+                    .hover(|el| el.bg(theme.secondary_hover))
+                    .child(Icon::new(IconName::Globe).xsmall())
+                    .child(div().truncate().child(label))
+                    .when_some(url.clone(), |el, url| el.tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(format!("Open {url}")).build(window, cx)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        match &url {
+                            Some(url) => this.open_web_url(url, cx),
+                            None => {
+                                if let Some(view) = this.web.runs.get(ix).map(|r| r.view.clone())
+                                    && let Some(at) = this.terminals.panel.iter().position(|t| t.view == view)
+                                {
+                                    this.terminals.active = at;
+                                    this.show_debug_area = true;
+                                    this.debug_tab = DebugTab::Terminal;
+                                    cx.notify();
+                                }
+                            }
+                        }
+                    }))
+            }))
             .when(warnings > 0, |el| {
                 el.child(
                     h_flex()
@@ -340,6 +445,12 @@ impl Workspace {
             self.test_all(window, cx);
             return;
         }
+        // A web app's script runs beside whatever the scheme is doing.
+        if action == BuildAction::Run && self.build.read(cx).script.is_some() {
+            self.run_chosen_script(window, cx);
+            cx.notify();
+            return;
+        }
         // Like Xcode, save edited files before building. The build itself
         // refreshes the index, so skip the scheduled background refresh.
         self.save_all(window, cx);
@@ -360,9 +471,38 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Stop (⌘.): the chosen target's run. A chosen script's when it runs
+    /// (the app goes on); otherwise the build, the app and the debugger,
+    /// and only when none of those is going, the scripts.
     pub(super) fn stop(&mut self, cx: &mut Context<Self>) {
+        let chosen = self.build.read(cx).script.clone();
+        if let Some(id) = &chosen
+            && self.stop_script(id, cx)
+        {
+            return;
+        }
+        let busy = self.build.read(cx).phase.is_busy() || self.debugger.read(cx).state.is_active();
+        if !busy && self.stop_web_runs(cx) {
+            return;
+        }
         self.debugger.update(cx, |d, cx| d.stop(cx));
         self.build.update(cx, |b, cx| b.stop(cx));
+    }
+
+    /// The scheme menu as shown, for the control channel: each section and
+    /// its items, the chosen one checked.
+    pub(super) fn scheme_menu_summary(&self, cx: &App) -> Vec<String> {
+        let build = self.build.read(cx);
+        let chosen = build.choice();
+        scheme_menu_sections(build)
+            .into_iter()
+            .flat_map(|(section, items)| {
+                let chosen = chosen.clone();
+                items.into_iter().map(move |(label, choice)| {
+                    format!("{section} | {label}{}", if chosen.as_ref() == Some(&choice) { " ✓" } else { "" })
+                })
+            })
+            .collect()
     }
 
     /// Quitting or closing the window: the app, the debugger and builds

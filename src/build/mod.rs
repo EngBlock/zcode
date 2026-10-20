@@ -8,6 +8,7 @@ pub mod process;
 pub mod profile;
 pub mod sim_tests;
 mod usb;
+pub mod web;
 pub mod xcode;
 
 use std::collections::{BTreeMap, HashMap};
@@ -136,7 +137,16 @@ pub struct BuildController {
     pub schemes: SchemeList,
     pub schemes_loading: bool,
     pub schemes_error: Option<String>,
+    /// The project's scheme (or Swift package product): what Build, Test,
+    /// Profile and the index build use, and Run unless `script` is chosen.
     pub scheme: Option<String>,
+    /// The web apps' `package.json` scripts, beside the schemes
+    /// (`web::discover`, from the window's scan of the project).
+    pub web_apps: Vec<web::WebApp>,
+    /// Whether `web_apps` has been read since the window opened.
+    pub web_apps_loaded: bool,
+    /// The script Run runs instead of the scheme, when one is chosen.
+    pub script: Option<web::ScriptId>,
     /// The Run action's build configuration (Build and Run use it).
     pub configuration: String,
     /// The current scheme's Edit Scheme options, as last read.
@@ -231,6 +241,9 @@ impl BuildController {
             schemes_loading: false,
             schemes_error: None,
             scheme: None,
+            web_apps: vec![],
+            web_apps_loaded: false,
+            script: None,
             configuration: "Debug".into(),
             scheme_options: None,
             stored_options: BTreeMap::new(),
@@ -306,6 +319,107 @@ impl BuildController {
 
     pub fn can_build(&self) -> bool {
         !matches!(self.project.kind, ProjectKind::Folder)
+    }
+
+    /// Whether Run has something to run: a scheme to build, or a script.
+    pub fn can_run(&self) -> bool {
+        self.can_build() || self.chosen_script().is_some() || (!self.web_apps_loaded && self.script.is_some())
+    }
+
+    /// The chosen script and its web app, when it's there.
+    pub fn chosen_script(&self) -> Option<(&web::WebApp, &web::Script)> {
+        let id = self.script.as_ref()?;
+        let app = self.web_apps.iter().find(|a| a.folder == id.folder)?;
+        Some((app, app.script(&id.script)?))
+    }
+
+    /// A script's web app and the script, by id.
+    pub fn web_script(&self, id: &web::ScriptId) -> Option<(&web::WebApp, &web::Script)> {
+        let app = self.web_apps.iter().find(|a| a.folder == id.folder)?;
+        Some((app, app.script(&id.script)?))
+    }
+
+    /// The web apps as read again (the project was scanned, or a
+    /// `package.json` changed). A chosen script that's gone gives Run back
+    /// to the scheme.
+    pub fn set_web_apps(&mut self, apps: Vec<web::WebApp>, cx: &mut Context<Self>) {
+        let first = !self.web_apps_loaded;
+        if !first && apps == self.web_apps {
+            return;
+        }
+        self.web_apps = apps;
+        self.web_apps_loaded = true;
+        if self.script.as_ref().is_some_and(|id| self.web_script(id).is_none()) {
+            self.script = None;
+        }
+        // A folder has no scheme: its first script is what Run runs.
+        if first && self.script.is_none() && !self.can_build() {
+            self.script = self.web_apps.first().and_then(|a| a.scripts.first().map(|s| a.id(&s.name)));
+        }
+        cx.emit(BuildEvent::ConfigurationChanged);
+        cx.notify();
+    }
+
+    /// Chooses a script for Run (the scheme menu's web app sections).
+    pub fn set_script(&mut self, id: web::ScriptId, cx: &mut Context<Self>) {
+        self.script = Some(id);
+        cx.emit(BuildEvent::ConfigurationChanged);
+        cx.notify();
+    }
+
+    /// Every run target in the scheme menu's order: schemes, then each web
+    /// app's scripts.
+    pub fn choices(&self) -> Vec<Choice> {
+        let schemes = self.schemes.schemes.iter().map(|s| Choice::Scheme(s.clone()));
+        let scripts = self.web_apps.iter().flat_map(|a| a.scripts.iter().map(|s| Choice::Script(a.id(&s.name))));
+        schemes.chain(scripts).collect()
+    }
+
+    /// What Run runs now.
+    pub fn choice(&self) -> Option<Choice> {
+        match (&self.script, &self.scheme) {
+            (Some(id), _) => Some(Choice::Script(id.clone())),
+            (None, Some(scheme)) => Some(Choice::Scheme(scheme.clone())),
+            (None, None) => None,
+        }
+    }
+
+    pub fn choose(&mut self, choice: Choice, cx: &mut Context<Self>) {
+        match choice {
+            Choice::Scheme(scheme) => self.set_scheme(scheme, cx),
+            Choice::Script(id) => self.set_script(id, cx),
+        }
+    }
+
+    /// A run target's name: the scheme's, or `web: dev`.
+    pub fn choice_name(&self, choice: &Choice) -> String {
+        match choice {
+            Choice::Scheme(scheme) => scheme.clone(),
+            Choice::Script(id) => match self.web_script(id) {
+                Some((app, script)) => app.script_name(&script.name),
+                None => format!("{}: {}", id.folder.display(), id.script),
+            },
+        }
+    }
+
+    /// The run target `name` means: a scheme, a script as `web: dev` (or
+    /// `web/dev`), or a script name only one web app has.
+    pub fn find_choice(&self, name: &str) -> Option<Choice> {
+        if self.schemes.schemes.iter().any(|s| s == name) {
+            return Some(Choice::Scheme(name.to_string()));
+        }
+        let scripts = || self.web_apps.iter().flat_map(|a| a.scripts.iter().map(move |s| (a, s)));
+        let named = scripts().find(|(app, script)| {
+            app.script_name(&script.name) == name || format!("{}/{}", app.label, script.name) == name
+        });
+        if let Some((app, script)) = named {
+            return Some(Choice::Script(app.id(&script.name)));
+        }
+        let mut alone = scripts().filter(|(_, script)| script.name == name);
+        match (alone.next(), alone.next()) {
+            (Some((app, script)), None) => Some(Choice::Script(app.id(&script.name))),
+            _ => None,
+        }
     }
 
     /// Loads schemes and destinations in the background.
@@ -528,26 +642,26 @@ impl BuildController {
 
     pub fn set_scheme(&mut self, scheme: String, cx: &mut Context<Self>) {
         self.scheme = Some(scheme);
+        self.script = None;
         cx.emit(BuildEvent::ConfigurationChanged);
         cx.notify();
         self.refresh_supported_destinations(cx);
         self.load_scheme(cx);
     }
 
-    /// Product ▸ Scheme ▸ Next / Previous Scheme.
+    /// Product ▸ Scheme ▸ Next / Previous Scheme, through the scripts too.
     pub fn step_scheme(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let schemes = &self.schemes.schemes;
-        if schemes.is_empty() {
+        let choices = self.choices();
+        if choices.is_empty() {
             return;
         }
-        let len = schemes.len() as isize;
-        let current = self.scheme.as_ref().and_then(|s| schemes.iter().position(|n| n == s));
+        let len = choices.len() as isize;
+        let current = self.choice().and_then(|c| choices.iter().position(|n| *n == c));
         let next = match current {
             Some(ix) => (ix as isize + delta).rem_euclid(len) as usize,
             None => 0,
         };
-        let scheme = schemes[next].clone();
-        self.set_scheme(scheme, cx);
+        self.choose(choices[next].clone(), cx);
     }
 
     /// Reads the scheme's Edit Scheme options and test plans (from its
@@ -1522,6 +1636,13 @@ impl BuildController {
             .filter(|t| t.status == TestStatus::Failed)
             .count()
     }
+}
+
+/// A run target: one of the project's schemes, or a web app's script.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Choice {
+    Scheme(String),
+    Script(web::ScriptId),
 }
 
 /// What a run launched, for Stop and the debugger.

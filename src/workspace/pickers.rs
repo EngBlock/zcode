@@ -8,7 +8,7 @@ use gpui_kit::*;
 use serde_json::Value;
 
 use super::{Target, Workspace};
-use crate::build::BuildController;
+use crate::build::{BuildController, Choice};
 use crate::build::xcode::{Destination, Platform};
 use crate::fuzzy::fuzzy_match;
 use crate::lsp::{self, LanguageServer};
@@ -554,8 +554,11 @@ impl PickerDelegate for JumpToLineDelegate {
 
 pub struct SchemeDelegate {
     build: Entity<BuildController>,
-    schemes: Vec<String>,
-    current: Option<String>,
+    /// Each run target, its label, what's said beside it and the text it's
+    /// matched by.
+    choices: Vec<(Choice, String, Option<String>)>,
+    match_texts: Vec<String>,
+    current: Option<Choice>,
     items: Vec<PickerItem>,
     matches: Vec<usize>,
 }
@@ -563,13 +566,16 @@ pub struct SchemeDelegate {
 impl SchemeDelegate {
     pub fn new(build: Entity<BuildController>, cx: &App) -> Self {
         let state = build.read(cx);
-        Self {
-            schemes: state.schemes.schemes.clone(),
-            current: state.scheme.clone(),
-            build,
-            items: vec![],
-            matches: vec![],
+        let mut choices: Vec<(Choice, String, Option<String>)> =
+            state.schemes.schemes.iter().map(|s| (Choice::Scheme(s.clone()), s.clone(), None)).collect();
+        for app in &state.web_apps {
+            for script in &app.scripts {
+                let detail = format!("{} · {} run {}", app.label, app.manager, script.name);
+                choices.push((Choice::Script(app.id(&script.name)), script.name.clone(), Some(detail)));
+            }
         }
+        let match_texts = choices.iter().map(|(_, label, detail)| format!("{label} {}", detail.as_deref().unwrap_or(""))).collect();
+        Self { current: state.choice(), choices, match_texts, build, items: vec![], matches: vec![] }
     }
 }
 
@@ -586,24 +592,33 @@ impl PickerDelegate for SchemeDelegate {
         "No schemes".into()
     }
 
+    fn initial_selection(&self) -> usize {
+        self.items.iter().position(|i| i.checked).unwrap_or(0)
+    }
+
     fn update_matches(&mut self, query: String, _: &mut Window, _: &mut Context<Picker<Self>>) {
-        let found = fuzzy_match(&query, &self.schemes, false, MAX_RESULTS);
+        let found = fuzzy_match(&query, &self.match_texts, false, MAX_RESULTS);
         self.matches = found.iter().map(|m| m.index).collect();
         self.items = found
             .into_iter()
-            .map(|m| PickerItem {
-                label: self.schemes[m.index].clone().into(),
-                icon: Some(IconName::Hammer),
-                positions: m.positions,
-                checked: self.current.as_ref() == Some(&self.schemes[m.index]),
-                ..Default::default()
+            .map(|m| {
+                let (choice, label, detail) = &self.choices[m.index];
+                let label_len = label.chars().count();
+                PickerItem {
+                    label: label.clone().into(),
+                    detail: detail.clone().map(Into::into),
+                    icon: Some(if matches!(choice, Choice::Script(_)) { IconName::Globe } else { IconName::Hammer }),
+                    positions: m.positions.into_iter().filter(|&p| p < label_len).collect(),
+                    checked: self.current.as_ref() == Some(choice),
+                    ..Default::default()
+                }
             })
             .collect();
     }
 
     fn confirm(&mut self, index: usize, _: &mut Window, cx: &mut Context<Picker<Self>>) -> bool {
-        let scheme = self.schemes[self.matches[index]].clone();
-        self.build.update(cx, |build, cx| build.set_scheme(scheme, cx));
+        let choice = self.choices[self.matches[index]].0.clone();
+        self.build.update(cx, |build, cx| build.choose(choice, cx));
         true
     }
 }

@@ -18,7 +18,9 @@ src/
                     Profile's template chooser (profile.rs); Archive, the Organizer tab and Distribute App's
                     sheet (archive.rs, organizer.rs, distribute_sheet.rs); the asset catalog editor as a tab
                     (asset_catalog.rs: outline, wells, inspector, edits and undo; asset_catalogs.rs: opening it);
-                    SwiftUI previews' gutter marks and Show in Xcode Canvas (previews.rs)
+                    SwiftUI previews' gutter marks and Show in Xcode Canvas (previews.rs); web apps' scripts
+                    run in the debug area's terminals beside the scheme's run, their URLs and issues
+                    (web_runs.rs)
   bsp/              the Build Server Protocol server sourcekit-lsp starts for an Xcode project (`zcode bsp`,
                     relayed to the running zcode's socket; its connection file found through XDG_DATA_HOME):
                     the build graph (graph.rs: targets, files, arguments from Xcode's index settings, the
@@ -40,7 +42,9 @@ src/
                     compilation-database extraction; profile/: Product ▸ Profile (xctrace's templates and
                     recording, opening Instruments, a Time Profiler export's heaviest functions); archive/:
                     Product ▸ Archive and Distribute App (archives in Xcode's folder read from their
-                    Info.plist, ExportOptions.plist and xcodebuild -exportArchive, notarytool and stapler)
+                    Info.plist, ExportOptions.plist and xcodebuild -exportArchive, notarytool and stapler);
+                    web.rs: web apps' package.json scripts as run targets, the package manager a lockfile
+                    implies, a script's output read for its dev server's URL and its errors
   packages/         Swift package dependencies: rules and versions, Package.resolved, checkouts,
                     Package.swift edits, git queries, resolve/update/reset
   testing/          tests found in source, test plans, test selections per runner, results → tests
@@ -75,7 +79,8 @@ src/
                     codesign, the swap into the bundle's place, Restart Now
   debugger/         DAP client, debugger model, breakpoints and their options, data tips (lldb-dap)
   terminal/         the integrated terminal: a PTY and its grid (alacritty_terminal), keystrokes and
-                    mouse reports as bytes, links, theme colors, the view and how its grid is painted
+                    mouse reports as bytes, links, theme colors, the view and how its grid is painted;
+                    a program's output also read as plain lines (lines.rs) for a web app's script
   project.rs        project detection and gitignore-aware scanning
   xcodeproj.rs      project.pbxproj parser and in-place editor (build settings)
   xcodeproj/        structural edits: files, groups, build files, target membership, packages,
@@ -285,6 +290,13 @@ method names and search order, none of it copied). It asks Xcode's own
 `xcodebuild -showBuildSettingsForIndex` and `-showBuildSettings`.
 xcode-build-server (MIT) does the same job from build logs; none of its
 code is used. No new dependencies.
+Running a web app's scripts follows the package managers' documented
+lockfiles and `packageManager` field (Corepack's); the scheme menu's place
+for them, Run and Stop are Xcode's, and the dev servers' and compilers'
+output formats were read from their documentation and output. A script's
+output is read from the PTY alacritty_terminal already reads, through the
+`polling` crate's types its PTY registers with (MIT OR Apache-2.0, already
+built for it). No new dependencies.
 The scale benchmarks (`scripts/bench.py`) run zcode on firefox-ios
 (Mozilla Public License 2.0), fetched at a pinned commit into a cache
 outside the repository and only read; nothing of it is copied into zcode.

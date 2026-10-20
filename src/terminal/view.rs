@@ -23,7 +23,7 @@ use super::colors::Palette;
 use super::element::TerminalElement;
 use super::keys::{self, MouseAction, MouseButton as ReportButton};
 use super::links::{self, Target};
-use super::{GridSize, Notice, Spawn, Terminal};
+use super::{GridSize, Notice, OutputTap, Spawn, Terminal};
 use crate::actions::{ClearConsole, CopyOrCopyLine, PasteOrPasteLine};
 
 pub enum TerminalEvent {
@@ -78,8 +78,15 @@ pub struct TerminalView {
     pub(super) hovered_link: Option<HoveredLink>,
     /// Pixels of wheel movement short of a line.
     scroll_remainder: f32,
+    /// What its tab is called whatever runs in it (a web app's script).
+    name: Option<String>,
+    /// Where its output also goes, as lines.
+    tap: Option<OutputTap>,
     _notices: Option<Task<()>>,
 }
+
+/// The size a terminal starts at before it's first laid out.
+const UNSEEN_SIZE: GridSize = GridSize { columns: 120, rows: 30, cell_width: 8, cell_height: 16 };
 
 impl EventEmitter<TerminalEvent> for TerminalView {}
 
@@ -103,8 +110,49 @@ impl TerminalView {
             reported_press: None,
             hovered_link: None,
             scroll_remainder: 0.,
+            name: None,
+            tap: None,
             _notices: None,
         }
+    }
+
+    /// A program run for zcode (a web app's script): called `name`, its
+    /// output also handed to `tap`, and started now rather than when first
+    /// shown (at `UNSEEN_SIZE`, fitted once laid out).
+    pub fn run(spawn: Spawn, font_size: f32, name: String, tap: OutputTap, cx: &mut Context<Self>) -> Self {
+        let mut view = Self::new(spawn, font_size, cx);
+        view.name = Some(name);
+        view.tap = Some(tap);
+        view.start(UNSEEN_SIZE, cx);
+        view
+    }
+
+    /// How its program ended: `None` while it runs (or hasn't started),
+    /// `Some(None)` when it was ended by a signal or Stop.
+    pub fn exit(&self) -> Option<Option<i32>> {
+        self.exit
+    }
+
+    /// Stop: ends its processes and says so on screen, keeping what they
+    /// printed.
+    pub fn end(&mut self, cx: &mut Context<Self>) {
+        if self.exit.is_some() {
+            return;
+        }
+        // One still starting is stopped as soon as it has (`start`).
+        self.exit = Some(None);
+        if let Some(terminal) = self.terminal().cloned() {
+            terminal.stop();
+            let mut parser = alacritty_terminal::vte::ansi::Processor::<alacritty_terminal::vte::ansi::StdSyncHandler>::new();
+            parser.advance(&mut *terminal.lock(), b"\r\n[Stopped]");
+        }
+        cx.emit(TerminalEvent::TitleChanged);
+        cx.notify();
+    }
+
+    /// The pid of the process it started, while it runs.
+    pub fn pid(&self) -> Option<i32> {
+        self.terminal().filter(|t| t.is_running()).map(|t| t.pid)
     }
 
     pub fn spawn(&self) -> &Spawn {
@@ -145,8 +193,9 @@ impl TerminalView {
     /// Its tab's name: the program's title, else what's running.
     pub fn title(&self) -> String {
         let name = self
-            .title
+            .name
             .clone()
+            .or_else(|| self.title.clone())
             .filter(|t| !t.trim().is_empty())
             .or_else(|| self.terminal().and_then(|t| t.process_name()))
             .unwrap_or_else(|| "Terminal".into());
@@ -178,10 +227,14 @@ impl TerminalView {
     fn start(&mut self, size: GridSize, cx: &mut Context<Self>) {
         self.state = State::Starting;
         let spawn = self.spawn.clone();
+        let tap = self.tap.clone();
         let task = cx.spawn(async move |this, cx| {
-            let started = cx.background_spawn(async move { Terminal::start(spawn, size) }).await;
+            let started = cx.background_spawn(async move { Terminal::start(spawn, size, tap) }).await;
             let Ok(notices) = this.update(cx, |view, cx| match started {
                 Ok((terminal, notices)) => {
+                    if view.exit.is_some() {
+                        terminal.stop();
+                    }
                     view.state = State::Running(Arc::new(terminal));
                     cx.emit(TerminalEvent::TitleChanged);
                     cx.notify();

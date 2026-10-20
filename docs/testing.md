@@ -86,6 +86,23 @@ themes or session. It covers:
   stand-in in `node_modules/.bin`); `node_modules` read-only;
   `lsp.<id>.enabled` and Restart Language Servers. With `--network`, ESLint's
   pulled diagnostics and Tailwind's classes from the app's own packages
+* running web apps on a copy of `samples/HelloWeb`, with a fake pnpm and
+  npm on `PATH` (they record how zcode ran them, then run the script as
+  theirs do) and a fake Vite in `web/node_modules/.bin` that prints its
+  URL in Vite's colors and a TypeScript error, then serves with a child
+  process: the scheme menu's `web` section with the package's scheme;
+  pnpm chosen from the lockfile; ⌘R running `pnpm run dev` in `web/`
+  with `node_modules/.bin` first on `PATH`, in a debug-area terminal
+  named `web: dev`, while the package's app keeps running; the URL
+  opened once (recorded through `ZCODE_OPEN_URL_LOG`, never a browser)
+  and again from the activity view; the error in the Issue navigator
+  and the editor at `counter.ts:3:11`; the app run again and stopped
+  without touching the dev server; ⌘. with the script chosen ending it
+  and its child; MCP's run targets, `RunProject`, `GetConsoleOutput`
+  and `StopProject` on the script; the choice after a relaunch, and
+  quitting ending its run; a plain folder with a `package.json` (npm
+  without a lockfile), a failing script's error and exit code, and ⌘.
+  stopping what runs
 * predictive completion on a copy of ZKit: off by default (nothing asked
   or shown); the Claude API provider against `scripts/fake_anthropic.py`
   (a local server streaming the Messages API's events, so no key or

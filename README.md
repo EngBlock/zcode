@@ -7,7 +7,9 @@ Xcode projects and Swift packages without opening Xcode. It uses the
 toolchain Xcode installs: `xcodebuild`, `simctl`, `sourcekit-lsp` and
 `lldb-dap`. The web app an Apple app ships with (a Vite app in `web/`, the
 pages of a web view) is edited in the same window, with the web's language
-servers and Emmet.
+servers and Emmet, and run there: its `package.json` scripts are in the
+scheme menu beside the app's schemes, and Run starts its dev server next
+to the running app.
 
 ```
 cargo build --release

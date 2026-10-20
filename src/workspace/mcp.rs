@@ -11,7 +11,8 @@ use serde_json::{Value, json};
 use zcode_editor::RopeExt as _;
 
 use super::{Target, Workspace};
-use crate::build::BuildAction;
+use crate::build::web::ScriptId;
+use crate::build::{BuildAction, Choice};
 use crate::build::log::{Issue, Severity};
 use crate::build::xcode::Destination;
 
@@ -21,12 +22,10 @@ impl Workspace {
     pub fn mcp_select(&mut self, scheme: Option<&str>, destination: Option<&str>, cx: &mut Context<Self>) -> Result<(), String> {
         let build = self.build.clone();
         if let Some(scheme) = scheme {
-            let known = build.read(cx).schemes.schemes.iter().any(|s| s == scheme);
-            if !known {
-                return Err(format!("No scheme named “{scheme}”. XcodeListSchemes lists them."));
-            }
-            if build.read(cx).scheme.as_deref() != Some(scheme) {
-                build.update(cx, |build, cx| build.set_scheme(scheme.to_string(), cx));
+            // A scheme, or a web app's script (`web: dev`).
+            let choice = build.read(cx).find_choice(scheme).ok_or_else(|| format!("No scheme named “{scheme}”, nor a web app’s script. XcodeListSchemes lists them."))?;
+            if build.read(cx).choice().as_ref() != Some(&choice) {
+                build.update(cx, |build, cx| build.choose(choice, cx));
             }
         }
         if let Some(wanted) = destination {
@@ -75,12 +74,72 @@ impl Workspace {
         Ok(build.generation)
     }
 
-    /// Product ▸ Stop: the build, the app and the debugger. Whether anything was running.
-    pub fn mcp_stop(&mut self, cx: &mut Context<Self>) -> bool {
-        let running = self.build.read(cx).phase.is_busy() || self.debugger.read(cx).state.is_active();
-        self.stop(cx);
+    /// Product ▸ Stop: the chosen target's run, as ⌘. stops it, or
+    /// `scheme`'s (a script's, or the build, the app and the debugger).
+    /// Whether anything was running.
+    pub fn mcp_stop(&mut self, scheme: Option<&str>, cx: &mut Context<Self>) -> Result<bool, String> {
+        let choice = match scheme {
+            Some(name) => Some(self.build.read(cx).find_choice(name).ok_or_else(|| format!("No scheme named “{name}”, nor a web app’s script. XcodeListSchemes lists them."))?),
+            None => None,
+        };
+        let stopped = match choice {
+            Some(Choice::Script(id)) => self.stop_script(&id, cx),
+            Some(Choice::Scheme(_)) => {
+                let running = self.build.read(cx).phase.is_busy() || self.debugger.read(cx).state.is_active();
+                self.debugger.update(cx, |d, cx| d.stop(cx));
+                self.build.update(cx, |b, cx| b.stop(cx));
+                running
+            }
+            None => {
+                let running = self.build.read(cx).phase.is_busy() || self.debugger.read(cx).state.is_active() || self.any_web_running();
+                self.stop(cx);
+                running
+            }
+        };
         cx.notify();
-        running
+        Ok(stopped)
+    }
+
+    /// Stops the scheme's build, its app and the debugger (a tool call
+    /// cancelled while it builds), leaving scripts be.
+    pub fn mcp_stop_build(&mut self, cx: &mut Context<Self>) {
+        self.debugger.update(cx, |d, cx| d.stop(cx));
+        self.build.update(cx, |b, cx| b.stop(cx));
+        cx.notify();
+    }
+
+    /// Run with a script chosen: starts it (again). Its run, to follow.
+    pub fn mcp_run_script(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<ScriptId, String> {
+        let id = self.build.read(cx).script.clone().ok_or("No script is chosen.")?;
+        self.run_script(id.clone(), window, cx)?;
+        Ok(id)
+    }
+
+    /// A script's run as the tools report it: its state, URL, issues and
+    /// the last `lines` of its output.
+    pub fn mcp_web_run(&self, id: &ScriptId, lines: usize, cx: &App) -> Option<Value> {
+        let run = self.web.runs.iter().find(|r| r.id == *id)?;
+        let mut value = self.web_run_json(run, lines, cx);
+        value["running"] = run.is_running().into();
+        value["issues"] = run.issues().map(issue_json).collect::<Vec<_>>().into();
+        Some(value)
+    }
+
+    /// Every script run: name, state and URL.
+    pub fn mcp_web_runs(&self, cx: &App) -> Vec<Value> {
+        self.web
+            .runs
+            .iter()
+            .map(|run| {
+                let value = self.web_run_json(run, 0, cx);
+                json!({ "name": value["name"], "state": value["state"], "running": run.is_running(), "url": value["url"], "total_lines": run.total_lines })
+            })
+            .collect()
+    }
+
+    /// Whether `id` is running.
+    pub fn mcp_script_running(&self, id: &ScriptId) -> bool {
+        self.web_running(id)
     }
 
     /// Opens `path` (relative to the project, or absolute) at a 1-based

@@ -164,13 +164,33 @@
   semantic highlighting come from a file's first server that has them (a
   Vue file's are Vue's server's). Vue's `{{ }}` interpolations aren't
   highlighted as JavaScript (directives' values are). There's no linked
-  editing of a tag's pair, no ESLint fix-all on save, no running or
-  debugging the web app (the terminal runs `npm run dev`) and no
-  browser preview. Emmet works in markup, JSX, TSX and stylesheets (not in
+  editing of a tag's pair, no ESLint fix-all on save, no debugging
+  the web app and no browser preview (see running it below). Emmet works in markup, JSX, TSX and stylesheets (not in
   `.js` or `.ts` files), without CSS at-rules, vendor prefixes, BEM and
   other filters, or Emmet's other actions (Balance, Go to Edit Point,
   Update Tag); a snippet's repeated tab stops aren't linked (typing in
   one doesn't change the others).
+* Running a web app's scripts: scripts come from `package.json` files the
+  project's scan finds (gitignored folders and `node_modules` aren't
+  searched), read again when one changes; a `package.json` added later
+  shows once the project is scanned again (a file created in zcode, a
+  git refresh). Workspace (monorepo) scripts run in their own folder
+  with the root's lockfile's manager, not through `--filter`/`-w`; a
+  package manager's version (Corepack) isn't checked. Build, Test,
+  Profile and Archive keep using the project's scheme while a script is
+  chosen, and a folder without a scheme has none of them. Stop ends the
+  chosen target's run; with several things running there's no menu to
+  pick one (choose it, then ⌘., or close its terminal tab). Only the
+  first local URL is taken (a server printing another later, or only a
+  LAN address, isn't followed), and it's opened in the default browser.
+  Errors are recognized in the formats listed in the features (others,
+  e.g. Jest's or Svelte's, stay in the terminal); an error whose
+  location comes on a later line is matched within 40 lines; a
+  watcher's issues clear when it says it's starting over (tsc's
+  `File change detected`, Vite's `hmr update` and `page reload`), so a
+  dev server that fixes an error silently keeps it until the next run.
+  A run's terminal and output aren't kept across a relaunch (the choice
+  is). Runs are tested against a fake package manager and Vite.
 * Multibuffers: excerpts are highlighted in the language most of their
   files are in, and have no completion, Quick Help, Jump to Definition or
   inlay hints (⌥↩ opens the file, where they work); bookmarks, test
@@ -187,7 +207,8 @@
   settings of its own (shell, font, colors, scrollback size) or blinking
   cursor. A restored terminal is a new shell in the old folder: what ran
   in it and its scrollback are gone. Terminals can't be moved between the
-  debug area and editor tabs. URLs open in the browser through macOS; the
+  debug area and editor tabs (a web app's script always runs in the debug
+  area's). URLs open in the browser through macOS; the
   e2e checks don't open one (their detection is unit-tested), and Open
   Terminal at Location is driven through the same command its menu item
   calls rather than a click on the context menu.
