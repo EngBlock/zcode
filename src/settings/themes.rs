@@ -185,13 +185,15 @@ pub struct ThemeStore {
     missing: Vec<String>,
     /// The monospace font before any theme or setting changed it.
     default_mono: Option<SharedString>,
+    /// A font `buffer_font_family` or the theme names that isn't installed.
+    font_problem: Option<String>,
     /// The theme shown, by name.
     pub applied: Option<String>,
 }
 
 impl ThemeStore {
     pub fn new(loaded: Loaded) -> Self {
-        let mut store = Self { loaded: Loaded::default(), themes: HashMap::new(), missing: vec![], default_mono: None, applied: None };
+        let mut store = Self { loaded: Loaded::default(), themes: HashMap::new(), missing: vec![], default_mono: None, font_problem: None, applied: None };
         store.take(loaded);
         store
     }
@@ -220,6 +222,7 @@ impl ThemeStore {
         let mut problems: Vec<Problem> = self.loaded.errors.iter().map(|e| Problem { error: true, message: e.clone() }).collect();
         let dir = crate::paths::display_path(&super::themes_dir());
         problems.extend(self.missing.iter().map(|name| Problem { error: true, message: format!("theme “{name}” isn’t built in or in {dir}") }));
+        problems.extend(self.font_problem.iter().map(|message| Problem { error: false, message: message.clone() }));
         problems
     }
 
@@ -309,23 +312,42 @@ fn set_theme(theme: Option<(String, Rc<ThemeConfig>)>, mode: ThemeMode, settings
         theme_global.light_theme = config.clone();
     }
     Theme::change(mode, None, cx);
-    let mono: SharedString = settings
-        .buffer_font_family
-        .clone()
-        .map(SharedString::from)
-        .or_else(|| config.mono_font_family.clone())
-        .unwrap_or(default_mono);
+    // A font that isn't installed would be drawn in the system's
+    // proportional one, under the terminal's monospace grid: the theme's
+    // font instead, else the default monospace one, and said.
+    let (mono, font_problem) = mono_font(settings.buffer_font_family.as_deref(), config.mono_font_family.as_ref(), &config.name, &default_mono, &|family| font_installed(family, cx));
     if Theme::global(cx).mono_font_family != mono {
         Theme::update(cx, |theme| theme.mono_font_family = mono);
     }
     if cx.has_global::<SettingsStore>() {
-        let changed = cx.global::<SettingsStore>().themes.applied.as_ref() != Some(&applied);
+        let store = &cx.global::<SettingsStore>().themes;
+        let changed = store.applied.as_ref() != Some(&applied) || store.font_problem != font_problem;
         if changed {
             cx.update_global::<SettingsStore, _>(|store, _| {
                 store.themes.applied = Some(applied);
+                store.themes.font_problem = font_problem;
                 store.generation += 1;
             });
         }
+    }
+}
+
+/// The editor's and terminal's font: `buffer_font_family`, else the theme's,
+/// else `default` (installed), skipping those that aren't installed; and
+/// what to say about a skipped one.
+fn mono_font(setting: Option<&str>, theme_font: Option<&SharedString>, theme: &str, default: &SharedString, installed: &dyn Fn(&str) -> bool) -> (SharedString, Option<String>) {
+    let theme_installed = theme_font.filter(|family| installed(family));
+    let fallback = theme_installed.unwrap_or(default).clone();
+    match (setting, theme_font) {
+        (Some(family), _) if installed(family) => (family.into(), None),
+        (Some(family), _) => {
+            let settings = super::label(&super::settings_path());
+            (fallback.clone(), Some(format!("{settings}: buffer_font_family: no font “{family}” is installed; using {fallback}")))
+        }
+        (None, Some(family)) if theme_installed.is_none() => {
+            (fallback.clone(), Some(format!("theme “{theme}”: its font “{family}” isn’t installed; using {fallback}")))
+        }
+        (None, _) => (fallback, None),
     }
 }
 
@@ -335,7 +357,7 @@ pub fn font_installed(family: &str, cx: &App) -> bool {
     let text_system = cx.text_system();
     text_system
         .get_font_for_id(text_system.resolve_font(&gpui_kit::font(family.to_string())))
-        .is_some_and(|font| font.family.as_ref() == family)
+        .is_some_and(|font| font.family.eq_ignore_ascii_case(family))
 }
 
 /// Every theme Select Theme… offers: the built-in ones, then the folder's.
@@ -390,6 +412,23 @@ pub fn write_set(set: &Value, file_name: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fonts_that_arent_installed_are_said_and_skipped() {
+        let installed = |family: &str| ["Menlo", "Courier New"].contains(&family);
+        let menlo = SharedString::from("Menlo");
+        let courier = SharedString::from("Courier New");
+        assert_eq!(mono_font(Some("Courier New"), None, "Default Dark", &menlo, &installed), (courier.clone(), None));
+        assert_eq!(mono_font(None, Some(&courier), "Harbor", &menlo, &installed), (courier.clone(), None));
+        assert_eq!(mono_font(None, None, "Default Dark", &menlo, &installed), (menlo.clone(), None));
+        let (font, problem) = mono_font(Some("NoSuchFontXYZ"), Some(&courier), "Harbor", &menlo, &installed);
+        assert_eq!(font, courier);
+        assert!(problem.unwrap().ends_with("settings.json: buffer_font_family: no font “NoSuchFontXYZ” is installed; using Courier New"));
+        let (font, problem) = mono_font(Some("NoSuchFontXYZ"), Some(&"Gone Mono".into()), "Harbor", &menlo, &installed);
+        assert_eq!((font, problem.unwrap().ends_with("using Menlo")), (menlo.clone(), true));
+        let (font, problem) = mono_font(None, Some(&"Gone Mono".into()), "Harbor", &menlo, &installed);
+        assert_eq!((font, problem.as_deref()), (menlo, Some("theme “Harbor”: its font “Gone Mono” isn’t installed; using Menlo")));
+    }
 
     #[test]
     fn theme_files_in_both_formats() {

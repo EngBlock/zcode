@@ -7415,6 +7415,18 @@ def settings_checks(samples):
         write_settings("{}\n")
         wait_settings(lambda st: st["terminal_shell"] is None)
 
+    def unknown_font_family():
+        default = settings()["theme"]["mono_font"]
+        write_settings('{ "buffer_font_family": "NoSuchFontXYZ" }\n')
+        st = settings(wait_settings(lambda st: any("NoSuchFontXYZ" in p["message"] for p in st["problems"])))
+        assert [p["message"] for p in st["problems"]] == [f"settings.json: buffer_font_family: no font “NoSuchFontXYZ” is installed; using {default}"], st["problems"]
+        assert st["theme"]["mono_font"] == default, st["theme"]
+        write_settings('{ "buffer_font_family": "Courier New" }\n')
+        st = settings(wait_settings(lambda st: st["theme"]["mono_font"] == "Courier New"))
+        assert st["problems"] == [], st["problems"]
+        write_settings("{}\n")
+        wait_settings(lambda st: st["theme"]["mono_font"] == default and st["problems"] == [])
+
     def keymap_with_contexts():
         write(keymap_file, """[
   // Mine: a key for the Find navigator, one only in editors, one only in Vim's normal mode.
@@ -7567,6 +7579,7 @@ def settings_checks(samples):
         check("Settings: the Editor menu's toggles and ⌘+ write settings.json, with checkmarks", toggles_write_the_file_with_checkmarks)
         check("Settings: trailing whitespace, final newline and format on save (sourcekit-lsp)", whitespace_and_format_on_save)
         check("Settings: terminal.shell starts the terminal's shell", terminal_shell_setting)
+        check("Settings: a buffer_font_family that isn't installed is said, and the editor and terminal keep a monospace font", unknown_font_family)
         check("Settings: keymap.json with contexts (Editor, vim_mode, Navigator), Unbind and null; mistakes reported", keymap_with_contexts)
         check("Settings: themes as JSON (gpui-component's and Zed's formats), live, and Select Theme…", json_themes_and_select_theme)
         check("Settings: Xcode themes import (a fixture, and Xcode's Midnight read in place)", xcode_theme_import)
