@@ -31,6 +31,23 @@ lists zcode for `.xcodeproj`, `.xcworkspace`, Swift sources and folders.
 `scripts/package.py release` does bundle, sign, notarize, zip, dmg and the
 update feed in one go (`--dry-run` prints what it would run).
 
+In that list zcode comes second until you say otherwise, since the bundle
+claims Xcode's types as Alternate. To make a double-click open them in zcode
+instead, for Xcode projects (`.xcodeproj`, `.xcode`), workspaces and Swift
+sources:
+
+```
+scripts/default-app.sh            # zcode opens them from Finder
+scripts/default-app.sh --restore  # Xcode does again
+scripts/default-app.sh --print    # what opens each one now
+```
+
+It points at `/Applications/zcode.app` when that exists, otherwise at this
+checkout's `target/release/bundle/zcode.app` (`--app` says where). The setting
+is per user, so no `sudo`, and macOS 26.4 and later asks you to confirm the
+first time it changes a type (a type it has been told about before goes
+through silently); older systems apply them at once.
+
 Releases are made by tag: bump the version in `Cargo.toml`, commit, and push
 `v<version>` (`git tag v0.2.0 && git push origin v0.2.0`).
 [`.github/workflows/release.yml`](.github/workflows/release.yml) builds,

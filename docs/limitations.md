@@ -60,9 +60,11 @@
   installs only when the bundle's folder is writable (otherwise Download
   opens the zip); there are no delta updates, and the update replaces
   the whole bundle. Finder's association was checked by inspecting
-  `Info.plist` and by opening documents through `open -a`, not by
-  registering the bundle as a default handler. Open at Login and the
-  CLI's hand-off to LaunchServices need the bundle; a bare
+  `Info.plist` and by opening documents through `open -a`;
+  `scripts/default-app.sh` also registers the bundle as the default opener,
+  which macOS 26.4 and later does only after the user confirms a type the
+  first time it changes (there's no menu item for it in the app). Open at
+  Login and the CLI's hand-off to LaunchServices need the bundle; a bare
   `target/release/zcode` says so.
 * Predictive completion has two providers, the Claude API and a language
   server's `textDocument/inlineCompletion` (which sourcekit-lsp doesn't
