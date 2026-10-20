@@ -158,6 +158,25 @@ fn parse_issue_line(line: &str) -> Option<Issue> {
             source: IssueSource::Build,
         });
     }
+    // swift build on the swiftbuild engine (Xcode 27's toolchain) puts the
+    // severity first and no colon after the column: "error: /…/File.swift:3:28
+    // message", a fix-it as a raw `FixIt(…)` dump after the message.
+    static SEVERITY_FIRST: OnceLock<Regex> = OnceLock::new();
+    if let Some(c) = re(
+        &SEVERITY_FIRST,
+        r"^(error|warning|note|fatal error|remark): (/[^:]+):(\d+)(?::(\d+))?:? (.+)$",
+    )
+    .captures(line)
+    {
+        return Some(Issue {
+            severity: Severity::parse(&c[1])?,
+            message: without_fix_it_dump(&c[5]),
+            path: Some(PathBuf::from(&c[2])),
+            line: c[3].parse().ok(),
+            column: c.get(4).and_then(|m| m.as_str().parse().ok()),
+            source: IssueSource::Build,
+        });
+    }
     // Project-level issues, signing above all: "/…/App.xcodeproj: error:
     // Signing for "App" requires a development team. …".
     static PROJECT: OnceLock<Regex> = OnceLock::new();
@@ -218,6 +237,34 @@ fn parse_issue_line(line: &str) -> Option<Issue> {
         });
     }
     None
+}
+
+/// A swiftbuild message without the `: FixIt(sourceRange: …, textToInsert:
+/// ";")` dumps after it, each said as Xcode's fix-it buttons say it.
+fn without_fix_it_dump(message: &str) -> String {
+    static FIX_IT: OnceLock<Regex> = OnceLock::new();
+    let Some(at) = message.find(": FixIt(") else { return message.to_string() };
+    let fixes: Vec<String> = re(
+        &FIX_IT,
+        r#"FixIt\(sourceRange: [\w.]*SourceRange\(path: "(?:[^"\\]|\\.)*", startLine: (\d+), startColumn: (\d+), endLine: (\d+), endColumn: (\d+)\), textToInsert: "((?:[^"\\]|\\.)*)"\)"#,
+    )
+    .captures_iter(&message[at..])
+    .map(|c| {
+        let empty = c[1] == c[3] && c[2] == c[4];
+        let text = c[5].replace("\\\"", "\"").replace("\\n", "↩").replace("\\\\", "\\");
+        match (empty, text.is_empty()) {
+            (true, _) => format!("insert “{text}”"),
+            (false, true) => "remove".to_string(),
+            (false, false) => format!("replace with “{text}”"),
+        }
+    })
+    .collect();
+    let message = message[..at].trim_end();
+    if fixes.is_empty() {
+        message.to_string()
+    } else {
+        format!("{message} (fix-it: {})", fixes.join(", "))
+    }
 }
 
 /// Whether an issue is about code signing or provisioning.
@@ -547,6 +594,35 @@ mod tests {
         assert_eq!(issue.line, Some(12));
         assert_eq!(issue.column, Some(5));
         assert_eq!(issue.message, "cannot find 'foo' in scope");
+    }
+
+    /// Lines from `swift build` on Xcode 27's swiftbuild engine (ZKit's
+    /// Greeter.swift broken).
+    #[test]
+    fn parses_swiftbuild_severity_first_issues() {
+        let issue = parse_issue(r#"error: /private/tmp/zk7/Sources/ZKit/Greeter.swift:3:28 consecutive declarations on a line must be separated by ';': FixIt(sourceRange: XCBuild.SwiftBuildMessage.DiagnosticInfo.SourceRange(path: "/private/tmp/zk7/Sources/ZKit/Greeter.swift", startLine: 3, startColumn: 28, endLine: 3, endColumn: 28), textToInsert: ";")"#).unwrap();
+        assert_eq!(issue.severity, Severity::Error);
+        assert_eq!(issue.path.as_deref(), Some(std::path::Path::new("/private/tmp/zk7/Sources/ZKit/Greeter.swift")));
+        assert_eq!((issue.line, issue.column), (Some(3), Some(28)));
+        assert_eq!(issue.message, "consecutive declarations on a line must be separated by ';' (fix-it: insert “;”)");
+        let issue = parse_issue("error: /private/tmp/zk7/Sources/ZKit/Greeter.swift:3:44 expected expression in list of expressions").unwrap();
+        assert_eq!((issue.line, issue.column, issue.message.as_str()), (Some(3), Some(44), "expected expression in list of expressions"));
+        let warning = parse_issue("warning: /private/tmp/zk7/Sources/ZKit/Greeter.swift:2:10 check this").unwrap();
+        assert_eq!((warning.severity, warning.line, warning.column, warning.message.as_str()), (Severity::Warning, Some(2), Some(10), "check this"));
+        let note = parse_issue("note: /p/My Kit/A.swift:7:3 to match this opening '{'").unwrap();
+        assert_eq!((note.severity, note.path.as_deref(), note.line), (Severity::Note, Some(std::path::Path::new("/p/My Kit/A.swift")), Some(7)));
+        let line_only = parse_issue("error: /p/A.swift:9 something").unwrap();
+        assert_eq!((line_only.line, line_only.column), (Some(9), None));
+        // Replacements and removals, and a dump that doesn't parse.
+        let range = |a: u32, b: u32, text: &str| format!(r#"FixIt(sourceRange: XCBuild.SwiftBuildMessage.DiagnosticInfo.SourceRange(path: "/p/A.swift", startLine: 1, startColumn: {a}, endLine: 1, endColumn: {b}), textToInsert: "{text}")"#);
+        assert_eq!(without_fix_it_dump(&format!("bad: {}, {}", range(1, 4, "let"), range(5, 7, ""))), "bad (fix-it: replace with “let”, remove)");
+        assert_eq!(without_fix_it_dump(r#"bad: FixIt(something else)"#), "bad");
+        // What swiftbuild says about its own steps stays as it was.
+        let step = parse_issue("error: SwiftDriver ZKit normal arm64 com.apple.xcode.tools.swift.compiler failed with a nonzero exit code. Command line:     cd /private/tmp").unwrap();
+        assert_eq!((step.path, step.line), (None, None));
+        assert_eq!(parse_issue("error: Build failed").unwrap().message, "Build failed");
+        let pretty = prettify("warning: /private/tmp/zk7/Sources/ZKit/Greeter.swift:2:10 check this");
+        assert_eq!((pretty.pretty.as_deref(), pretty.style), (Some("Greeter.swift:2: check this"), LineStyle::Warning));
     }
 
     #[test]

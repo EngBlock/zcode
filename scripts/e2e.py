@@ -2640,6 +2640,32 @@ def package_checks(z, samples):
         z.run(f"open {main}:{loop_line}", "keys cmd-\\", "keys ctrl-cmd-y")
         z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=60)
 
+    greeter = os.path.join(kit, "Sources", "ZKit", "Greeter.swift")
+
+    def package_build_error():
+        # swiftbuild (Xcode 27's swift build) prints "error: /…/Greeter.swift:3:28
+        # message: FixIt(…)", severity first; older ones "/…:3:28: error: …".
+        original = open(greeter).read()
+        broken_line = line_of(greeter, "public let name")
+        try:
+            with open(greeter, "w") as f:
+                f.write(original.replace("public let name: String", "public let name: String let x = 1"))
+            z.run(f"open {greeter}", "wait 3500")  # reloads from disk
+            z.run("keys cmd-b")
+            s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=300)
+            assert "success: false" in s["phase"], s["phase"]
+            located = [i for i in s["issues"] if i.startswith(f"Error Greeter.swift:{broken_line} consecutive declarations")]
+            assert located and all("FixIt(" not in i for i in s["issues"]), s["issues"]
+            assert any(i.endswith("(fix-it: insert “;”)") for i in located), located
+            assert not any("/Greeter.swift" in i for i in s["issues"]), s["issues"]
+            z.run(f"open {main}", "wait 300", "keys cmd-'", "wait 300")
+            a = z.dump()["active"]
+            assert a["path"].endswith("Greeter.swift") and a["line"] == broken_line, a
+        finally:
+            with open(greeter, "w") as f:
+                f.write(original)
+        z.wait_for(lambda s: s["active"]["text"] == original, timeout=15, interval=0.5)
+
     tests_dir = os.path.join(kit, "Tests", "ZKitTests")
     swift_tests = os.path.join(tests_dir, "GreeterTests.swift")
     xctests = os.path.join(tests_dir, "GreeterXCTests.swift")
@@ -2706,6 +2732,7 @@ def package_checks(z, samples):
     check("Swift package: re-run failed tests", rerun_failed)
     check("Swift package: Run on My Mac (⌘R)", run_package)
     check("Swift package: Test (⌘U) → Test navigator", test_package)
+    check("Swift package: a swift build error is listed at its file and line, its fix-it said, ⌘' goes there", package_build_error)
     check("Swift package: breakpoint, variables, step over (F6)", debug_package)
 
     tick_line = line_of(main, 'print("tick')
