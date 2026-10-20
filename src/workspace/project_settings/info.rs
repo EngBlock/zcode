@@ -157,12 +157,7 @@ impl ProjectSettings {
             return;
         }
         let (path, exists, format, target) = (info.path.clone(), info.exists, info.format, info.target.clone());
-        let written = plist::encode(&text, format).map_err(|e| format!("{e:#}")).and_then(|bytes| {
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            }
-            std::fs::write(&path, bytes).map_err(|e| e.to_string())
-        });
+        let written = plist::encode(&text, format).map_err(|e| format!("{e:#}")).and_then(|bytes| self.write_file(&path, &bytes, cx));
         if let Err(err) = written {
             self.error = Some(format!("Couldn’t save {}: {err}", path.display()));
             cx.notify();

@@ -411,7 +411,9 @@ impl Workspace {
                 }
                 // Closing a terminal's tab ends its processes.
                 Item::Terminal(item) => item.view.update(cx, |view, _| view.stop()),
-                Item::ProjectSettings(_) => {
+                Item::ProjectSettings(item) => {
+                    // A value typed in a field that still has the keyboard.
+                    item.update(cx, |settings, cx| settings.commit_pending(cx));
                     self.project_settings = None;
                     self.project_settings_subscriptions.clear();
                 }

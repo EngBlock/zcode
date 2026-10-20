@@ -471,6 +471,9 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("up", PickerSelectPrevious, Some(PLIST_INPUT)),
         KeyBinding::new("enter", PickerConfirm, Some(PLIST_INPUT)),
         KeyBinding::new("escape", PickerDismiss, Some(PLIST_INPUT)),
+        // Project Settings: its edits' undo (a field being typed in has its own).
+        KeyBinding::new("cmd-z", Undo, Some("ProjectSettings")),
+        KeyBinding::new("cmd-shift-z", Redo, Some("ProjectSettings")),
         // The asset catalog editor: its edits' undo, the outline's rows.
         KeyBinding::new("cmd-z", Undo, Some(ASSET_CATALOG)),
         KeyBinding::new("cmd-shift-z", Redo, Some(ASSET_CATALOG)),
