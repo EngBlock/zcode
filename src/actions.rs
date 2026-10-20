@@ -160,6 +160,9 @@ gpui_kit::actions!(
         SetPlistTypeString,
         ToggleRawKeysAndValues,
         OpenAsSourceCode,
+        // A Markdown or SVG file's live preview (`workspace/rendered_view.rs`).
+        OpenPreview,
+        OpenPreviewToTheSide,
         OpenAsPropertyList,
         // Product
         Build,
@@ -264,6 +267,10 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-alt-cmd-t", NewEditorPaneBelow, None),
         KeyBinding::new("ctrl-shift-cmd-w", CloseEditorPane, None),
         KeyBinding::new("ctrl-alt-shift-cmd-w", CloseOtherEditorPanes, None),
+        // VS Code's ⇧⌘V; its ⌘K V would hold up Clear Console's ⌘K, so the
+        // side's is ⌃⇧⌘V (Xcode has neither).
+        KeyBinding::new("shift-cmd-v", OpenPreview, None),
+        KeyBinding::new("ctrl-shift-cmd-v", OpenPreviewToTheSide, None),
         // Edit
         KeyBinding::new("cmd-x", CutOrCutLine, Some(EDITOR)),
         KeyBinding::new("cmd-c", CopyOrCopyLine, Some(EDITOR)),
@@ -663,6 +670,8 @@ pub fn commands() -> Vec<Command> {
         // Xcode offers Open As on a file's context menu.
         cmd!("Editor ▸ Open As", "Source Code", OpenAsSourceCode),
         cmd!("Editor ▸ Open As", "Property List", OpenAsPropertyList),
+        cmd!("Editor", "Open Preview", OpenPreview),
+        cmd!("Editor", "Open Preview to the Side", OpenPreviewToTheSide),
         cmd!("View", "Show Project Navigator", ShowProjectNavigator),
         cmd!("View", "Show Source Control Navigator", ShowSourceControlNavigator),
         cmd!("View", "Show Bookmarks Navigator", ShowBookmarksNavigator),

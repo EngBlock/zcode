@@ -247,6 +247,22 @@ fn decode_svg(bytes: &[u8], max: u32) -> Result<Decoded, String> {
     Ok(Decoded { rgba, width, height, source: (size.width().round() as u32, size.height().round() as u32) })
 }
 
+/// An SVG's text drawn as large as fits `width` × `height` pixels (a
+/// preview's pane), scaled up or down; files it refers to are looked up
+/// in `resources`.
+pub fn render_svg(text: &str, resources: Option<&Path>, width: u32, height: u32) -> Result<Decoded, String> {
+    let options = resvg::usvg::Options { resources_dir: resources.map(Path::to_path_buf), ..Default::default() };
+    let tree = resvg::usvg::Tree::from_str(text, &options).map_err(|e| e.to_string())?;
+    let size = tree.size();
+    let scale = (width as f32 / size.width().max(1.)).min(height as f32 / size.height().max(1.));
+    let (w, h) = (((size.width() * scale).round() as u32).max(1), ((size.height() * scale).round() as u32).max(1));
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h).ok_or("the SVG has no size")?;
+    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    let mut rgba = pixmap.take();
+    unpremultiply(&mut rgba);
+    Ok(Decoded { rgba, width: w, height: h, source: (size.width().round() as u32, size.height().round() as u32) })
+}
+
 /// The first page, drawn by Core Graphics into a bitmap.
 fn decode_pdf(bytes: &[u8], max: u32) -> Result<Decoded, String> {
     use objc2_core_foundation::CFData;
@@ -360,6 +376,16 @@ mod tests {
         assert_eq!((d.width, d.height, d.source), (96, 96, (32, 32)));
         assert_eq!(pixel(&d, 48, 48), [255, 204, 0, 255]);
         assert_eq!(pixel(&d, 0, 95)[3], 0);
+    }
+
+    #[test]
+    fn an_svgs_text_fills_the_room_it_has() {
+        let text = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#ff0000"/></svg>"##;
+        // Scaled up, keeping its shape: the room's width is what limits it.
+        let d = super::render_svg(text, None, 200, 300).unwrap();
+        assert_eq!((d.width, d.height, d.source), (200, 100, (40, 20)));
+        assert_eq!(pixel(&d, 199, 99), [255, 0, 0, 255]);
+        assert!(super::render_svg("<svg", None, 200, 300).is_err());
     }
 
     #[test]

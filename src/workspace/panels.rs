@@ -848,7 +848,10 @@ impl Workspace {
     }
 
     pub(super) fn quick_actions(&mut self, _: &QuickActions, window: &mut Window, cx: &mut Context<Self>) {
-        let delegate = pickers::QuickActionsDelegate::new(window);
+        // Open Preview is only offered for a file that has one.
+        let previewable = self.active_item().is_some_and(|item| super::rendered_view::RenderedKind::of(&item.path).is_some());
+        let hidden: &[&str] = if previewable { &[] } else { &["zcode::OpenPreview", "zcode::OpenPreviewToTheSide"] };
+        let delegate = pickers::QuickActionsDelegate::new(hidden, window);
         let picker = cx.new(|cx| Picker::new(delegate, window, cx));
         self.show_modal(picker, window, cx);
     }
@@ -1061,6 +1064,8 @@ impl Render for Workspace {
                     this.open_as(this.active_pane, ix, false, window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &OpenPreview, window, cx| this.open_rendered(false, window, cx)))
+            .on_action(cx.listener(|this, _: &OpenPreviewToTheSide, window, cx| this.open_rendered(true, window, cx)))
             .on_action(cx.listener(|this, _: &ShowProjectSettings, window, cx| this.open_project_settings(window, cx)))
             .on_action(cx.listener(Self::open_quickly))
             .on_action(cx.listener(Self::quick_actions))

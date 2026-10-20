@@ -14,7 +14,7 @@ use gpui_kit::*;
 use serde_json::{Value, json};
 use zcode_editor::{EditorState, TabSize};
 
-use super::{Item, Workspace};
+use super::Workspace;
 use crate::actions::*;
 use crate::fuzzy::fuzzy_match;
 use crate::picker::{Picker, PickerDelegate, PickerItem};
@@ -161,15 +161,7 @@ impl Workspace {
         let mut editors: Vec<Entity<EditorState>> = self.buffers.iter().map(|b| b.editor.clone()).collect();
         for pane in &self.panes {
             for item in &pane.items {
-                match item {
-                    Item::Editor(item) => editors.push(item.editor.clone()),
-                    Item::MultiBuffer(item) => editors.push(item.host.clone()),
-                    Item::Diff(diff) => {
-                        let diff = diff.view.read(cx);
-                        editors.extend([diff.current.clone(), diff.base.clone()]);
-                    }
-                    Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) | Item::Image(_) => {}
-                }
+                editors.extend(item.editors(cx));
             }
         }
         editors.sort_by_key(|e| e.entity_id());

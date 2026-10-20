@@ -12,7 +12,7 @@ use super::pane::{Assistant, AssistantMode, EditorItem, Item, Pane, PaneId};
 use super::pane_group::{Member, PaneGroup, SplitAxis};
 use super::{ProjectSettings, Target, Workspace};
 use crate::lsp;
-use crate::session::{PaneLayout, PaneState, ProjectSession};
+use crate::session::{PaneLayout, PaneState, ProjectSession, SavedPreview};
 
 impl Workspace {
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {
@@ -187,7 +187,14 @@ impl Workspace {
         let focus = p.items[ix].focus_handle(cx);
         let settings = match &p.items[ix] {
             Item::ProjectSettings(settings) => Some(settings.clone()),
-            Item::Editor(_) | Item::Diff(_) | Item::MultiBuffer(_) | Item::Terminal(_) | Item::Organizer(_) | Item::AssetCatalog(_) | Item::Image(_) => None,
+            Item::Editor(_)
+            | Item::Diff(_)
+            | Item::MultiBuffer(_)
+            | Item::Terminal(_)
+            | Item::Organizer(_)
+            | Item::AssetCatalog(_)
+            | Item::Image(_)
+            | Item::Rendered(_) => None,
         };
         self.active_pane = pane;
         self.inspected = None;
@@ -290,30 +297,35 @@ impl Workspace {
     }
 
     /// The files whose last tabs are among `items` and that have unsaved
-    /// changes.
+    /// changes. A preview left open doesn't count (it doesn't edit the
+    /// file), but the last preview of a file no tab edits does.
     pub(super) fn unsaved_if_closed<'a>(&self, items: impl IntoIterator<Item = &'a Item>, cx: &App) -> Vec<PathBuf> {
         // A comparison's local side is a view of the file too, and so is
         // each excerpted file's view in a multibuffer.
         let mut closing: Vec<PathBuf> = vec![];
+        let mut previews: Vec<PathBuf> = vec![];
         for item in items {
             match item {
                 Item::MultiBuffer(item) => closing.extend(item.view.read(cx).paths.values().cloned()),
+                Item::Rendered(item) => previews.push(item.path.clone()),
                 item => closing.extend(item.buffer_path().map(Path::to_path_buf)),
             }
         }
-        let mut paths: Vec<PathBuf> = closing.clone();
+        let mut paths: Vec<PathBuf> = closing.iter().chain(&previews).cloned().collect();
         paths.sort();
         paths.dedup();
         paths.retain(|path| {
             let count = closing.iter().filter(|closed| *closed == path).count();
             let open = self.views_of(path).len() + self.diff_views_of(path).len() + self.multibuffer_views_of(path, cx).len();
-            self.buffer(path).is_some_and(|b| b.dirty) && open == count
+            let last_preview = open > 0 || previews.iter().filter(|p| *p == path).count() == self.rendered_views_of(path).len();
+            self.buffer(path).is_some_and(|b| b.dirty) && open == count && last_preview
         });
         paths
     }
 
     /// Runs `then` once the user chose to save or discard `unsaved` (right
-    /// away when there is none); Save saves them first.
+    /// away when there is none); Save saves them first. Don't Save puts the
+    /// saved text back in a buffer a preview keeps open.
     fn confirm_close(
         &mut self,
         unsaved: Vec<PathBuf>,
@@ -346,6 +358,11 @@ impl Workspace {
                 }
                 if choice <= 1 {
                     then(this, window, cx);
+                }
+                if choice == 1 {
+                    for path in &unsaved {
+                        this.discard_changes(path, cx);
+                    }
                 }
             })
             .ok();
@@ -404,15 +421,22 @@ impl Workspace {
                 }
                 Item::AssetCatalog(_) => {}
                 Item::Image(item) => item.view.update(cx, |view, cx| view.release(cx)),
+                Item::Rendered(item) => {
+                    item.view.release(cx);
+                    let path = item.path.clone();
+                    drop(item);
+                    self.rendered_closed(&path, cx);
+                }
             }
         }
     }
 
-    /// Closes every tab of `path` without asking (it was trashed or renamed).
+    /// Closes every tab of `path`, its previews too, without asking (it was
+    /// trashed or renamed).
     pub(super) fn close_file_everywhere(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         let mut removed = vec![];
         for pane in &mut self.panes {
-            while let Some(ix) = pane.position_of(path) {
+            while let Some(ix) = pane.items.iter().position(|item| item.path() == Some(path) || item.rendered_path() == Some(path)) {
                 removed.push(pane.remove(ix));
             }
         }
@@ -626,11 +650,18 @@ impl Workspace {
     /// Open Quickly). An assistant it opens in shows it from then on
     /// (Manual), as in Xcode.
     pub fn open_in_next_pane(&mut self, path: PathBuf, target: Option<Target>, window: &mut Window, cx: &mut Context<Self>) {
+        let pane = self.pane_for_open_in_next();
+        self.open_file_in(pane, path, target, true, window, cx);
+    }
+
+    /// `next_pane_for_open`, an assistant it is showing what's opened in
+    /// it from then on.
+    pub(super) fn pane_for_open_in_next(&mut self) -> PaneId {
         let pane = self.next_pane_for_open();
         if let Some(assistant) = self.pane_mut(pane).and_then(|p| p.assistant.as_mut()) {
             assistant.mode = AssistantMode::Manual;
         }
-        self.open_file_in(pane, path, target, true, window, cx);
+        pane
     }
 
     /// A header's implementation file or an implementation's header, next
@@ -798,6 +829,7 @@ impl Workspace {
                     assistant_of: pane.and_then(|p| p.assistant).and_then(|a| order.iter().position(|p| *p == a.of)),
                     counterparts: pane.and_then(|p| p.assistant).is_some_and(|a| a.mode == AssistantMode::Counterparts),
                     terminals: pane.map(|p| self.saved_terminals(&p.items, p.active, cx)).unwrap_or_default(),
+                    previews: pane.map(|p| saved_previews(&p.items, p.active)).unwrap_or_default(),
                 })
             }
         }
@@ -842,6 +874,7 @@ impl Workspace {
                 p.active = active.unwrap_or(p.items.len().saturating_sub(1));
             }
             self.restore_pane_terminals(id, &state.terminals, window, cx);
+            self.restore_pane_previews(id, &state.previews, window, cx);
             if state.focused {
                 self.active_pane = id;
             }
@@ -922,6 +955,38 @@ impl Workspace {
         })
     }
 
+    /// Reopens a pane's saved previews among its tabs.
+    fn restore_pane_previews(&mut self, pane: PaneId, saved: &[SavedPreview], window: &mut Window, cx: &mut Context<Self>) {
+        let mut saved: Vec<&SavedPreview> = saved.iter().filter(|p| p.path.is_file()).collect();
+        saved.sort_by_key(|p| p.position);
+        for preview in saved {
+            let Some(added) = self.add_rendered_item(pane, &preview.path, window, cx) else { continue };
+            let Some(p) = self.pane_mut(pane) else { return };
+            let item = p.items.remove(added);
+            let ix = preview.position.min(p.items.len());
+            p.items.insert(ix, item);
+            if preview.active {
+                p.active = ix;
+            } else if p.active >= ix && p.items.len() > 1 {
+                p.active += 1;
+            }
+        }
+    }
+
+    /// Don't Save on closing a file's last editor: a buffer still open (a
+    /// preview keeps it) goes back to the saved text.
+    fn discard_changes(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if !self.buffer(path).is_some_and(|b| b.dirty) {
+            return;
+        }
+        self.reload_from_disk(path, cx);
+        if let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) {
+            buffer.dirty = false;
+            self.lsp.update(cx, |lsp, cx| lsp.set_unsaved(path, false, cx));
+        }
+        cx.notify();
+    }
+
     /// The pane at `index` in layout order.
     pub fn pane_at(&self, index: usize) -> Option<PaneId> {
         self.pane_group.panes().get(index).copied()
@@ -960,6 +1025,15 @@ impl Workspace {
         }
         Ok(())
     }
+}
+
+/// A pane's previews, where they are among its tabs.
+fn saved_previews(items: &[Item], active: usize) -> Vec<SavedPreview> {
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(ix, item)| Some(SavedPreview { position: ix, path: item.rendered_path()?.to_path_buf(), active: ix == active }))
+        .collect()
 }
 
 /// The split tree in one line, panes by their place in layout order:

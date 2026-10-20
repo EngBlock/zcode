@@ -1570,6 +1570,143 @@ def image_checks():
         z.quit()
 
 
+def rendered_checks():
+    """Live previews (Editor ▸ Open Preview / to the Side) of an SVG and a
+    Markdown file, written here: drawn from the buffer as it's typed in,
+    an unreadable SVG keeping its last drawing, a relative image found,
+    the preview following the editor's scrolling, opening the file showing
+    its editor, the preview outliving the editor, a rename and the
+    session."""
+    folder = os.path.join(WORK, "Rendered")
+    os.makedirs(os.path.join(folder, "img"))
+    os.makedirs(os.path.join(folder, "docs"))
+    # zcode opens files by their real paths (/private/var/…).
+    folder = os.path.realpath(folder)
+    logo = os.path.join(folder, "logo.svg")
+    open(logo, "w").write('<svg xmlns="http://www.w3.org/2000/svg"\n width="40"\n height="20">\n'
+                          '<rect width="40" height="20" fill="#ff5e5b"/>\n<circle cx="10" cy="10" r="8" fill="#007aff"/>\n</svg>\n')
+    dot = os.path.join(folder, "img", "dot.png")
+    open(dot, "wb").write(png_bytes(60, 30, (52, 199, 89, 255)))
+    open(os.path.join(folder, "docs", "other.md"), "w").write("# Other\n")
+    readme = os.path.join(folder, "README.md")
+    sections = "".join(f"## Section {n}\n\nParagraph {n}, one line.\nAnd a second line.\n\n" for n in range(1, 41))
+    open(readme, "w").write("# Read Me\n\n![a green dot](img/dot.png)\n\nSee [the other page](docs/other.md) and "
+                            "[the web](https://example.com).\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```swift\nlet x = 1\n```\n\n"
+                            + sections)
+
+    def previews(s, kind=None):
+        return [r for r in s["rendered"] if kind is None or r["kind"] == kind]
+
+    def preview(z, kind, predicate=lambda r: True, timeout=15):
+        state = z.wait_for(lambda s: any(predicate(r) for r in previews(s, kind)), timeout=timeout, interval=0.2)
+        return next(r for r in previews(state, kind) if predicate(r))
+
+    z = Zcode(folder)
+    try:
+        def svg_preview_beside_its_editor():
+            z.run(f"open {logo}", "action zcode::OpenPreviewToTheSide")
+            r = preview(z, "svg", lambda r: r["state"] != "loading")
+            assert r["state"] == {"width": 40, "height": 20} and r["error"] is None, r
+            assert r["pane"] == 1 and r["shown"] and r["title"] == "logo.svg (Preview)", r
+            # Drawn for the pane's size, not the SVG's.
+            assert r["drawn"][0] > 40 * 2, r
+            s = z.dump()
+            panes = s["panes"]["list"]
+            assert panes[0]["active"] == "logo.svg" and panes[0]["focused"], panes
+            assert panes[1]["active"] == "logo.svg (Preview)", panes
+            z.run("screenshot " + os.path.join(WORK, "preview-svg.png"))
+
+        def typing_redraws_the_svg():
+            # width="40" → width="400", unsaved.
+            z.run(f"open {logo}:2", "keys cmd-right left", "type 0")
+            r = preview(z, "svg", lambda r: r["state"] == {"width": 400, "height": 20})
+            assert 'width="400"' in r["text"] and r["error"] is None, r
+            assert z.dump()["active"]["dirty"], "the edit isn't saved"
+
+        def unreadable_svg_keeps_its_last_drawing():
+            z.run(f"open {logo}:1", "type <")
+            r = preview(z, "svg", lambda r: r["error"])
+            assert r["state"] == {"width": 400, "height": 20}, r
+            z.run("screenshot " + os.path.join(WORK, "preview-svg-error.png"))
+            z.run("keys cmd-z")
+            r = preview(z, "svg", lambda r: r["error"] is None)
+            assert r["state"] == {"width": 400, "height": 20}, r
+
+        def markdown_preview_with_its_image():
+            z.run(f"open {readme}", "action zcode::OpenPreviewToTheSide")
+            r = preview(z, "markdown", lambda r: r["items"] > 0 and r["items"] == len(r["blocks"]))
+            assert r["pane"] == 1 and r["shown"] and r["title"] == "README.md (Preview)", r
+            assert r["images"] == [{"url": "img/dot.png", "path": dot, "exists": True}], r["images"]
+            assert r["scroll_top"]["item"] == 0, r["scroll_top"]
+            z.run("wait 500", "screenshot " + os.path.join(WORK, "preview-markdown.png"))
+
+        def typing_rerenders_the_markdown():
+            before = preview(z, "markdown")["items"]
+            z.run(f"open {readme}:1", "type Typed first.", "keys enter enter")
+            r = preview(z, "markdown", lambda r: (r["text"] or "").startswith("Typed first.") and r["items"] == before + 1)
+            assert r["blocks"][0] == [1, 1], r["blocks"][:3]
+
+        def scrolling_the_editor_scrolls_the_preview():
+            z.run(f"open {readme}:180")
+            r = preview(z, "markdown", lambda r: r["scroll_top"]["item"] > 20)
+            block = r["blocks"][r["scroll_top"]["item"]]
+            top = z.dump()["panes"]["list"][0]["shown"]
+            assert block[0] <= top["line"] + 5, (block, top["line"])
+            z.run(f"open {readme}:1")
+            preview(z, "markdown", lambda r: r["scroll_top"]["item"] == 0 and r["scroll_top"]["offset"] == 0)
+
+        def opening_the_file_shows_its_editor():
+            z.run("pane focus 0", "action zcode::OpenPreview")
+            s = z.wait_for(lambda s: s["panes"]["list"][0]["active"] == "README.md (Preview)", timeout=10, interval=0.2)
+            z.run(f"open {readme}")
+            s = z.dump()
+            pane = s["panes"]["list"][0]
+            assert pane["active"] == "README.md" and pane["focused"] and pane["shown"]["path"] == readme, pane
+
+        def preview_outlives_the_editor():
+            z.run("action zcode::Save", "wait 200", f"open {readme}", "action zcode::CloseTab", "wait 300")
+            s = z.dump()
+            assert all("README.md" not in p["tabs"] for p in s["panes"]["list"]), s["panes"]
+            # The buffer stays open: a change on disk reaches the previews.
+            text = open(readme).read()
+            time.sleep(1.1)
+            open(readme, "w").write("Changed on disk.\n\n" + text)
+            r = preview(z, "markdown", lambda r: (r["text"] or "").startswith("Changed on disk.") and r["shown"], timeout=20)
+            assert r["items"] == len(r["blocks"]), r
+            # Opened again, the file has a new editor of the same text.
+            z.run(f"open {readme}")
+            pane = z.dump()["panes"]["list"][0]
+            assert pane["active"] == "README.md" and pane["shown"]["text"].startswith("Changed on disk."), pane
+
+        def rename_and_session():
+            z.run(f"rename {readme} -> GUIDE.md", "wait 300")
+            s = z.dump()
+            titles = [r["title"] for r in previews(s)]
+            assert "GUIDE.md (Preview)" in titles and "README.md (Preview)" not in titles, titles
+            z.quit()
+            z2 = Zcode(folder)
+            try:
+                s = z2.wait_for(lambda s: len(previews(s)) == len(titles), timeout=20, interval=0.5)
+                assert sorted(r["title"] for r in previews(s)) == sorted(titles), previews(s)
+                # Shown or not, each has the file's text.
+                guide = preview(z2, "markdown", lambda r: len(r["blocks"]) > 1)
+                assert guide["path"] == os.path.join(folder, "GUIDE.md"), guide
+            finally:
+                z2.quit()
+
+        check("live preview: an SVG's preview opens beside its editor, drawn for the pane", svg_preview_beside_its_editor)
+        check("live preview: typing in the SVG draws it again", typing_redraws_the_svg)
+        check("live preview: an unreadable SVG edit keeps the last drawing and says why", unreadable_svg_keeps_its_last_drawing)
+        check("live preview: a Markdown preview finds its relative image", markdown_preview_with_its_image)
+        check("live preview: typing in the Markdown renders it again", typing_rerenders_the_markdown)
+        check("live preview: scrolling the editor scrolls the Markdown preview", scrolling_the_editor_scrolls_the_preview)
+        check("live preview: opening the file shows its editor, not the preview", opening_the_file_shows_its_editor)
+        check("live preview: the preview outlives its file's editor", preview_outlives_the_editor)
+        check("live preview: a renamed file's preview follows it, and the session brings previews back", rename_and_session)
+    finally:
+        z.quit()
+
+
 def asset_catalog_checks(samples):
     """The asset catalog editor on a copy of HelloClassic (group-based: the
     catalog is one file reference) whose Assets.xcassets gets the fixture
@@ -7523,6 +7660,9 @@ def main():
 
     print("Images (a folder of PNGs and a PDF):")
     image_checks()
+
+    print("Live previews (a folder of an SVG and Markdown):")
+    rendered_checks()
 
     print("SwiftUI previews (a copy of HelloZ; Xcode's commands recorded, never run):")
     preview_checks(samples)
