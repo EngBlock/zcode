@@ -783,13 +783,14 @@ fn run_command(
                 "cli" => crate::cli::command(rest.trim(), cx),
                 "login-item" => crate::login_item::command(rest.trim(), cx),
                 "updates" => crate::updates::command(rest.trim(), cx),
+                "about" => crate::about::command(rest.trim(), cx),
                 "open-url" => {
                     let paths = rest.split(';').filter_map(|url| crate::bundle::path_of_file_url(url.trim())).collect();
                     crate::app::open_paths(paths, cx);
                     let open: Vec<String> = workspaces(cx).iter().map(|w| w.read(cx).project.root.display().to_string()).collect();
                     Ok(serde_json::json!({ "open": open }).to_string())
                 }
-                _ => Err("usage: app bundle|cli …|login-item …|updates …|open-url <url>".into()),
+                _ => Err("usage: app bundle|cli …|login-item …|updates …|about [close]|open-url <url>".into()),
             }
         }
         "dump" => {

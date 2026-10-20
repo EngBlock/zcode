@@ -7572,6 +7572,16 @@ def settings_checks(samples):
         assert a["read_only"] and a["path"].endswith("default-keymap.json"), a
         z.run("keys cmd-w", "wait 200")
 
+    def about_in_quick_actions():
+        assert not json.loads(z.run("app about")[-1])["open"]
+        z.run("action zcode::QuickActions", "wait 300", "type About zcode", "wait 300", "keys enter", "wait 800")
+        about = json.loads(z.run("app about")[-1])
+        assert about == {"open": True, "icon": "about_icon.svg"}, about
+        z.run("screenshot " + os.path.join(WORK, "about.png"))
+        assert not json.loads(z.run("app about close")[-1])["open"]
+        z.run("wait 300")
+        assert not json.loads(z.run("app about")[-1])["open"]
+
     def user_config_untouched():
         after = sorted(os.listdir(user_config)) if os.path.isdir(user_config) else None
         assert after == before_user, (before_user, after)
@@ -7592,6 +7602,7 @@ def settings_checks(samples):
         check("Settings: Xcode themes import (a fixture, and Xcode's Midnight read in place)", xcode_theme_import)
         check("Settings: Xcode key bindings import into keymap.json (rebound, removed, text bindings; again replaces)", xcode_key_bindings_import)
         check("Settings: Open Default Settings and Default Key Bindings are read-only", default_files_read_only)
+        check("About zcode: in Quick Actions, it opens the About window with the app's icon", about_in_quick_actions)
     finally:
         z.quit()
     check("Settings: the user's ~/.config/zcode is never touched", user_config_untouched)
