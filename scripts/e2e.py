@@ -1499,6 +1499,77 @@ def tree_snapshot(root):
     return out
 
 
+def image_checks():
+    """Image files in a tab (a folder of PNGs and a PDF, written here): shown
+    rather than read as text, re-read when shown again after they change,
+    and one that can't be decoded says so in its tab."""
+    folder = os.path.join(WORK, "Images")
+    os.makedirs(folder)
+    # zcode opens files by their real paths (/private/var/…).
+    folder = os.path.realpath(folder)
+    banner = os.path.join(folder, "banner.png")
+    open(banner, "wb").write(png_bytes(120, 40, (255, 94, 91, 255)))
+    broken = os.path.join(folder, "broken.png")
+    open(broken, "wb").write(b"\x89PNG\r\n\x1a\nnot really")
+    # A PDF of one 72 × 36 point page (an ASCII one, offsets computed).
+    objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+               "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 36] >>"]
+    pdf, offsets = "%PDF-1.4\n", []
+    for i, body in enumerate(objects):
+        offsets.append(len(pdf))
+        pdf += f"{i + 1} 0 obj {body} endobj\n"
+    xref = len(pdf)
+    pdf += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n" + "".join(f"{o:010} 00000 n \n" for o in offsets)
+    pdf += f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+    page = os.path.join(folder, "page.pdf")
+    open(page, "w").write(pdf)
+    notes = os.path.join(folder, "notes.txt")
+    open(notes, "w").write("notes\n")
+
+    def image(z, predicate=lambda i: i["state"] != "loading", timeout=15):
+        return z.wait_for(lambda s: s["image"] and predicate(s["image"]), timeout=timeout, interval=0.2)["image"]
+
+    z = Zcode(folder)
+    try:
+        def png_opens_as_an_image():
+            z.run(f"open {banner}")
+            i = image(z)
+            assert i["state"] == {"width": 120, "height": 40}, i
+            assert i["description"].startswith("PNG · 120 × 40 pixels · "), i
+            s = z.dump()
+            assert any(p["active"] == "banner.png" for p in s["panes"]["list"]), s["panes"]
+            z.run("screenshot " + os.path.join(WORK, "image.png"))
+
+        def pdf_page_in_points():
+            z.run(f"open {page}")
+            i = image(z, lambda i: i["path"] == page and i["state"] != "loading")
+            assert i["state"] == {"width": 72, "height": 36} and "72 × 36 points" in i["description"], i
+
+        def changed_image_read_again_when_shown():
+            open(banner, "wb").write(png_bytes(30, 60, (0, 122, 255, 255)))
+            z.run(f"open {notes}", "wait 200", f"open {banner}")
+            i = image(z, lambda i: i["state"] == {"width": 30, "height": 60})
+            assert i["path"] == banner, i
+
+        def undecodable_image_says_so():
+            z.run(f"open {broken}")
+            i = image(z, lambda i: i["path"] == broken and i["state"] != "loading")
+            assert "failed" in i["state"], i
+
+        def closing_the_tab():
+            z.run(f"open {banner}", "action zcode::CloseTab", "wait 200")
+            s = z.dump()
+            assert all("banner.png" not in p["tabs"] for p in s["panes"]["list"]), s["panes"]
+
+        check("a PNG opens in an image tab with its size", png_opens_as_an_image)
+        check("a PDF shows its first page, sized in points", pdf_page_in_points)
+        check("an image changed on disk is read again when its tab is shown", changed_image_read_again_when_shown)
+        check("an image that can't be decoded says so in its tab", undecodable_image_says_so)
+        check("an image's tab closes", closing_the_tab)
+    finally:
+        z.quit()
+
+
 def asset_catalog_checks(samples):
     """The asset catalog editor on a copy of HelloClassic (group-based: the
     catalog is one file reference) whose Assets.xcassets gets the fixture
@@ -7449,6 +7520,9 @@ def main():
 
     print("Asset catalogs (copies of HelloClassic and HelloZ with tests/fixtures/xcassets):")
     asset_catalog_checks(samples)
+
+    print("Images (a folder of PNGs and a PDF):")
+    image_checks()
 
     print("SwiftUI previews (a copy of HelloZ; Xcode's commands recorded, never run):")
     preview_checks(samples)

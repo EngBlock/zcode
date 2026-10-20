@@ -37,6 +37,18 @@ pub struct Decoded {
     pub source: (u32, u32),
 }
 
+impl Decoded {
+    /// What GPUI draws: BGRA rows in one frame.
+    pub fn into_render_image(self) -> Arc<RenderImage> {
+        let mut bgra = self.rgba;
+        for pixel in bgra.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        let frame = image::Frame::new(image::RgbaImage::from_raw(self.width, self.height, bgra).expect("sized"));
+        Arc::new(RenderImage::new(vec![frame]))
+    }
+}
+
 pub struct Thumbnail {
     pub image: Arc<RenderImage>,
     /// The image's own size.
@@ -108,13 +120,8 @@ impl ThumbnailCache {
                 .background_spawn(async move {
                     let _permit = limit.acquire().await;
                     decode(&file, MAX_PIXELS).map(|d| {
-                        let bytes = d.rgba.len();
-                        let mut bgra = d.rgba;
-                        for pixel in bgra.chunks_exact_mut(4) {
-                            pixel.swap(0, 2);
-                        }
-                        let frame = image::Frame::new(image::RgbaImage::from_raw(d.width, d.height, bgra).expect("sized"));
-                        Thumbnail { image: Arc::new(RenderImage::new(vec![frame])), source: d.source, bytes }
+                        let (bytes, source) = (d.rgba.len(), d.source);
+                        Thumbnail { image: d.into_render_image(), source, bytes }
                     })
                 })
                 .await;
@@ -154,6 +161,12 @@ impl ThumbnailCache {
                 self.evicted.push(thumbnail.image.clone());
             }
         }
+    }
+
+    /// Lets windows free `image`'s texture the next time one draws (an
+    /// image of a closed tab, which can't draw it itself).
+    pub fn retire(image: Arc<RenderImage>, cx: &mut App) {
+        cx.default_global::<ThumbnailCache>().evicted.push(image);
     }
 
     /// Lets `window` free the textures of dropped thumbnails.

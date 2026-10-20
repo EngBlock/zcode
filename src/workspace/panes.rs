@@ -137,6 +137,9 @@ impl Workspace {
         if crate::xcassets::is_catalog(path) {
             return Some((self.add_asset_catalog_item(pane, path, None, window, cx)?, true));
         }
+        if super::image_view::is_image(path) {
+            return Some((self.add_image_item(pane, path, window, cx)?, true));
+        }
         if self.buffer(path).is_none() && !self.open_buffer(path, window, cx) {
             return None;
         }
@@ -184,7 +187,7 @@ impl Workspace {
         let focus = p.items[ix].focus_handle(cx);
         let settings = match &p.items[ix] {
             Item::ProjectSettings(settings) => Some(settings.clone()),
-            Item::Editor(_) | Item::Diff(_) | Item::MultiBuffer(_) | Item::Terminal(_) | Item::Organizer(_) | Item::AssetCatalog(_) => None,
+            Item::Editor(_) | Item::Diff(_) | Item::MultiBuffer(_) | Item::Terminal(_) | Item::Organizer(_) | Item::AssetCatalog(_) | Item::Image(_) => None,
         };
         self.active_pane = pane;
         self.inspected = None;
@@ -199,6 +202,9 @@ impl Workspace {
                     view.reload(window, cx);
                 }
             });
+        }
+        if let Some(Item::Image(item)) = self.pane(pane).and_then(|p| p.items.get(ix)) {
+            item.view.update(cx, |view, cx| view.reload_if_changed(cx));
         }
         focus.focus(window, cx);
         self.activated(window, cx);
@@ -397,6 +403,7 @@ impl Workspace {
                     self.organizer_subscriptions.clear();
                 }
                 Item::AssetCatalog(_) => {}
+                Item::Image(item) => item.view.update(cx, |view, cx| view.release(cx)),
             }
         }
     }

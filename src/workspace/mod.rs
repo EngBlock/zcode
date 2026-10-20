@@ -28,6 +28,7 @@ mod events;
 mod find;
 mod hierarchy;
 mod hunk_popover;
+mod image_view;
 mod inlay_hints;
 mod issues;
 mod line_anchors;
@@ -942,6 +943,7 @@ impl Workspace {
         state["profile"] = self.profile_summary(cx);
         state["archives"] = self.archives_summary(cx);
         state["asset_catalog"] = self.asset_catalog_summary(cx);
+        state["image"] = self.image_summary(cx);
         state["breakpoints"] = self.breakpoints_summary(cx);
         state["bookmarks"] = self.bookmarks_summary(cx);
         state["packages"] = self.packages_summary(cx);
