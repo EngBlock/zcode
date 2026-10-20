@@ -473,7 +473,9 @@ impl Workspace {
                         font_weight: Some(FontWeight::SEMIBOLD),
                         ..Default::default()
                     };
-                    let text = StyledText::new(m.preview.clone()).with_highlights(vec![(m.range.clone(), highlight)]);
+                    // The row is a few dozen characters wide: the match stays in it.
+                    let (preview, range) = super::find::shown_preview(m);
+                    let text = StyledText::new(preview).with_highlights(vec![(range, highlight)]);
                     let (bookmark_path, bookmark_text) = (file.path.clone(), m.preview.clone());
                     row(SharedString::from(format!("find-{file_ix}-{match_ix}")))
                         .h(px(FIND_ROW_HEIGHT))
@@ -519,20 +521,7 @@ impl Workspace {
         };
         let results = self.find.results.clone();
         let total: usize = results.iter().map(|f| f.matches.len()).sum();
-        let summary = if self.find.searching {
-            "Searching…".to_string()
-        } else if let Some(err) = &self.find.error {
-            format!("Invalid pattern: {err}")
-        } else if results.is_empty() && self.find.input.read(cx).value().is_empty() && self.find.title.is_none() {
-            String::new()
-        } else {
-            let capped = if total >= crate::search::MAX_MATCHES { "+" } else { "" };
-            format!(
-                "{}{total}{capped} results in {} files",
-                self.find.title.as_ref().map(|t| format!("{t}: ")).unwrap_or_default(),
-                results.len()
-            )
-        };
+        let summary = self.find_summary_line(cx);
 
         // Rows are laid out only where on screen: a search over a big
         // project has thousands.

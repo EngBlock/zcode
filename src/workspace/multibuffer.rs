@@ -500,8 +500,9 @@ impl Workspace {
     }
 
     /// `file`'s places as they are in the buffer: line, the bytes to
-    /// highlight in it, and the message. Find results come from the files
-    /// on disk, so in a file with unsaved changes the query runs again.
+    /// highlight in it, and the message. Find results are of the text when
+    /// the search ran, so in a file with unsaved changes (perhaps made
+    /// since) the query runs again.
     fn places_now(&self, file: &FilePlaces, text: &Rope, cx: &App) -> Vec<(u32, Range<usize>, Option<(Severity, String)>)> {
         let dirty = self.buffer(&file.path).is_some_and(|b| b.dirty);
         let query = self.find.input.read(cx).value().to_string();
@@ -974,7 +975,7 @@ fn utf16_to_byte(line: &str, column: usize) -> usize {
     line.len()
 }
 
-fn plural(n: usize, word: &str) -> String {
+pub(super) fn plural(n: usize, word: &str) -> String {
     if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
 }
 

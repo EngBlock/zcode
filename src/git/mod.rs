@@ -61,19 +61,33 @@ fn run(cmd: Command) -> Result<String> {
 }
 
 /// What went wrong, from git's output: its `fatal:` or `error:` line, with
-/// the reason a push was rejected.
+/// the reason a push was rejected, or the files a line ending in `:` lists
+/// under it (the local changes a checkout would overwrite).
 pub fn error_message(stderr: &str, stdout: &str) -> String {
-    let lines: Vec<&str> = stderr.lines().chain(stdout.lines()).map(str::trim).filter(|l| !l.is_empty()).collect();
+    let raw: Vec<&str> = stderr.lines().chain(stdout.lines()).filter(|l| !l.trim().is_empty()).collect();
+    let lines: Vec<&str> = raw.iter().map(|l| l.trim()).collect();
     let rejected = lines.iter().find(|l| l.starts_with("! [rejected]") || l.starts_with("! [remote rejected]"));
-    let main = lines
+    let at = lines
         .iter()
-        .find(|l| l.starts_with("fatal: ") || l.starts_with("error: "))
-        .or(lines.iter().find(|l| !l.starts_with("hint: ")))
-        .map(|l| l.trim_start_matches("fatal: ").trim_start_matches("error: "))
-        .unwrap_or("git failed");
+        .position(|l| l.starts_with("fatal: ") || l.starts_with("error: "))
+        .or(lines.iter().position(|l| !l.starts_with("hint: ")));
+    let main = at.map(|at| lines[at].trim_start_matches("fatal: ").trim_start_matches("error: ")).unwrap_or("git failed");
+    // git indents the files it lists with a tab.
+    let listed: Vec<&str> = match at {
+        Some(at) if main.ends_with(':') => {
+            raw[at + 1..].iter().take_while(|l| l.starts_with(['\t', ' '])).map(|l| l.trim()).collect()
+        }
+        _ => vec![],
+    };
+    const LISTED: usize = 5;
+    let main = match listed.len() {
+        0 => main.to_string(),
+        n if n <= LISTED => format!("{main} {}", listed.join(", ")),
+        n => format!("{main} {} and {} more", listed[..LISTED].join(", "), n - LISTED),
+    };
     match rejected {
         Some(rejected) => format!("{main} ({})", rejected.trim_start_matches("! ")),
-        None => main.to_string(),
+        None => main,
     }
 }
 
@@ -332,7 +346,41 @@ pub fn blob_ids(root: &Path, rels: &[String]) -> (HashMap<String, (String, Strin
             head.insert(path.to_string(), oid.to_string());
         }
     }
+    // A staged rename's HEAD version is its old path's.
+    if rels.iter().any(|rel| index.contains_key(rel) && !head.contains_key(rel)) {
+        for (new, old_id) in staged_renames(root) {
+            if rels.contains(&new) && index.contains_key(&new) && !head.contains_key(&new) {
+                head.insert(new, old_id);
+            }
+        }
+    }
     (index, head)
+}
+
+/// The index's renames of `HEAD`'s files: each new path, with the blob id
+/// of its old path in `HEAD`.
+fn staged_renames(root: &Path) -> Vec<(String, String)> {
+    let mut cmd = git(root);
+    // No pathspec: it would hide the old paths from rename detection.
+    cmd.args(["diff-index", "--cached", "-M", "-z", "HEAD"]);
+    let Ok(out) = run(cmd) else { return vec![] };
+    // ":<old mode> <new mode> <old oid> <new oid> R<score>\0<old path>\0<new path>\0",
+    // other changes with one path.
+    let mut renames = vec![];
+    let mut fields = out.split('\0');
+    while let Some(meta) = fields.next() {
+        let parts: Vec<&str> = meta.split(' ').collect();
+        let [_, _, old_id, _, change] = parts[..] else { continue };
+        // The (old) path.
+        if fields.next().is_none() {
+            break;
+        }
+        if change.starts_with('R') {
+            let Some(new) = fields.next() else { break };
+            renames.push((new.to_string(), old_id.to_string()));
+        }
+    }
+    renames
 }
 
 /// Reads blobs by id (`git cat-file --batch`); text blobs only.
@@ -718,6 +766,19 @@ mod tests {
         assert_eq!(error_message(stderr, ""), "failed to push some refs to '/tmp/origin.git' ([rejected]        main -> main (fetch first))");
         assert_eq!(error_message("fatal: not a git repository\n", ""), "not a git repository");
         assert_eq!(error_message("", "nothing to commit, working tree clean\n"), "nothing to commit, working tree clean");
+        // The files a checkout would overwrite, as git lists them.
+        let stderr = "error: Your local changes to the following files would be overwritten by checkout:\n\tSources/A.swift\n\tB.swift\n\
+                      Please commit your changes or stash them before you switch branches.\nAborting\n";
+        assert_eq!(
+            error_message(stderr, ""),
+            "Your local changes to the following files would be overwritten by checkout: Sources/A.swift, B.swift"
+        );
+        let many: String = (0..7).map(|i| format!("\tf{i}.txt\n")).collect();
+        let stderr = format!("error: The following untracked working tree files would be overwritten by checkout:\n{many}Aborting\n");
+        assert_eq!(
+            error_message(&stderr, ""),
+            "The following untracked working tree files would be overwritten by checkout: f0.txt, f1.txt, f2.txt, f3.txt, f4.txt and 2 more"
+        );
     }
 
     #[test]
@@ -783,6 +844,25 @@ mod tests {
     }
 
     #[test]
+    fn a_staged_rename_is_compared_with_its_old_path() {
+        let repo = TestRepo::new("rename");
+        repo.write("old.swift", "let a = 1\nlet b = 2\n");
+        repo.write("other.txt", "other\n");
+        repo.commit_all("first");
+        repo.git(&["mv", "old.swift", "new.swift"]);
+        repo.write("new.swift", "let a = 1\nlet b = 2\nlet c = 3\n");
+        repo.write("added.txt", "added\n");
+        repo.git(&["add", "added.txt"]);
+        let rels = vec!["new.swift".to_string(), "added.txt".to_string(), "other.txt".to_string()];
+        let bases = bases(repo.path(), &rels, &HashMap::new());
+        assert_eq!(bases[0].head.as_deref(), Some("let a = 1\nlet b = 2\n"));
+        assert_eq!(bases[0].index, bases[0].head);
+        // A new file has no HEAD version; an unchanged one is itself.
+        assert_eq!((bases[1].head.as_deref(), bases[1].index.as_deref()), (None, Some("added\n")));
+        assert_eq!(bases[2].head.as_deref(), Some("other\n"));
+    }
+
+    #[test]
     fn blame_marks_unsaved_lines_as_not_committed() {
         let repo = TestRepo::new("blame");
         repo.write("a.txt", "one\ntwo\n");
@@ -792,6 +872,21 @@ mod tests {
         assert_eq!(authors, vec!["Test Author", "Not Committed Yet", "Test Author"]);
         assert!(blame.commits[blame.lines[1] as usize].uncommitted);
         assert_eq!(blame.commits[blame.lines[0] as usize].summary, "first");
+    }
+
+    #[test]
+    fn a_switch_local_changes_block_names_them() {
+        let repo = TestRepo::new("blocked");
+        repo.write("a.txt", "one\n");
+        repo.commit_all("first");
+        repo.git(&["switch", "-q", "-c", "other"]);
+        repo.write("a.txt", "other\n");
+        repo.commit_all("other");
+        repo.git(&["switch", "-q", "main"]);
+        repo.write("a.txt", "local\n");
+        let other = Branch { name: "other".into(), remote: false, current: false, upstream: None };
+        let err = switch_branch(repo.path(), &other).unwrap_err().to_string();
+        assert!(err.ends_with("would be overwritten by checkout: a.txt"), "{err}");
     }
 
     #[test]

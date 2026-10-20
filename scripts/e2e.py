@@ -4376,6 +4376,133 @@ def git_checks(samples):
         z.wait_for(lambda s: settled(s) and not g(s)["unstaged"] and "// scratch" not in s["active"]["text"], timeout=15, interval=0.3)
         z.run("keys cmd-1")
 
+    def discard_a_staged_hunk():
+        # Saved, staged, then Discard Change: gone from the index too, or the
+        # next commit would have it.
+        line = line_of(greeter, "public let name")
+        z.run(f"open {greeter}:{line}", "keys cmd-right", "type  // staged", "keys cmd-s", "wait 300")
+        z.wait_for(lambda s: hunks(s) == [("Modified", line, "Unstaged")], timeout=10, interval=0.2)
+        z.run("git stage-hunk 0", "wait 300")
+        s = z.wait_for(lambda s: settled(s) and hunks(s) == [("Modified", line, "Staged")], timeout=15, interval=0.3)
+        assert "// staged" in git(project, "diff", "--cached")
+        bar = g(s)["hunks"]["bars"][0]
+        z.run(f"click {bar['x']} {bar['y']}", "wait 300")
+        assert g()["popover"]["staging"] == "Staged", g()["popover"]
+        z.run("git popover discard", "wait 300")
+        s = z.wait_for(lambda s: settled(s) and hunks(s) == [] and not g(s)["staged"], timeout=15, interval=0.3)
+        assert "// staged" not in s["active"]["text"]
+        assert git(project, "diff", "--cached") == "", git(project, "diff", "--cached")
+        z.run("keys cmd-s", "wait 300")
+        z.wait_for(lambda s: settled(s) and not g(s)["unstaged"] and not g(s)["staged"], timeout=15, interval=0.3)
+        assert git(project, "status", "--porcelain") == "", git(project, "status", "--porcelain")
+
+    no_newline = os.path.join(project, "Sources", "ZKit", "NoNewline.swift")
+
+    def discard_without_a_final_newline():
+        with open(no_newline, "w") as f:
+            f.write("let a = 1\nlet b = 2")
+        git(project, "add", no_newline)
+        git(project, "commit", "-q", "-m", "No final newline")
+        z.run(f"open {no_newline}:2", "wait 300")
+        z.wait_for(lambda s: g(s)["hunks"] and g(s)["hunks"]["path"] == no_newline and g(s)["hunks"]["tracked"], timeout=15, interval=0.3)
+        z.run("keys cmd-right", "keys enter", "type let c = 3", "wait 300")
+        z.wait_for(lambda s: hunks(s) == [("Added", 3, "Unstaged")], timeout=10, interval=0.2)
+        z.run("git discard-hunk 0", "wait 300")
+        s = z.wait_for(lambda s: hunks(s) == [], timeout=10, interval=0.2)
+        # The text is HEAD's again, without a final newline.
+        assert s["active"]["text"] == "let a = 1\nlet b = 2", repr(s["active"]["text"])
+
+    def renamed_file():
+        # A staged rename is compared with its old path's HEAD version, not
+        # an empty file.
+        renamed = os.path.join(project, "Sources", "ZKit", "Renamed.swift")
+        renamed_rel = "Sources/ZKit/Renamed.swift"
+        git(project, "mv", "Sources/ZKit/NoNewline.swift", renamed_rel)
+        z.run("git refresh", f"open {renamed}", "wait 300")
+        s = z.wait_for(lambda s: f"R {renamed_rel}" in g(s)["staged"] and g(s)["hunks"] and g(s)["hunks"]["path"] == renamed
+                       and g(s)["hunks"]["tracked"], timeout=15, interval=0.3)
+        z.wait_for(lambda s: hunks(s) == [], timeout=10, interval=0.3)
+        z.run("keys cmd-down", "keys enter", "type let d = 4", "wait 300")
+        z.wait_for(lambda s: hunks(s) == [("Added", 3, "Unstaged")], timeout=10, interval=0.2)
+        z.run("git discard-hunk 0", "wait 300")
+        z.wait_for(lambda s: hunks(s) == [], timeout=10, interval=0.2)
+        # The commit sheet: a rename with no changed lines.
+        z.run("keys cmd-alt-c", "wait 500", f"git commit select {renamed_rel}", "wait 300")
+        c = z.wait_for(lambda s: g(s)["commit_sheet"] and g(s)["commit_sheet"]["selected"] == renamed_rel
+                       and g(s)["commit_sheet"]["staged"] is not None, timeout=15, interval=0.3)["git"]["commit_sheet"]
+        assert f"Staged R {renamed_rel}" in c["files"] and c["staged"] == [] and c["unstaged"] == [], c
+        z.run("git commit cancel", "wait 300")
+        git(project, "commit", "-q", "-m", "Rename")
+
+    def authors_on_an_untracked_file():
+        untracked = os.path.join(project, "Sources", "ZKit", "Untracked.swift")
+        with open(untracked, "w") as f:
+            f.write("let u = 1\nlet v = 2\n")
+        z.run("git refresh", f"open {untracked}", "wait 300")
+        z.wait_for(lambda s: "? Sources/ZKit/Untracked.swift" in g(s)["unstaged"] and g(s)["hunks"]
+                   and g(s)["hunks"]["path"] == untracked and g(s)["hunks"]["tracked"], timeout=15, interval=0.3)
+        z.run("keys ctrl-shift-cmd-a", "wait 300")
+        s = z.wait_for(lambda s: g(s)["blame"]["painted_authors"], timeout=20, interval=0.3)
+        assert g(s)["blame"]["authors"] == ["Not Committed Yet"] * 2, g(s)["blame"]
+        assert g(s)["blame"]["painted_authors"][0]["author"] == "Not Committed Yet", g(s)["blame"]["painted_authors"]
+        z.run("screenshot " + os.path.join(WORK, "git-authors-untracked.png"))
+        z.run("keys ctrl-shift-cmd-a", "keys cmd-w", "wait 300")
+        os.remove(untracked)
+
+    def failed_switch_names_the_files():
+        other = os.path.realpath(os.path.join(WORK, "GitKitConflicting"))
+        git(project, "worktree", "add", "-q", "-b", "conflicting", other)
+        with open(os.path.join(other, rel), "a") as f:
+            f.write("// on the conflicting branch\n")
+        git(other, "commit", "-q", "-am", "Conflicting")
+        git(project, "worktree", "remove", other)
+        with open(greeter, "a") as f:
+            f.write("// local\n")
+        z.run("git refresh", "wait 300")
+        z.wait_for(lambda s: settled(s) and "conflicting" in g(s)["branches"] and f"M {rel}" in g(s)["unstaged"], timeout=15, interval=0.3)
+        z.run("git branch conflicting", "wait 300")
+        s = z.wait_for(lambda s: settled(s) and g(s)["last_error"], timeout=15, interval=0.3)
+        assert g(s)["last_error"].endswith(f"would be overwritten by checkout: {rel}") and g(s)["branch"] == "main", g(s)["last_error"]
+        git(project, "checkout", "--", rel)
+
+    def find(s=None):
+        return (s or z.dump())["find"]
+
+    def find_unsaved_edits_and_long_lines():
+        # Unsaved lines are searched, and results are on the editor's lines.
+        disk_line = line_of(greeter, "func greeting")
+        z.run(f"open {greeter}:1", "wait 300")
+        z.wait_for(lambda s: hunks(s) == [] and "// local" not in s["active"]["text"], timeout=15, interval=0.3)
+        z.run("type // zzqq", "keys enter", *["type // pad", "keys enter"] * 6, "wait 300")
+        s = z.dump()
+        assert not os.path.exists(greeter + ".orig") and "zzqq" not in open(greeter).read() and s["active"]["dirty"]
+        z.run("find query zzqq")
+        f = find(z.wait_for(lambda s: not find(s)["searching"] and find(s)["rows"], timeout=20, interval=0.3))
+        assert [(r["file"], r["line"]) for r in f["rows"]] == [("Greeter.swift", 1)] and f["summary"] == "1 result in 1 file", f
+        z.run("find query func greeting")
+        f = find(z.wait_for(lambda s: not find(s)["searching"] and find(s)["rows"], timeout=20, interval=0.3))
+        assert [(r["file"], r["line"]) for r in f["rows"]] == [("Greeter.swift", disk_line + 7)], (f, disk_line)
+        z.run("git discard-hunk 0", "wait 300")
+        z.wait_for(lambda s: hunks(s) == [] and "zzqq" not in s["active"]["text"], timeout=10, interval=0.2)
+        # Long lines: every row shows its match within its first characters.
+        package = os.path.join(project, "Package.swift")
+        z.run("find query e")
+        f = find(z.wait_for(lambda s: not find(s)["searching"] and find(s)["rows"], timeout=20, interval=0.3))
+        rows = [r for r in f["rows"] if r["file"] == "Package.swift" and r["line"] == line_of(package, ".executable(")]
+        assert len(rows) > 5 and all(r["match_at"] <= 11 and r["match"].lower() == "e" for r in rows), rows
+        assert any(r["shown"].startswith("…") for r in rows), rows
+        z.run("keys cmd-shift-f", "wait 200", "screenshot " + os.path.join(WORK, "find-long-lines.png"))
+
+    def find_invalid_pattern():
+        # An invalid pattern clears the last query's results.
+        z.run("find query greeting")
+        z.wait_for(lambda s: not find(s)["searching"] and s["find_results"] > 0, timeout=20, interval=0.3)
+        z.run("find regex on", "find query greeting(", "wait 200")
+        s = z.dump()
+        assert find(s)["summary"].startswith("Invalid pattern") and find(s)["rows"] == [] and s["find_results"] == 0, find(s)
+        z.run("find regex off")
+        z.wait_for(lambda s: not find(s)["searching"] and find(s)["error"] is None, timeout=20, interval=0.3)
+
     try:
         check("Git: change bars follow typing (modified, added, deleted) against HEAD, before a save", bars_follow_typing)
         check("Git: a bar's popover shows the change; Discard Change, ⌘Z; ⌃\\\\ and ⌃⇧\\\\ step through changes", popover_discard_and_undo)
@@ -4386,6 +4513,13 @@ def git_checks(samples):
         check("Git: New Branch, a commit, Push… to a new remote branch, Switch Branch back", branches_and_push)
         check("Git: Fetch Changes and Pull… (⌥⌘X) from a local origin; the open file reloads", fetch_and_pull)
         check("Git: a commit made outside zcode clears the bars; Discard Changes on a file", outside_changes)
+        check("Git: Discard Change on a staged hunk unstages it too (git diff --cached is empty)", discard_a_staged_hunk)
+        check("Git: Discard Change at the end of a file with no final newline doesn't add one", discard_without_a_final_newline)
+        check("Git: a staged rename is compared with its old path, in the gutter and the commit sheet", renamed_file)
+        check("Git: Authors (⌃⇧⌘A) on an untracked file says Not Committed Yet", authors_on_an_untracked_file)
+        check("Git: a switch blocked by local changes names the files", failed_switch_names_the_files)
+        check("Git: Find in Workspace searches unsaved edits on their lines; long rows keep the match in view", find_unsaved_edits_and_long_lines)
+        check("Git: Find in Workspace with an invalid pattern clears the last results", find_invalid_pattern)
     finally:
         z.quit()
 

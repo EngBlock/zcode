@@ -60,6 +60,15 @@ pub fn find_rows(results: &[FileMatches]) -> Vec<FindRow> {
     rows
 }
 
+/// The characters a result's row shows before its match, at most.
+const PREVIEW_LEAD: usize = 10;
+
+/// A result's line as its row shows it, and the match in it: the start
+/// elided, so the match is in a row a few dozen characters wide.
+pub fn shown_preview(m: &crate::search::LineMatch) -> (String, std::ops::Range<usize>) {
+    crate::search::elide_start(&m.preview, m.range.clone(), PREVIEW_LEAD)
+}
+
 impl Workspace {
     /// Find ▸ Find and Replace in Workspace (⌥⇧⌘F): the Find navigator
     /// with a Replace field.
@@ -84,6 +93,10 @@ impl Workspace {
         let regex = match crate::search::build_regex(&query, &self.find.options) {
             Ok(regex) => regex,
             Err(err) => {
+                // The last query's results aren't this one's.
+                self.find.set_results(vec![]);
+                self.find.searching = false;
+                self.find.title = None;
                 self.find.error = Some(err.to_string());
                 cx.notify();
                 return;
@@ -96,10 +109,11 @@ impl Workspace {
         self.find.cancel = cancel.clone();
         let root = self.project.root.clone();
         let files = self.files.clone();
+        let unsaved = self.unsaved_texts(cx);
         let started = std::time::Instant::now();
         self.find._task = Some(cx.spawn(async move |this, cx| {
             let results = cx
-                .background_spawn(async move { crate::search::search(&root, &files, &regex, &cancel) })
+                .background_spawn(async move { crate::search::search(&root, &files, &unsaved, &regex, &cancel) })
                 .await;
             this.update(cx, |this, cx| {
                 let matches = results.iter().map(|f| f.matches.len()).sum();
@@ -111,6 +125,83 @@ impl Workspace {
             .ok();
         }));
         cx.notify();
+    }
+
+    /// The control channel's Find navigator: `query <text>` searches for
+    /// it; `regex|case|word on|off` sets an option (the `.*`, `Aa` and `W`
+    /// buttons) and searches again.
+    pub fn find_command(&mut self, command: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        let (verb, arg) = command.split_once(' ').unwrap_or((command, ""));
+        let options = &mut self.find.options;
+        let option = match verb {
+            "query" => {
+                self.show_navigator_tab(super::NavigatorTab::Find, window, cx);
+                let query = arg.to_string();
+                self.find.input.update(cx, |input, cx| input.set_value(query, window, cx));
+                self.run_find(window, cx);
+                return Ok(());
+            }
+            "regex" => &mut options.regex,
+            "case" => &mut options.case_sensitive,
+            "word" => &mut options.whole_word,
+            other => return Err(format!("unknown find command {other}")),
+        };
+        *option = arg == "on";
+        self.run_find(window, cx);
+        Ok(())
+    }
+
+    /// The line under the Find navigator's query: searching, the pattern's
+    /// error, or how many results.
+    pub(super) fn find_summary_line(&self, cx: &App) -> String {
+        let results = &self.find.results;
+        let total: usize = results.iter().map(|f| f.matches.len()).sum();
+        if self.find.searching {
+            "Searching…".to_string()
+        } else if let Some(err) = &self.find.error {
+            format!("Invalid pattern: {err}")
+        } else if results.is_empty() && self.find.input.read(cx).value().is_empty() && self.find.title.is_none() {
+            String::new()
+        } else {
+            let capped = if total >= crate::search::MAX_MATCHES { "+" } else { "" };
+            format!(
+                "{}{total}{capped} {} in {}",
+                self.find.title.as_ref().map(|t| format!("{t}: ")).unwrap_or_default(),
+                if total == 1 && capped.is_empty() { "result" } else { "results" },
+                super::multibuffer::plural(results.len(), "file")
+            )
+        }
+    }
+
+    /// The control channel's view of the Find navigator: its summary line
+    /// and the first results' rows as shown (1-based lines).
+    pub(super) fn find_summary(&self, cx: &App) -> serde_json::Value {
+        let rows: Vec<serde_json::Value> = self
+            .find
+            .results
+            .iter()
+            .flat_map(|file| file.matches.iter().map(move |m| (file, m)))
+            .take(50)
+            .map(|(file, m)| {
+                let (shown, range) = shown_preview(m);
+                serde_json::json!({
+                    "file": file.path.file_name().map(|n| n.to_string_lossy().into_owned()),
+                    "line": m.line + 1,
+                    // Where the match starts in the row, in characters.
+                    "match_at": shown[..range.start].chars().count(),
+                    "match": &shown[range],
+                    "shown": shown,
+                })
+            })
+            .collect();
+        serde_json::json!({ "summary": self.find_summary_line(cx), "searching": self.find.searching, "error": self.find.error, "rows": rows })
+    }
+
+    /// The text of every buffer with unsaved edits, by path: what Find in
+    /// Workspace searches instead of their files, so it finds what the
+    /// editor shows, on the lines it shows it.
+    pub(super) fn unsaved_texts(&self, cx: &App) -> std::collections::HashMap<std::path::PathBuf, String> {
+        self.buffers.iter().filter(|b| b.dirty).map(|b| (b.path.clone(), b.editor.read(cx).text().to_string())).collect()
     }
 }
 
