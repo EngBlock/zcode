@@ -320,20 +320,15 @@ impl Workspace {
     ) {
         self.with_active_editor(window, cx, |state, _, _, cx| {
             let text = state.text().clone();
-            let selection = state.selected_range();
-            if selection.is_empty() {
-                if let Some(word) = text.word_range(selection.start) {
+            let newest = state.newest_selected_range();
+            if newest.is_empty() {
+                if let Some(word) = text.word_range(newest.start) {
                     state.set_selected_range(word, cx);
                 }
                 return;
             }
-            let needle = text.slice(selection.clone()).to_string();
-            let haystack = text.to_string();
-            let found = haystack[selection.end..]
-                .find(&needle)
-                .map(|i| i + selection.end)
-                .or_else(|| haystack[..selection.start].find(&needle));
-            if let Some(start) = found {
+            let needle = text.slice(newest.clone()).to_string();
+            if let Some(start) = next_occurrence(&text.to_string(), &needle, newest.end, &state.selected_ranges()) {
                 state.add_selection(start..start + needle.len(), cx);
             }
         });
@@ -787,6 +782,40 @@ fn locations_to_matches(locations: Vec<lsp_types::Location>) -> Vec<FileMatches>
             FileMatches { path, matches }
         })
         .collect()
+}
+
+/// Where Select Next Occurrence adds a selection: the first occurrence of
+/// `needle` at or after `after` (the end of the newest selection), wrapping
+/// to the top, that no selection in `selected` overlaps yet.
+fn next_occurrence(haystack: &str, needle: &str, after: usize, selected: &[Range<usize>]) -> Option<usize> {
+    let free = |start: usize| !selected.iter().any(|r| r.start < start + needle.len() && start < r.end);
+    let (before, rest): (Vec<usize>, Vec<usize>) =
+        haystack.match_indices(needle).map(|(start, _)| start).partition(|&start| start < after);
+    rest.into_iter().chain(before).find(|&start| free(start))
+}
+
+#[cfg(test)]
+mod occurrence_tests {
+    use super::next_occurrence;
+
+    #[test]
+    fn each_press_adds_the_next_occurrence_after_the_newest_and_wraps() {
+        let text = "foo\nfoo\nfoo\nfoo\n";
+        let mut selected = vec![0..3];
+        let mut newest = 0..3;
+        for expected in [4, 8, 12] {
+            let start = next_occurrence(text, "foo", newest.end, &selected).unwrap();
+            assert_eq!(start, expected);
+            newest = start..start + 3;
+            selected.push(newest.clone());
+        }
+        assert_eq!(next_occurrence(text, "foo", newest.end, &selected), None, "all four are selected");
+
+        // Starting from the third, it wraps to the first two.
+        let selected = vec![8..11];
+        assert_eq!(next_occurrence(text, "foo", 11, &selected), Some(12));
+        assert_eq!(next_occurrence(text, "foo", 15, &[8..11, 12..15]), Some(0));
+    }
 }
 
 #[cfg(test)]
