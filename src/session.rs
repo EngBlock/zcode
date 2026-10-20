@@ -89,6 +89,19 @@ pub struct PaneState {
     /// Terminal tabs among the files.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub terminals: Vec<SavedTerminal>,
+    /// Files' live previews among the files.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub previews: Vec<SavedPreview>,
+}
+
+/// A preview tab (`workspace/rendered_view.rs`): where it was among the
+/// pane's tabs and the file it showed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SavedPreview {
+    pub position: usize,
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub active: bool,
 }
 
 /// A terminal tab: where it was among the pane's tabs and the folder its

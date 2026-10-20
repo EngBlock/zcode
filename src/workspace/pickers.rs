@@ -269,12 +269,14 @@ pub struct QuickActionsDelegate {
 }
 
 impl QuickActionsDelegate {
-    pub fn new(window: &Window) -> Self {
+    /// Every command but separators and those of `hidden` (action names).
+    pub fn new(hidden: &[&str], window: &Window) -> Self {
         let commands: Vec<_> = crate::actions::commands()
             .into_iter()
             .filter(|c| c.name != "-")
-            .map(|c| {
-                let action = (c.action)();
+            .map(|c| (c.menu, c.name, (c.action)()))
+            .filter(|(_, _, action)| !hidden.contains(&action.name()))
+            .map(|(menu, name, action)| {
                 let keys = window
                     .highest_precedence_binding_for_action(action.as_ref())
                     .map(|b| {
@@ -284,7 +286,7 @@ impl QuickActionsDelegate {
                             .collect::<Vec<_>>()
                             .join(" ")
                     });
-                (c.menu.to_string(), c.name.to_string(), action, keys)
+                (menu.to_string(), name.to_string(), action, keys)
             })
             .collect();
         let labels = commands

@@ -51,6 +51,7 @@ mod profile;
 mod project_files;
 mod project_settings;
 mod remote_sheet;
+mod rendered_view;
 mod semantic_tokens;
 mod settings;
 mod source_control;
@@ -658,10 +659,17 @@ impl Workspace {
         // Tabs reopen at the new path, in the panes they were in.
         let focused = self.active_pane;
         let mut reopen = vec![];
+        let mut previews = vec![];
+        let moved_to = |file: &Path| {
+            let rel = file.strip_prefix(&path).unwrap_or(Path::new(""));
+            if rel.as_os_str().is_empty() { target.clone() } else { target.join(rel) }
+        };
         for pane in &self.panes {
             for item in pane.items.iter().filter_map(Item::editor).filter(|item| item.path.starts_with(&path)) {
-                let rel = item.path.strip_prefix(&path).unwrap_or(Path::new(""));
-                reopen.push((pane.id, if rel.as_os_str().is_empty() { target.clone() } else { target.join(rel) }));
+                reopen.push((pane.id, moved_to(&item.path)));
+            }
+            for file in pane.items.iter().filter_map(Item::rendered_path).filter(|file| file.starts_with(&path)) {
+                previews.push((pane.id, moved_to(file)));
             }
         }
         let moved: Vec<PathBuf> = self.buffers.iter().map(|b| b.path.clone()).filter(|p| p.starts_with(&path)).collect();
@@ -670,6 +678,9 @@ impl Workspace {
         }
         for (pane, new_path) in reopen {
             self.open_file_in(pane, new_path, None, false, window, cx);
+        }
+        for (pane, new_path) in previews {
+            self.add_rendered_item(pane, &new_path, window, cx);
         }
         self.focus_pane(focused, window, cx);
         self.rescan(cx);
@@ -944,6 +955,7 @@ impl Workspace {
         state["archives"] = self.archives_summary(cx);
         state["asset_catalog"] = self.asset_catalog_summary(cx);
         state["image"] = self.image_summary(cx);
+        state["rendered"] = self.rendered_summary(cx);
         state["breakpoints"] = self.breakpoints_summary(cx);
         state["bookmarks"] = self.bookmarks_summary(cx);
         state["packages"] = self.packages_summary(cx);

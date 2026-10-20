@@ -62,6 +62,9 @@ pub struct Buffer {
     pub(super) tokens: super::semantic_tokens::BufferTokens,
     /// The SwiftUI previews it declares.
     pub(super) previews: super::previews::BufferPreviews,
+    /// Shows an edit in the file's live previews (`rendered_view.rs`) once
+    /// typing pauses.
+    pub(super) rendered_refresh: Option<Task<()>>,
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
@@ -93,7 +96,13 @@ impl Workspace {
         match self.pane(self.active_pane)?.active_item()? {
             Item::Editor(item) => item.shown_plist().is_none().then(|| item.editor.clone()),
             Item::MultiBuffer(item) => Some(item.host.clone()),
-            Item::Diff(_) | Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) | Item::Image(_) => None,
+            Item::Diff(_)
+            | Item::Terminal(_)
+            | Item::ProjectSettings(_)
+            | Item::Organizer(_)
+            | Item::AssetCatalog(_)
+            | Item::Image(_)
+            | Item::Rendered(_) => None,
         }
     }
 
@@ -271,6 +280,7 @@ impl Workspace {
             git: Default::default(),
             tokens: Default::default(),
             previews: Default::default(),
+            rendered_refresh: None,
             _subscriptions: vec![subscription],
         });
         self.follow_open_files();
@@ -299,8 +309,8 @@ impl Workspace {
     }
 
     /// What the workspace does after each edit of a buffer, whichever pane
-    /// made it: dirty state, the language server's copy, tests, and the
-    /// lines breakpoints and bookmarks are on.
+    /// made it: dirty state, the language server's copy, tests, the lines
+    /// breakpoints and bookmarks are on, and its live previews.
     fn follow_buffer_changes(&self, editor: &Entity<EditorState>, path: PathBuf, cx: &mut Context<Self>) -> Subscription {
         cx.subscribe(editor, move |this, _, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
@@ -329,6 +339,7 @@ impl Workspace {
                 this.semantic_tokens_edited(&path, cx);
                 this.inlay_hints_edited(&path, cx);
                 this.predictions_edited(&path, cx);
+                this.rendered_edited(&path, cx);
             }
         })
     }
@@ -398,11 +409,14 @@ impl Workspace {
             // Inlay hints are asked for the rows each view shows.
             cx.subscribe(&editor, |this, editor, event: &zcode_editor::ViewportChanged, cx| {
                 this.inlay_hints_viewport_changed(&editor, &event.rows, cx);
+                // A Markdown preview beside it scrolls with it.
+                this.rendered_follow_editor(&editor, cx);
             }),
             cx.observe(&editor, |this, editor, cx| {
                 // Inline blame follows the focused editor's cursor.
                 this.refresh_inline_blame(cx);
                 this.predictions_editor_changed(&editor, cx);
+                this.rendered_follow_editor(&editor, cx);
                 cx.notify();
             }),
             // Clicking into a pane, or tabbing into it, focuses the pane.
@@ -427,8 +441,8 @@ impl Workspace {
         Some(EditorItem { path: path.to_path_buf(), editor, plist, exec_mark: None, _subscriptions: subscriptions })
     }
 
-    /// After a tab closed: the buffer closes with its last view, or hands
-    /// its events to a view still open.
+    /// After a tab closed: the buffer closes with its last view (unless a
+    /// preview keeps it), or hands its events to a view still open.
     pub(super) fn view_closed(&mut self, path: &Path, view: EntityId, cx: &mut Context<Self>) {
         self.inlay_hints_view_closed(view);
         let pane_view = self.views_of(path).first().map(|item| item.editor.clone());
@@ -438,6 +452,13 @@ impl Workspace {
             .or_else(|| self.multibuffer_views_of(path, cx).into_iter().next());
         let Some(ix) = self.buffers.iter().position(|b| b.path == path) else { return };
         match remaining {
+            // A preview keeps it, its editor headless: a tab showing the
+            // file again makes a view of its own.
+            None if !self.rendered_views_of(path).is_empty() => {
+                let buffer = &mut self.buffers[ix];
+                buffer.headless = true;
+                buffer.editor.update(cx, |state, _| state.release_layout());
+            }
             None => {
                 let buffer = self.buffers.remove(ix);
                 self.lsp.update(cx, |lsp, cx| lsp.close_document(&buffer.path, cx));
@@ -504,8 +525,10 @@ impl Workspace {
         // keep their lines.
         self.anchor_breakpoints(path, true, cx);
         self.anchor_bookmarks(path, true, cx);
-        // A reload isn't an edit event: the change bars and blame follow here.
+        // A reload isn't an edit event: the change bars, blame and previews
+        // follow here.
         self.buffer_edited_for_git(path, cx);
+        self.rendered_edited(path, cx);
         self.file_changed_on_disk(cx);
     }
 

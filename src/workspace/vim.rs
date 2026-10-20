@@ -62,30 +62,14 @@ impl Workspace {
         self.panes
             .iter()
             .flat_map(|pane| pane.items.iter())
-            .flat_map(|item| match item {
-                Item::Editor(item) => vec![item.editor.clone()],
-                Item::MultiBuffer(item) => vec![item.host.clone()],
-                Item::Diff(diff) => {
-                    let diff = diff.view.read(cx);
-                    vec![diff.current.clone(), diff.base.clone()]
-                }
-                Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) | Item::Image(_) => vec![],
-            })
+            .flat_map(|item| item.editors(cx))
             .collect()
     }
 
     /// The tab an editor belongs to.
     fn tab_of_editor(&self, editor: EntityId, cx: &App) -> Option<(PaneId, usize)> {
         self.panes.iter().find_map(|pane| {
-            let ix = pane.items.iter().position(|item| match item {
-                Item::Editor(item) => item.editor.entity_id() == editor,
-                Item::MultiBuffer(item) => item.host.entity_id() == editor,
-                Item::Diff(diff) => {
-                    let diff = diff.view.read(cx);
-                    diff.current.entity_id() == editor || diff.base.entity_id() == editor
-                }
-                Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) | Item::Image(_) => false,
-            })?;
+            let ix = pane.items.iter().position(|item| item.editors(cx).iter().any(|e| e.entity_id() == editor))?;
             Some((pane.id, ix))
         })
     }
@@ -100,7 +84,7 @@ impl Workspace {
                 let base_focused = diff.base.read(cx).focus_handle(cx).is_focused(window);
                 if base_focused { diff.base.clone() } else { diff.current.clone() }
             }
-            Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) | Item::Image(_) => return None,
+            Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) | Item::Image(_) | Item::Rendered(_) => return None,
         };
         editor.read(cx).vim_status()
     }

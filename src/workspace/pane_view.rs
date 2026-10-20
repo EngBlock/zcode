@@ -103,6 +103,10 @@ impl Workspace {
             Some(Item::Organizer(organizer)) => div().flex_1().min_h_0().child(organizer.clone()).into_any_element(),
             Some(Item::AssetCatalog(item)) => div().flex_1().min_h_0().child(item.view.clone()).into_any_element(),
             Some(Item::Image(item)) => div().flex_1().min_h_0().child(item.view.clone()).into_any_element(),
+            Some(Item::Rendered(item)) => {
+                self.rendered_font_size(&item.view, cx);
+                div().flex_1().min_h_0().child(item.view.element()).into_any_element()
+            }
             Some(Item::Diff(diff)) => {
                 diff.view.update(cx, |view, cx| view.set_font_size(self.font_size, cx));
                 div().flex_1().min_h_0().child(diff.view.clone()).into_any_element()
@@ -218,6 +222,13 @@ impl Workspace {
                     SharedString::from(format!("tab-image-{}", item.view.entity_id())),
                     Icon::new(IconName::FileImage).small().text_color(theme.muted_foreground),
                     super::pane::file_title(&item.path),
+                    false,
+                    false,
+                ),
+                Item::Rendered(item) => (
+                    SharedString::from(format!("tab-preview-{}", item.view.entity_id())),
+                    Icon::new(IconName::Eye).small().text_color(theme.muted_foreground),
+                    item.title(),
                     false,
                     false,
                 ),

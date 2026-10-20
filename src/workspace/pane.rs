@@ -2,7 +2,7 @@
 //! its property list editor), a file's comparison with `HEAD` (Code
 //! Review), a multibuffer (excerpts of many files: find results, issues,
 //! references, a rename), a terminal, the project settings, the
-//! Organizer, an asset catalog or an image; the
+//! Organizer, an asset catalog, an image or a file's live preview; the
 //! workspace keeps its panes in a split tree (`pane_group.rs`) and one of
 //! them focused.
 //!
@@ -20,6 +20,7 @@ use crate::terminal::TerminalView;
 use super::multibuffer::MultiBufferView;
 use super::asset_catalog::AssetCatalogView;
 use super::image_view::ImageView;
+use super::rendered_view::RenderedView;
 use super::organizer::Organizer;
 use super::{PlistEditor, ProjectSettings};
 
@@ -104,6 +105,8 @@ pub enum Item {
     AssetCatalog(AssetCatalogItem),
     /// An image file (`image_view.rs`).
     Image(ImageItem),
+    /// A Markdown or SVG file's live preview (`rendered_view.rs`).
+    Rendered(RenderedItem),
 }
 
 /// An asset catalog in a tab.
@@ -121,16 +124,61 @@ pub struct ImageItem {
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
+/// A file's preview in a tab: not the file's tab (`Item::path` is `None`),
+/// though it keeps the file's buffer open.
+pub struct RenderedItem {
+    /// The previewed file.
+    pub path: PathBuf,
+    pub view: RenderedView,
+    pub(super) _subscriptions: Vec<Subscription>,
+}
+
+impl RenderedItem {
+    pub fn title(&self) -> String {
+        format!("{} (Preview)", file_title(&self.path))
+    }
+}
+
 impl Item {
     pub fn editor(&self) -> Option<&EditorItem> {
         match self {
             Item::Editor(item) => Some(item),
-            Item::Diff(_) | Item::MultiBuffer(_) | Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) | Item::Image(_) => None,
+            Item::Diff(_)
+            | Item::MultiBuffer(_)
+            | Item::Terminal(_)
+            | Item::ProjectSettings(_)
+            | Item::Organizer(_)
+            | Item::AssetCatalog(_)
+            | Item::Image(_)
+            | Item::Rendered(_) => None,
+        }
+    }
+
+    /// The text editors the tab shows: a file's, a multibuffer's, both
+    /// sides of a comparison.
+    pub fn editors(&self, cx: &App) -> Vec<Entity<EditorState>> {
+        match self {
+            Item::Editor(item) => vec![item.editor.clone()],
+            Item::MultiBuffer(item) => vec![item.host.clone()],
+            Item::Diff(diff) => {
+                let diff = diff.view.read(cx);
+                vec![diff.current.clone(), diff.base.clone()]
+            }
+            Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) | Item::Image(_) | Item::Rendered(_) => vec![],
+        }
+    }
+
+    /// The file a preview shows.
+    pub fn rendered_path(&self) -> Option<&Path> {
+        match self {
+            Item::Rendered(item) => Some(&item.path),
+            _ => None,
         }
     }
 
     /// The file a file tab shows (not a comparison's: that tab isn't the
-    /// file's), the asset catalog's folder, or the image's file.
+    /// file's, nor is a preview's), the asset catalog's folder, or the
+    /// image's file.
     pub fn path(&self) -> Option<&Path> {
         match self {
             Item::AssetCatalog(item) => Some(&item.path),
@@ -144,7 +192,13 @@ impl Item {
         match self {
             Item::Editor(item) => Some(&item.path),
             Item::Diff(diff) => Some(&diff.path),
-            Item::MultiBuffer(_) | Item::Terminal(_) | Item::ProjectSettings(_) | Item::Organizer(_) | Item::AssetCatalog(_) | Item::Image(_) => None,
+            Item::MultiBuffer(_)
+            | Item::Terminal(_)
+            | Item::ProjectSettings(_)
+            | Item::Organizer(_)
+            | Item::AssetCatalog(_)
+            | Item::Image(_)
+            | Item::Rendered(_) => None,
         }
     }
 
@@ -159,6 +213,7 @@ impl Item {
             Item::Organizer(organizer) => organizer.entity_id(),
             Item::AssetCatalog(item) => item.view.entity_id(),
             Item::Image(item) => item.view.entity_id(),
+            Item::Rendered(item) => item.view.entity_id(),
         }
     }
 
@@ -172,6 +227,7 @@ impl Item {
             Item::Organizer(_) => "Organizer".into(),
             Item::AssetCatalog(item) => file_title(&item.path),
             Item::Image(item) => file_title(&item.path),
+            Item::Rendered(item) => item.title(),
         }
     }
 
@@ -189,6 +245,7 @@ impl Item {
             Item::Organizer(organizer) => organizer.read(cx).focus_handle(cx),
             Item::AssetCatalog(item) => item.view.read(cx).focus_handle(cx),
             Item::Image(item) => item.view.read(cx).focus_handle(cx),
+            Item::Rendered(item) => item.view.focus_handle(cx),
         }
     }
 }
