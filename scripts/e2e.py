@@ -1489,6 +1489,44 @@ def png_bytes(w, h, rgba):
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
+def color_boxes(png, rgb, tolerance=12):
+    """The boxes of `rgb` in a screenshot, in pixels: (x, y, width, height)
+    for each run of columns in each band of rows that has the color. Read
+    through sips as a BMP (no PNG decoder needed)."""
+    import struct
+    bmp = png + ".bmp"
+    subprocess.run(["sips", "-s", "format", "bmp", png, "--out", bmp], check=True, capture_output=True)
+    data = open(bmp, "rb").read()
+    offset, = struct.unpack_from("<I", data, 10)
+    width, height = struct.unpack_from("<ii", data, 18)
+    bpp, = struct.unpack_from("<H", data, 28)
+    step, row_size = bpp // 8, ((bpp * width + 31) // 32) * 4
+    r0, g0, b0 = rgb
+
+    def hits(y):
+        row = (height - 1 - y) if height > 0 else y
+        base = offset + row * row_size
+        line = data[base:base + width * step]
+        return [x for x in range(width) if abs(line[x * step + 2] - r0) <= tolerance
+                and abs(line[x * step + 1] - g0) <= tolerance and abs(line[x * step] - b0) <= tolerance]
+
+    def runs(values):
+        out = []
+        for v in values:
+            if out and v - out[-1][1] <= 1:
+                out[-1][1] = v
+            else:
+                out.append([v, v])
+        return out
+
+    rows = {y: hits(y) for y in range(abs(height))}
+    boxes = []
+    for top, bottom in runs([y for y, xs in rows.items() if xs]):
+        columns = sorted({x for y in range(top, bottom + 1) for x in rows[y]})
+        boxes.extend((left, top, right - left + 1, bottom - top + 1) for left, right in runs(columns))
+    return boxes
+
+
 def tree_snapshot(root):
     """Every file under `root` with its bytes."""
     out = {}
@@ -1640,6 +1678,37 @@ def rendered_checks():
             assert r["scroll_top"]["item"] == 0, r["scroll_top"]
             z.run("wait 500", "screenshot " + os.path.join(WORK, "preview-markdown.png"))
 
+        def markdown_images_side_by_side_and_missing():
+            # Images on one line (with spaces between) at their own size, as
+            # one alone is, not at the text's height; images that can't be drawn
+            # show their alt text; a link to a file that isn't there says so.
+            gallery = os.path.join(folder, "Gallery.md")
+            open(os.path.join(folder, "img", "empty.png"), "wb").close()
+            open(os.path.join(folder, "img", "bad.png"), "w").write("not a PNG")
+            open(gallery, "w").write("# Gallery\n\n![a green dot](img/dot.png)\n\n![one](img/dot.png) ![two](img/dot.png)\n\n"
+                                     "![not there](img/none.png)\n\n![](img/empty.png)\n\n![corrupt](img/bad.png)\n")
+            z.run(f"open {gallery}", "action zcode::OpenPreviewToTheSide")
+            try:
+                r = preview(z, "markdown", lambda r: r["path"] == gallery and r["shown"] and r["items"] == 6)
+                assert [i["exists"] for i in r["images"]] == [True, False, True, True], r["images"]
+                shot = os.path.join(WORK, "preview-gallery.png")
+                z.run("wait 800", "screenshot " + shot)
+                boxes = color_boxes(shot, (52, 199, 89))
+                assert len(boxes) == 3, boxes
+                (_, _, w, h), row = boxes[0], boxes[1:]
+                assert all(abs(bw - w) <= 2 and abs(bh - h) <= 2 for _, _, bw, bh in row), boxes
+                assert row[0][1] == row[1][1] and row[0][0] + w < row[1][0], boxes
+                # preview-link follows a link as a click in the first Markdown preview does.
+                assert json.loads(z.run("preview-link nofile.md")[-1]) == {"followed": "missing"}
+                assert json.loads(z.run("preview-link docs")[-1]) == {"followed": "folder"}
+            finally:
+                panes = z.dump()["panes"]["list"]
+                for n, p in enumerate(panes):
+                    if "Gallery.md (Preview)" in p["tabs"]:
+                        z.run(f"pane close-tab {n} {p['tabs'].index('Gallery.md (Preview)')}")
+                z.run(f"open {gallery}", "action zcode::CloseTab", "wait 300")
+            assert not any(r["path"] == gallery for r in previews(z.dump())), previews(z.dump())
+
         def typing_rerenders_the_markdown():
             before = preview(z, "markdown")["items"]
             z.run(f"open {readme}:1", "type Typed first.", "keys enter enter")
@@ -1698,6 +1767,7 @@ def rendered_checks():
         check("live preview: typing in the SVG draws it again", typing_redraws_the_svg)
         check("live preview: an unreadable SVG edit keeps the last drawing and says why", unreadable_svg_keeps_its_last_drawing)
         check("live preview: a Markdown preview finds its relative image", markdown_preview_with_its_image)
+        check("live preview: Markdown images on one line are drawn at their own size, as one alone is; a link to a missing file or a folder says so", markdown_images_side_by_side_and_missing)
         check("live preview: typing in the Markdown renders it again", typing_rerenders_the_markdown)
         check("live preview: scrolling the editor scrolls the Markdown preview", scrolling_the_editor_scrolls_the_preview)
         check("live preview: opening the file shows its editor, not the preview", opening_the_file_shows_its_editor)

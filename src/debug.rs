@@ -32,6 +32,7 @@
 //!   console <command>          run a command at the LLDB console's prompt
 //!   bookmark <command>         a Bookmarks navigator command (see `Workspace::bookmark_command`)
 //!   pane <command>             editor panes: open-next <path>[:line] (⌥-click), focus <n>, tab / close-tab <n> <i>
+//!   preview-link <url>         follow a link as a click in the first Markdown preview does: {"followed": "opened"|"missing"|"folder"|"url"|"fragment"}
 //!                              (see `Workspace::pane_command`)
 //!   package <field> [<value>]  Add Package Dependencies: `open [query]`, `local <path>` (after Add
 //!                              Local…'s panel), or a field of the open sheet (see `AddPackageDialog::set_field`)
@@ -569,6 +570,12 @@ fn run_command(
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.bookmark_command(arg, window, cx)))
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
+        }
+        "preview-link" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| crate::workspace::preview_link(&workspace, arg, window, cx))
+                .map_err(|e| e.to_string())?
         }
         "pane" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;

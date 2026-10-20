@@ -19,7 +19,7 @@ use crate::text::text_view::{LinkClickHandlerFn, handle_link_click};
 use super::{
     inline::{Inline, InlineHighlight, InlineState, text_runs, text_size_ranges},
     inline_object::{InlineObject, MeasuredInlineObject},
-    node::LinkMark,
+    node::{ImagePlaceholder, LinkMark},
     range_highlight::RevealAt,
 };
 
@@ -59,6 +59,8 @@ pub(super) enum InlineFlowItem {
     },
     Image {
         source: ImageSource,
+        /// zcode patch: drawn instead when the image can't be.
+        placeholder: ImagePlaceholder,
         link: Option<LinkMark>,
         title: String,
         width: Option<DefiniteLength>,
@@ -215,6 +217,7 @@ enum MeasureItem {
     },
     Image {
         source: ImageSource,
+        placeholder: ImagePlaceholder,
         width: Option<DefiniteLength>,
         height: Option<DefiniteLength>,
     },
@@ -257,13 +260,16 @@ impl InlineFlow {
     fn image_element(
         ix: usize,
         source: &ImageSource,
+        placeholder: &ImagePlaceholder,
         link: &Option<LinkMark>,
         _title: &str,
         size: Size<Pixels>,
         link_click_handler: Option<Arc<LinkClickHandlerFn>>,
     ) -> AnyElement {
+        let placeholder = placeholder.clone(); // zcode patch
         img(source.clone())
             .id(ix)
+            .with_fallback(move || placeholder.element())
             .object_fit(ObjectFit::Contain)
             .max_w(relative(1.))
             .w(size.width)
@@ -339,19 +345,23 @@ impl Element for InlineFlow {
             rem_size: window.rem_size(),
             line_height: window.line_height(),
         };
+        let natural = images_only(&measure_items); // zcode patch
         let image_sizes = measure_items
             .iter()
             .enumerate()
             .map(|(ix, item)| match item {
                 MeasureItem::Image {
                     source,
+                    placeholder,
                     width,
                     height,
                 } => Some(measure_image_size(
                     ix,
                     source,
+                    placeholder,
                     *width,
                     *height,
+                    natural,
                     typography.line_height,
                     typography.rem_size,
                     window,
@@ -391,13 +401,14 @@ impl Element for InlineFlow {
                 }
                 let state = &mut *state;
                 let key = state.key.as_ref().expect("set by request_layout");
+                let image_sizes = fit_images(&key.image_sizes, wrap_width); // zcode patch
                 let layout = window.with_rem_size(Some(typography.rem_size), |window| {
                     window.with_text_style(
                         Some(typography.text_style.subtract(&Default::default())),
                         |window| {
                             layout_measured_flow(
                                 &key.items,
-                                &key.image_sizes,
+                                &image_sizes,
                                 &objects,
                                 &typography.text_style,
                                 wrap_width,
@@ -615,6 +626,7 @@ impl Element for InlineFlow {
                 } => {
                     let InlineFlowItem::Image {
                         source,
+                        placeholder,
                         link,
                         title,
                         ..
@@ -626,6 +638,7 @@ impl Element for InlineFlow {
                     let mut element = Self::image_element(
                         elements.len(),
                         source,
+                        placeholder,
                         link,
                         title.as_str(),
                         fragment_size,
@@ -712,11 +725,13 @@ impl From<&InlineFlowItem> for MeasureItem {
             },
             InlineFlowItem::Image {
                 source,
+                placeholder,
                 width,
                 height,
                 ..
             } => MeasureItem::Image {
                 source: source.clone(),
+                placeholder: placeholder.clone(),
                 width: *width,
                 height: *height,
             },
@@ -770,19 +785,23 @@ pub(super) fn intrinsic_width(
     let items = items.iter().map(MeasureItem::from).collect::<Vec<_>>();
     let line_height = window.line_height();
     let rem_size = window.rem_size();
+    let natural = images_only(&items); // zcode patch
     let images = items
         .iter()
         .enumerate()
         .map(|(ix, item)| match item {
             MeasureItem::Image {
                 source,
+                placeholder,
                 width,
                 height,
             } => Some(measure_image_size(
                 ix,
                 source,
+                placeholder,
                 *width,
                 *height,
+                natural,
                 line_height,
                 rem_size,
                 window,
@@ -1507,35 +1526,79 @@ fn push_text_wrap_fragments<'a>(
     }
 }
 
+/// zcode patch: whether a flow is only images (and the spaces between them): a row of
+/// pictures, drawn at their own size, rather than images in a line of text,
+/// drawn at the text's height.
+fn images_only(items: &[MeasureItem]) -> bool {
+    items.iter().any(|item| matches!(item, MeasureItem::Image { .. }))
+        && items.iter().all(|item| match item {
+            MeasureItem::Image { .. } => true,
+            MeasureItem::Text { text, .. } => text.trim().is_empty(),
+            MeasureItem::Object { .. } => false,
+        })
+}
+
+/// zcode patch: images no wider than the flow, keeping their shape.
+fn fit_images(sizes: &[Option<Size<Pixels>>], wrap_width: Option<Pixels>) -> Vec<Option<Size<Pixels>>> {
+    sizes
+        .iter()
+        .map(|image| {
+            image.map(|image| match wrap_width {
+                Some(max) if image.width > max && max > Pixels::ZERO => {
+                    size(max, image.height * (max / image.width))
+                }
+                _ => image,
+            })
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn measure_image_size(
     ix: usize,
     source: &ImageSource,
+    placeholder: &ImagePlaceholder,
     width: Option<DefiniteLength>,
     height: Option<DefiniteLength>,
+    natural: bool,
     line_height: Pixels,
     rem_size: Pixels,
     window: &mut Window,
     cx: &mut App,
 ) -> Size<Pixels> {
-    let intrinsic_size = if width.is_some() && height.is_some() {
-        None
-    } else {
-        intrinsic_image_size(ix, source, width, height, window, cx)
-    };
-    image_size(width, height, intrinsic_size, line_height, rem_size)
+    let intrinsic = intrinsic_image_size(ix, source, placeholder, width, height, window, cx);
+    match intrinsic {
+        // zcode patch: what can't be drawn shows its placeholder at the
+        // placeholder's size; a row of images, the images' own size.
+        Some((placeholder_size, true)) => placeholder_size,
+        Some((intrinsic, false)) if natural && width.is_none() && height.is_none() => intrinsic,
+        _ if width.is_some() && height.is_some() => image_size(width, height, None, line_height, rem_size),
+        intrinsic => image_size(width, height, intrinsic.map(|(size, _)| size), line_height, rem_size),
+    }
 }
 
+/// The image's size as GPUI lays it out, and (zcode patch) whether that's its
+/// placeholder's (it couldn't be loaded); `None` while it loads.
 fn intrinsic_image_size(
     ix: usize,
     source: &ImageSource,
+    placeholder: &ImagePlaceholder,
     width: Option<DefiniteLength>,
     height: Option<DefiniteLength>,
     window: &mut Window,
     cx: &mut App,
-) -> Option<Size<Pixels>> {
+) -> Option<(Size<Pixels>, bool)> {
+    let failed = Rc::new(std::cell::Cell::new(false));
+    let placeholder = placeholder.clone();
     let mut element = img(source.clone())
         .id(ix)
+        .with_fallback({
+            let failed = failed.clone();
+            move || {
+                failed.set(true);
+                placeholder.element()
+            }
+        })
         .object_fit(ObjectFit::Contain)
         .max_w(relative(1.))
         .when_some(width, |this, width| this.w(width))
@@ -1546,7 +1609,7 @@ fn intrinsic_image_size(
     if measured_size.width <= Pixels::ZERO || measured_size.height <= Pixels::ZERO {
         None
     } else {
-        Some(measured_size)
+        Some((measured_size, failed.get()))
     }
 }
 
@@ -1651,6 +1714,26 @@ pub(super) fn slice_ranges<T, U>(
 mod tests {
     use super::*;
     use gpui::SharedUri;
+
+    /// A row of images (spaces between them) is drawn at the images' own
+    /// size, no wider than the flow; an image in text isn't.
+    #[test]
+    fn rows_of_images_keep_their_size_within_the_width() {
+        let image = || MeasureItem::Image {
+            source: SharedUri::from("https://example.com/a.png").into(),
+            placeholder: ImagePlaceholder::for_test(),
+            width: None,
+            height: None,
+        };
+        let text = |text: &str| MeasureItem::Text { text: text.to_string().into(), links: vec![], highlights: vec![] };
+        assert!(images_only(&[image(), text(" "), image()]));
+        assert!(images_only(&[image()]));
+        assert!(!images_only(&[image(), text(" and "), image()]));
+        assert!(!images_only(&[text("   ")]));
+        let sizes = [Some(size(px(400.), px(300.))), None, Some(size(px(100.), px(50.)))];
+        assert_eq!(fit_images(&sizes, Some(px(200.))), [Some(size(px(200.), px(150.))), None, Some(size(px(100.), px(50.)))]);
+        assert_eq!(fit_images(&sizes, None), sizes);
+    }
 
     mod frames {
         use super::super::FLOW_LAYOUTS;
@@ -1868,6 +1951,7 @@ mod tests {
             },
             MeasureItem::Image {
                 source: SharedUri::from("https://example.com/badge.png").into(),
+                placeholder: ImagePlaceholder::for_test(),
                 width: None,
                 height: None,
             },
@@ -1960,6 +2044,7 @@ mod tests {
             let items = vec![
                 MeasureItem::Image {
                     source: SharedUri::from("https://example.com/icon.png").into(),
+                    placeholder: ImagePlaceholder::for_test(),
                     width: None,
                     height: None,
                 },
