@@ -1234,7 +1234,7 @@ def archive_checks(samples):
     uploaded or sent to Apple. ArchiveProject over MCP; Delete Archive."""
     import datetime
     project = os.path.join(WORK, "Archive", "HelloClassic")
-    shutil.copytree(os.path.join(samples, "HelloClassic"), project)
+    pristine_sample("HelloClassic", project)
     archives_dir = os.path.join(CONFIG_DIR, "archives")
     exports = os.path.join(WORK, "Archive", "exports")
     archived = {}
@@ -2608,7 +2608,7 @@ def files_on_disk_checks(samples):
     edits undone byte for byte, files made in a shell listed, a save over a
     change on disk asking first, case-only renames."""
     root = os.path.join(WORK, "DiskClassic")
-    shutil.copytree(os.path.join(samples, "HelloClassic"), root)
+    pristine_sample("HelloClassic", root)
     app = os.path.join(root, "HelloClassic")
     pbxproj = os.path.join(root, "HelloClassic.xcodeproj", "project.pbxproj")
     original = open(pbxproj).read()
@@ -4524,7 +4524,7 @@ def navigation_checks(samples):
     closed tab, the project navigator's selection, splits that don't fit,
     Show Callers' menu and a file outside the project."""
     project = os.path.realpath(os.path.join(WORK, "NavClassic"))
-    shutil.copytree(os.path.join(samples, "HelloClassic"), project)
+    pristine_sample("HelloClassic", project)
     app = os.path.join(project, "HelloClassic")
     content, greeter = os.path.join(app, "ContentView.swift"), os.path.join(app, "Model", "Greeter.swift")
     suite, tests = (os.path.join(project, "HelloClassicTests", name) for name in ("GreeterSuite.swift", "GreeterTests.swift"))
@@ -4840,6 +4840,15 @@ def bookmark_checks(samples):
 # git in tests: never the user's global or system configuration (no
 # signing, hooks or aliases), and only on temporary repositories.
 GIT_ENV = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+
+
+def pristine_sample(name, dest):
+    """Copies samples/<name> as committed to `dest`: the run's samples are
+    changed by the checks on them (HelloClassic's group renames and moves
+    files), which a group working on a copy of its own doesn't expect."""
+    with tempfile.TemporaryDirectory(dir=WORK) as tmp:
+        subprocess.run(["tar", "-xf", os.path.join(WORK, "samples.tar"), "-C", tmp, f"samples/{name}"], check=True)
+        shutil.copytree(os.path.join(tmp, "samples", name), dest)
 
 
 def git(cwd, *args):
