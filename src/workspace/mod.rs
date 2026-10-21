@@ -1001,6 +1001,7 @@ impl Workspace {
         state["scheme_options"] = serde_json::json!(build.scheme_options.as_ref().map(edit_scheme::options_summary));
         state["edit_scheme"] =
             serde_json::json!(self.edit_scheme_dialog.as_ref().and_then(|d| d.upgrade()).map(|d| d.read(cx).summary(cx)));
+        state["find"] = self.find_summary(cx);
         state
     }
 }

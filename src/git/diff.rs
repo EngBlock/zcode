@@ -160,6 +160,27 @@ pub fn unstage_hunk(hunk: &Hunk, index: &str, head: &str) -> String {
     apply(index, head, &touching)
 }
 
+/// Discard Change: the edit of `text` that gives `hunk` (`HEAD` → `text`)
+/// back `HEAD`'s lines, as the byte range to replace and what replaces it.
+/// A hunk at the end of the text ends it as `HEAD` ends, with a final
+/// newline or without one.
+pub fn discard_edit(head: &str, text: &str, hunk: &Hunk) -> (Range<usize>, String) {
+    let text_lines = lines(text);
+    let offset = |row: u32| text_lines[..(row as usize).min(text_lines.len())].iter().map(|l| l.len()).sum::<usize>();
+    let (mut start, end) = (offset(hunk.new.start), offset(hunk.new.end));
+    let mut replacement: String = slice(&lines(head), &hunk.old).concat();
+    let after_newline = start == 0 || text[..start].ends_with('\n');
+    if !replacement.is_empty() && !after_newline {
+        // After a last line without a newline.
+        replacement.insert(0, '\n');
+    } else if replacement.is_empty() && end == text.len() && start > 0 && after_newline && !head.ends_with('\n') {
+        // Lines added after `HEAD`'s last line, which has no newline: the
+        // newline before them goes too.
+        start -= 1;
+    }
+    (start..end, replacement)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +223,34 @@ mod tests {
         assert_eq!(apply(old, new, &[]), old);
         // Reverting a hunk is applying its inverse the other way.
         assert_eq!(apply(new, old, &[&hunks[0].inverted()]), "a\nb\nc\nd\ne\nf\n");
+    }
+
+    #[test]
+    fn discarding_a_hunk_keeps_heads_final_newline_or_its_absence() {
+        let discard = |head: &str, text: &str| -> Vec<String> {
+            line_hunks(head, text)
+                .iter()
+                .map(|hunk| {
+                    let (range, replacement) = discard_edit(head, text, hunk);
+                    format!("{}{replacement}{}", &text[..range.start], &text[range.end..])
+                })
+                .collect()
+        };
+        // In the middle; at the end of a file with and without a final newline.
+        assert_eq!(discard("a\nb\nc\n", "a\nB\nc\n"), vec!["a\nb\nc\n"]);
+        assert_eq!(discard("a\nb\n", "a\nb\nc\n"), vec!["a\nb\n"]);
+        assert_eq!(discard("let a = 1\nlet b = 2", "let a = 1\nlet b = 2\nlet c = 3"), vec!["let a = 1\nlet b = 2"]);
+        assert_eq!(discard("a\nb", "a\nb\nc\n"), vec!["a\nb"]);
+        assert_eq!(discard("a\nb", "a\nX"), vec!["a\nb"]);
+        assert_eq!(discard("a\nb\n", "a\nX"), vec!["a\nb\n"]);
+        // Deleted lines come back, after a last line without a newline.
+        assert_eq!(discard("a\nb\nc", "a\nb"), vec!["a\nb\nc"]);
+        assert_eq!(discard("a\nb\nc\n", "a\n"), vec!["a\nb\nc\n"]);
+        assert_eq!(discard("a\nb\nc\n", "b\nc\n"), vec!["a\nb\nc\n"]);
+        // Two hunks, each on its own.
+        assert_eq!(discard("a\nb\nc", "A\nb\nc\nd"), vec!["a\nb\nc\nd", "A\nb\nc"]);
+        // A file new since HEAD empties.
+        assert_eq!(discard("", "x\ny\n"), vec![""]);
     }
 
     #[test]

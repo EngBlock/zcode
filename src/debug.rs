@@ -60,6 +60,8 @@
 //!                              (see `Workspace::settings_command`); `dump` has `settings`
 //!   git <command>              source control: hunks, the hunk popover, the commit, Push… and Pull…
 //!                              sheets, branches, comparisons (see `Workspace::git_command`)
+//!   find <command>             Find in Workspace: query <text> (searched), regex|case|word on|off
+//!                              (see `Workspace::find_command`); `dump` has `find`
 //!   multibuffer <command>      multibuffers: find (the Find navigator's results in a tab), issues,
 //!                              replace <text> (Replace All), open (⌥↩), expand (⇧↩), all, save
 //!                              (see `Workspace::multibuffer_command`)
@@ -653,6 +655,13 @@ fn run_command(
             window
                 .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.agent_command(arg, window, cx)))
                 .map_err(|e| e.to_string())?
+        }
+        "find" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| workspace.update(cx, |ws, cx| ws.find_command(arg, window, cx)))
+                .map_err(|e| e.to_string())?
+                .map(|_| String::new())
         }
         "multibuffer" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;

@@ -327,10 +327,10 @@ impl Workspace {
     pub(super) fn find_again(&mut self, id: u64, cx: &mut Context<Self>) {
         let Some(group) = self.bookmarks.search(id) else { return };
         let Ok(regex) = crate::search::build_regex(&group.query, &group.options) else { return };
-        let (root, files) = (self.project.root.clone(), self.files.clone());
+        let (root, files, unsaved) = (self.project.root.clone(), self.files.clone(), self.unsaved_texts(cx));
         let task = cx.spawn(async move |this, cx| {
             let found = cx
-                .background_spawn(async move { crate::search::search(&root, &files, &regex, &Arc::new(AtomicBool::new(false))) })
+                .background_spawn(async move { crate::search::search(&root, &files, &unsaved, &regex, &Arc::new(AtomicBool::new(false))) })
                 .await;
             this.update(cx, |this, cx| {
                 this.bookmarks.replace_search_results(id, find_results(&found));

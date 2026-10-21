@@ -134,7 +134,10 @@
   stash, cherry-pick, tags, history inspector, clone, or merge conflict
   editor. git never prompts, so a remote that wants a password fails unless
   a credential helper or SSH agent has it. A package checkout (its own
-  repository) gets no change bars.
+  repository) gets no change bars. ⌘Z after Discard Change brings the
+  lines back to the editor but not to the index: a change that was staged
+  has to be staged again. A rename is followed only once it is staged
+  (`git mv`, or both paths added).
 * Editor panes: the assistant has Counterparts and Manual modes only (no
   Callers, Superclasses, Preview or other Xcode modes), and Swift files have
   no counterparts (Xcode shows generated interfaces). Move Focus to Editor

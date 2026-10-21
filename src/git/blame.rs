@@ -35,6 +35,20 @@ impl Blame {
     pub fn commit(&self, row: u32) -> Option<&Commit> {
         self.commits.get(*self.lines.get(row as usize)? as usize)
     }
+
+    /// The blame of a file with no committed version (untracked, or only
+    /// added): each of its `lines` not committed yet, as git blames edits.
+    pub fn uncommitted(lines: usize) -> Self {
+        let commit = Commit {
+            sha: UNCOMMITTED.into(),
+            author: "Not Committed Yet".into(),
+            email: String::new(),
+            time: now(),
+            summary: String::new(),
+            uncommitted: true,
+        };
+        Self { lines: vec![0; lines], commits: vec![commit] }
+    }
 }
 
 pub fn parse_porcelain(out: &str) -> Blame {
@@ -136,6 +150,9 @@ filename a.swift
         assert_eq!((jane.summary.as_str(), jane.short_sha(), jane.uncommitted), ("Add the greeter", "aaaaaaaa", false));
         assert!(blame.commit(2).unwrap().uncommitted);
         assert_eq!(blame.commit(3), None);
+        let new = Blame::uncommitted(2);
+        assert!(new.commit(1).is_some_and(|c| c.uncommitted && c.author == "Not Committed Yet"));
+        assert_eq!(new.commit(2), None);
     }
 
     #[test]

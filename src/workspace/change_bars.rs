@@ -58,6 +58,8 @@ impl Workspace {
         buffer.git.bases = Some(bases);
         self.schedule_diff(path, Duration::ZERO, cx);
         self.diff_bases_changed(path, cx);
+        // Authors and inline blame follow (a file just read, or just committed).
+        self.schedule_blame(path, Duration::ZERO, cx);
     }
 
     /// Compares the buffer's text with its versions after `delay`, in the
@@ -172,30 +174,42 @@ impl Workspace {
     }
 
     /// Discard Change: the hunk's lines go back to `HEAD`'s, as one edit
-    /// ⌘Z undoes.
+    /// ⌘Z undoes. What of it is staged leaves the index too, or the next
+    /// commit would have the change the editor no longer shows.
     pub fn discard_hunk(&mut self, path: &Path, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((hunk, head, _)) = self.hunk_with_bases(path, ix) else { return };
+        let Some((hunk, head, index)) = self.hunk_with_bases(path, ix) else { return };
         let Some(buffer) = self.buffer(path).filter(|b| !b.read_only) else { return };
         let editor = buffer.editor.clone();
-        let text = editor.read(cx).text().clone();
-        let head_lines = diff::lines(&head);
-        let mut replacement: String = diff::slice(&head_lines, &hunk.hunk.old).concat();
-        let row_offset = |row: u32| {
-            if (row as usize) < text.lines_len() { text.line_start_offset(row as usize) } else { text.len() }
-        };
-        let (start, end) = (row_offset(hunk.hunk.new.start), row_offset(hunk.hunk.new.end));
-        let ends_unterminated = !text.to_string().ends_with('\n');
-        if end == text.len() && ends_unterminated && replacement.ends_with('\n') {
-            // The file's last line has no newline; neither does what replaces it.
-            replacement.pop();
-            if start == text.len() && !replacement.is_empty() {
-                replacement.insert(0, '\n');
+        let has_head = buffer.git.bases.as_ref().is_some_and(|b| b.head.is_some());
+        let mode = buffer.git.bases.as_ref().and_then(|b| b.mode.clone());
+        let unstage = match index {
+            Some(index) if hunk.staging != Staging::Unstaged => {
+                let Some((_, rel)) = self.git_rel(path) else { return };
+                if let Some(busy) = &self.git.busy {
+                    self.notify_error(format!("Wait for “{busy}” to finish."), window, cx);
+                    return;
+                }
+                Some((rel, diff::unstage_hunk(&hunk.hunk, &index, &head)))
             }
-        }
+            _ => None,
+        };
+        let text = editor.read(cx).text().to_string();
+        let (range, replacement) = diff::discard_edit(&head, &text, &hunk.hunk);
         editor.update(cx, |state, cx| {
-            state.transact(window, cx, |state, window, cx| state.edit([(start..end, replacement.as_str())], window, cx));
+            state.transact(window, cx, |state, window, cx| state.edit([(range, replacement.as_str())], window, cx));
         });
         self.schedule_diff(path, Duration::ZERO, cx);
+        if let Some((rel, new_index)) = unstage {
+            // A file new since HEAD leaves the index when nothing of it is left.
+            let remove = !has_head && new_index.is_empty();
+            self.run_git(
+                "Unstaging",
+                move |root| git::write_index(root, &rel, (!remove).then_some(new_index.as_str()), mode.as_deref()),
+                |_, _, _, _| {},
+                window,
+                cx,
+            );
+        }
     }
 
     /// Stage Change / Unstage Change: the index takes the editor's lines of

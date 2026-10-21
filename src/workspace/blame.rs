@@ -53,18 +53,31 @@ impl Workspace {
             return;
         }
         let Some((root, rel)) = self.git_rel(path) else { return };
+        let untracked = self.is_untracked(path);
         let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) else { return };
-        // Nothing to blame in a file git doesn't have.
-        if buffer.git.bases.as_ref().is_none_or(|b| b.head.is_none() && b.index.is_none()) {
+        // Nothing to blame in a file git ignores; nothing of one it has no
+        // commit of (untracked, or only added) is committed yet.
+        let Some(bases) = buffer.git.bases.as_ref() else { return };
+        if bases.head.is_none() && bases.index.is_none() && !untracked {
             return;
         }
+        let committed = bases.head.is_some();
         let text = buffer.editor.read(cx).text().clone();
         let path = path.to_path_buf();
         buffer.git.blame_task = Some(cx.spawn(async move |this, cx| {
             if !delay.is_zero() {
                 cx.background_executor().timer(delay).await;
             }
-            let blame = cx.background_spawn(async move { git::blame(&root, &rel, &text.to_string()).ok() }).await;
+            let blame = cx
+                .background_spawn(async move {
+                    let text = text.to_string();
+                    if committed {
+                        git::blame(&root, &rel, &text).ok()
+                    } else {
+                        Some(git::blame::Blame::uncommitted(git::diff::lines(&text).len()))
+                    }
+                })
+                .await;
             this.update(cx, |this, cx| {
                 if let Some(buffer) = this.buffers.iter_mut().find(|b| b.path == path) {
                     buffer.git.blame = blame.map(Rc::new);
