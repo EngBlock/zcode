@@ -437,7 +437,9 @@ impl Workspace {
                 }
                 // Closing a terminal's tab ends its processes.
                 Item::Terminal(item) => item.view.update(cx, |view, _| view.stop()),
-                Item::ProjectSettings(_) => {
+                Item::ProjectSettings(item) => {
+                    // A value typed in a field that still has the keyboard.
+                    item.update(cx, |settings, cx| settings.commit_pending(cx));
                     self.project_settings = None;
                     self.project_settings_subscriptions.clear();
                 }
@@ -1034,7 +1036,7 @@ impl Workspace {
 
     /// Don't Save on closing a file's last editor: a buffer still open (a
     /// preview keeps it) goes back to the saved text.
-    fn discard_changes(&mut self, path: &Path, cx: &mut Context<Self>) {
+    pub(super) fn discard_changes(&mut self, path: &Path, cx: &mut Context<Self>) {
         if !self.buffer(path).is_some_and(|b| b.dirty) {
             return;
         }

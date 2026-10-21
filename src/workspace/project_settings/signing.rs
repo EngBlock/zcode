@@ -248,12 +248,7 @@ impl ProjectSettings {
         if file.text.as_deref() == Some(text.as_str()) && file.wired {
             return Some(file.path.clone());
         }
-        let result = plist::encode(&text, file.format).map_err(|e| format!("{e:#}")).and_then(|bytes| {
-            if let Some(dir) = file.path.parent() {
-                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-            }
-            std::fs::write(&file.path, bytes).map_err(|e| e.to_string())
-        });
+        let result = plist::encode(&text, file.format).map_err(|e| format!("{e:#}")).and_then(|bytes| self.write_file(&file.path, &bytes, cx));
         match result {
             Ok(()) => {
                 cx.emit(super::ProjectSettingsEvent::Changed);

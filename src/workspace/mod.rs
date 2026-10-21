@@ -59,6 +59,7 @@ mod terminals;
 mod vim;
 mod test_gutter;
 mod testing;
+mod tree_watch;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -290,6 +291,10 @@ impl Workspace {
             if active && this.git.root.is_some() {
                 this.refresh_scm(cx);
             }
+            // Files made or deleted meanwhile, should FSEvents have missed them.
+            if active {
+                this.scan(true, cx);
+            }
         }));
         // A navigator, panel or inspector holding focus was hidden: GPUI
         // would send keys to the window's root, past every shortcut.
@@ -433,6 +438,7 @@ impl Workspace {
         this.refresh_scm(cx);
         this.follow_activity(cx);
         this.watch_files(cx);
+        this.watch_tree(cx);
         this.prune_missing_bookmarks(cx);
         mark("background tasks");
         this.restore_tabs(saved, opened_path, window, cx);
@@ -472,6 +478,12 @@ impl Workspace {
     // Files and the project tree
 
     pub fn rescan(&mut self, cx: &mut Context<Self>) {
+        self.scan(false, cx);
+    }
+
+    /// Scans the files again; the navigator and what follows it are only
+    /// redone if a file or project came or went (`only_if_changed`).
+    pub(super) fn scan(&mut self, only_if_changed: bool, cx: &mut Context<Self>) {
         let root = self.project.root.clone();
         let kind = self.project.kind.clone();
         let task = cx.spawn(async move |this, cx| {
@@ -483,6 +495,9 @@ impl Workspace {
                 })
                 .await;
             this.update(cx, |this, cx| {
+                if only_if_changed && *this.files == files && this.xcode_projects == xcode_projects {
+                    return;
+                }
                 // Tree items are !Send, so they are built here (fast).
                 let started = std::time::Instant::now();
                 this.file_items = project::build_tree(&root, &files);
@@ -632,7 +647,12 @@ impl Workspace {
         let path = path.canonicalize().unwrap_or(path);
         let Some(parent) = path.parent() else { return };
         let target = crate::xcodeproj::files::normalize(&parent.join(&new_name));
-        if target.exists() {
+        if target == path {
+            return;
+        }
+        // On a case-insensitive volume a name that differs only in case is
+        // the file itself, not another one.
+        if target.exists() && target.canonicalize().ok().as_ref() != Some(&path) {
             self.notify_error(format!("“{new_name}” already exists."), window, cx);
             return;
         }

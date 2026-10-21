@@ -25,6 +25,9 @@ impl Workspace {
                 self.build.update(cx, |build, cx| build.reload(cx));
                 self.refresh_project_index(cx);
             }
+            // An Info.plist or entitlements file made (or undone): the
+            // navigator lists it.
+            ProjectSettingsEvent::FilesChanged => self.rescan(cx),
         }
     }
 

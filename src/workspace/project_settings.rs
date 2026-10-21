@@ -2,12 +2,16 @@
 //! navigator: the project and its targets on the left, and General, Signing
 //! & Capabilities (`signing.rs`), Info (`info.rs`) and Build Settings on the
 //! right. Edits are written straight to `project.pbxproj` (and the target's
-//! Info.plist and entitlements).
+//! Info.plist and entitlements). A field is written when it's left, as in
+//! Xcode; ⌘Z and ⇧⌘Z put the files back as they were, byte for byte.
 
 mod info;
 mod signing;
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::SystemTime;
 
 use gpui_kit::assets::IconName;
@@ -18,12 +22,58 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::xcodeproj::{self, BuildConfiguration, XcodeProject};
+use zcode_editor::{Redo, Undo};
 
 pub enum ProjectSettingsEvent {
     /// Open a file (the raw `project.pbxproj`) in an editor tab.
     OpenFile(PathBuf),
     /// The project file was written.
     Changed,
+    /// A file was created or deleted (an Info.plist, entitlements, or one
+    /// of them undone).
+    FilesChanged,
+}
+
+/// One file as an edit left it: its bytes before and after (`None`: it
+/// didn't exist).
+#[derive(Clone, Debug, PartialEq)]
+struct FileChange {
+    path: PathBuf,
+    before: Option<Vec<u8>>,
+    after: Option<Vec<u8>>,
+}
+
+/// Puts files back as `changes` found them (`undo`), or as they left them,
+/// after checking that each is still as the step expects. Returns whether a
+/// file was created or deleted.
+fn restore(changes: &[FileChange], undo: bool) -> Result<bool, String> {
+    let from = |c: &FileChange| if undo { (c.after.clone(), c.before.clone()) } else { (c.before.clone(), c.after.clone()) };
+    for change in changes {
+        let (expected, _) = from(change);
+        if std::fs::read(&change.path).ok() != expected {
+            return Err(format!("“{}” changed since", change.path.file_name().unwrap_or_default().to_string_lossy()));
+        }
+    }
+    let mut created_or_deleted = false;
+    let ordered: Vec<&FileChange> = if undo { changes.iter().rev().collect() } else { changes.iter().collect() };
+    for change in ordered {
+        let (expected, bytes) = from(change);
+        created_or_deleted |= expected.is_none() != bytes.is_none();
+        let result = match bytes {
+            Some(bytes) => write_bytes(&change.path, &bytes),
+            None => std::fs::remove_file(&change.path),
+        };
+        result.map_err(|err| format!("{}: {err}", change.path.display()))?;
+    }
+    Ok(created_or_deleted)
+}
+
+/// Writes a file, making its folder if needed.
+fn write_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, bytes)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +84,22 @@ pub enum Pane {
     /// The target's Info.plist (targets only).
     Info,
     BuildSettings,
+}
+
+/// Where fields and targets were last drawn (window points), for the
+/// control channel's clicks.
+type Places = Rc<RefCell<BTreeMap<String, Bounds<Pixels>>>>;
+
+/// Records the bounds of the element it's put in (which must be relative).
+fn place(places: &Places, key: String) -> impl IntoElement {
+    let places = places.clone();
+    canvas(move |bounds, _, _| {
+        places.borrow_mut().insert(key, bounds);
+    }, |_, _, _, _| {})
+    .absolute()
+    .top_0()
+    .left_0()
+    .size_full()
 }
 
 /// What is selected in the sidebar: a project, or one of its targets.
@@ -116,6 +182,16 @@ pub struct ProjectSettings {
     info: Option<info::InfoTab>,
     signing: signing::SigningTab,
     error: Option<String>,
+    /// The field being edited, as of the last render: when another takes
+    /// the keyboard (or nothing does), it's written.
+    editing: Option<String>,
+    /// Edits' file changes, for ⌘Z and ⇧⌘Z; a step is everything one
+    /// action wrote.
+    undo: Vec<Vec<FileChange>>,
+    redo: Vec<Vec<FileChange>>,
+    /// Writes join the last undo step until the current action is done.
+    grouping: bool,
+    places: Places,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -159,6 +235,11 @@ impl ProjectSettings {
             info: None,
             signing: Default::default(),
             error: None,
+            editing: None,
+            undo: vec![],
+            redo: vec![],
+            grouping: false,
+            places: Places::default(),
             _subscriptions: subscriptions,
         };
         this.load();
@@ -228,6 +309,9 @@ impl ProjectSettings {
             "info": self.info_summary(cx),
             "signing": self.signing_summary(cx),
             "error": self.error,
+            "undo": self.undo.len(),
+            "redo": self.redo.len(),
+            "places": self.places.borrow().iter().map(|(k, b)| (k.clone(), serde_json::json!([f32::from(b.center().x), f32::from(b.center().y)]))).collect::<serde_json::Map<_, _>>(),
         })
     }
 
@@ -235,6 +319,8 @@ impl ProjectSettings {
         if self.selection == selection {
             return;
         }
+        // Into the project the fields are for, before it changes.
+        self.commit_pending(cx);
         let config_name = self.selected_configurations().get(self.configuration).map(|c| c.name.clone());
         self.selection = selection;
         if selection.target.is_none() && matches!(self.pane, Pane::Signing | Pane::Info) {
@@ -290,8 +376,12 @@ impl ProjectSettings {
         cx.notify();
     }
 
-    /// Recreates the inputs for the current selection and pane.
+    /// Recreates the inputs for the current selection and pane, first
+    /// writing what was typed in the old ones.
     fn rebuild_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.commit_pending(cx);
+        self.editing = None;
+        self.places.borrow_mut().clear();
         self.rebuild_info(window, cx);
         self.rebuild_signing(window, cx);
         self.keep_focus(window, cx);
@@ -353,9 +443,9 @@ impl ProjectSettings {
                 });
                 let subscription = cx.subscribe_in(&input, window, {
                     let key = key.clone();
-                    move |this, _, event: &InputEvent, window, cx| {
+                    move |this, _, event: &InputEvent, _, cx| {
                         if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                            this.commit(&key, window, cx);
+                            this.commit(&key, cx);
                         }
                     }
                 });
@@ -371,9 +461,31 @@ impl ProjectSettings {
         values.iter().all(|v| v.as_ref() == Some(&first)).then_some(first)
     }
 
+    /// Writes every field whose value was typed but not written yet (also
+    /// as the editor closes).
+    pub fn commit_pending(&mut self, cx: &mut Context<Self>) {
+        let keys: Vec<String> = self.fields.iter().map(|f| f.key.clone()).collect();
+        for key in keys {
+            self.commit(&key, cx);
+        }
+    }
+
+    /// Writes the field that was being edited once the keyboard has left
+    /// it. Blur says so too, but GPUI doesn't send it while the window is
+    /// inactive, nor when the field is gone before the next frame.
+    fn follow_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.fields.iter().find(|f| f.input.read(cx).focus_handle(cx).is_focused(window)).map(|f| f.key.clone());
+        if focused == self.editing {
+            return;
+        }
+        if let Some(left) = std::mem::replace(&mut self.editing, focused) {
+            cx.defer_in(window, move |this, _, cx| this.commit(&left, cx));
+        }
+    }
+
     /// Writes a field's value if it changed. An empty value removes the
     /// setting so it inherits again.
-    fn commit(&mut self, key: &str, _window: &mut Window, cx: &mut Context<Self>) {
+    fn commit(&mut self, key: &str, cx: &mut Context<Self>) {
         let Some(field) = self.fields.iter().find(|f| f.key == key) else { return };
         let value = field.input.read(cx).value().trim().to_string();
         let new = (!value.is_empty()).then_some(value);
@@ -393,7 +505,7 @@ impl ProjectSettings {
     pub fn set_field(&mut self, key: &str, value: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
         let field = self.fields.iter().find(|f| f.key == key).ok_or_else(|| format!("no field {key}"))?;
         field.input.clone().update(cx, |input, cx| input.set_value(value.to_string(), window, cx));
-        self.commit(key, window, cx);
+        self.commit(key, cx);
         match &self.error {
             Some(err) => Err(err.clone()),
             None => Ok(()),
@@ -422,13 +534,17 @@ impl ProjectSettings {
         let file = XcodeProject::pbxproj_path(&path);
         let result = std::fs::read_to_string(&file)
             .map_err(anyhow::Error::from)
-            .and_then(|text| {
-                let text = edit(&path, text)?;
-                xcodeproj::write_project_file(&file, &text)?;
-                XcodeProject::from_text(&path, &text)
-            });
+            .and_then(|before| {
+                let text = edit(&path, before.clone())?;
+                if text != before {
+                    xcodeproj::write_project_file(&file, &text)?;
+                }
+                Ok((before, text))
+            })
+            .and_then(|(before, text)| Ok((XcodeProject::from_text(&path, &text)?, before, text)));
         match result {
-            Ok(project) => {
+            Ok((project, before, text)) => {
+                self.record(&file, Some(before.into_bytes()), Some(text.into_bytes()), cx);
                 self.projects[self.selection.project] = Ok(project);
                 self.mtimes[self.selection.project] = mtime(&path);
                 self.error = None;
@@ -442,6 +558,79 @@ impl ProjectSettings {
                 false
             }
         }
+    }
+
+    /// Writes one of the target's files (its Info.plist or entitlements),
+    /// as an undoable change.
+    pub(super) fn write_file(&mut self, path: &Path, bytes: &[u8], cx: &mut Context<Self>) -> Result<(), String> {
+        let before = std::fs::read(path).ok();
+        write_bytes(path, bytes).map_err(|e| e.to_string())?;
+        if before.is_none() {
+            cx.emit(ProjectSettingsEvent::FilesChanged);
+        }
+        self.record(path, before, Some(bytes.to_vec()), cx);
+        Ok(())
+    }
+
+    /// Adds a file's change to the undo step of the action under way, or
+    /// starts one.
+    fn record(&mut self, path: &Path, before: Option<Vec<u8>>, after: Option<Vec<u8>>, cx: &mut Context<Self>) {
+        if before == after {
+            return;
+        }
+        self.redo.clear();
+        if self.grouping
+            && let Some(step) = self.undo.last_mut()
+        {
+            match step.iter_mut().find(|c| c.path == path) {
+                Some(change) => change.after = after,
+                None => step.push(FileChange { path: path.to_path_buf(), before, after }),
+            }
+            return;
+        }
+        self.undo.push(vec![FileChange { path: path.to_path_buf(), before, after }]);
+        self.grouping = true;
+        let this = cx.weak_entity();
+        cx.defer(move |cx| {
+            this.update(cx, |this, _| this.grouping = false).ok();
+        });
+    }
+
+    /// ⌘Z: the last edit's files as they were before it.
+    pub fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        self.step(true, window, cx)
+    }
+
+    /// ⇧⌘Z.
+    pub fn redo(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        self.step(false, window, cx)
+    }
+
+    fn step(&mut self, undo: bool, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
+        // A value typed and not written yet is an edit of its own first.
+        self.commit_pending(cx);
+        self.grouping = false;
+        let stack = if undo { &mut self.undo } else { &mut self.redo };
+        let step = stack.pop().ok_or(if undo { "nothing to undo" } else { "nothing to redo" })?;
+        let result = restore(&step, undo);
+        match &result {
+            Ok(_) => {
+                if undo { self.redo.push(step) } else { self.undo.push(step) }
+                self.error = None;
+            }
+            Err(err) => {
+                // The files moved on without zcode: the steps no longer apply.
+                self.undo.clear();
+                self.redo.clear();
+                self.error = Some(format!("Couldn’t {}: {err}.", if undo { "undo" } else { "redo" }));
+            }
+        }
+        self.reload(window, cx);
+        cx.emit(ProjectSettingsEvent::Changed);
+        if result.as_ref().is_ok_and(|created_or_deleted| *created_or_deleted) {
+            cx.emit(ProjectSettingsEvent::FilesChanged);
+        }
+        result.map(|_| ())
     }
 
     /// A target setting's value when every configuration has the same one.
@@ -568,6 +757,8 @@ impl ProjectSettings {
                 .map(|(ix, target)| {
                     let selected = self.selection.target == Some(ix);
                     row(format!("ps-target-{ix}").into(), target_icon(target), target.name.clone(), selected)
+                        .relative()
+                        .child(place(&self.places, format!("target:{}", target.name)))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select(Selection { project: project_ix, target: Some(ix) }, window, cx)
                         }))
@@ -698,7 +889,7 @@ impl ProjectSettings {
             body = body.child(static_row("Configurations", configs, cx));
             body = body.child(div().h(px(1.)).my_1().bg(theme.border));
         }
-        body = body.children(self.fields.iter().map(|field| field_row(field, None, cx)));
+        body = body.children(self.fields.iter().map(|field| field_row(field, None, &self.places, cx)));
         body = body.child(
             div()
                 .pt_2()
@@ -764,7 +955,7 @@ impl ProjectSettings {
                 .ghost()
                 .tooltip("Remove Setting")
                 .on_click(cx.listener(move |this, _, window, cx| this.remove_setting(key.clone(), window, cx)));
-            rows = rows.child(field_row(field, Some(remove.into_any_element()), cx));
+            rows = rows.child(field_row(field, Some(remove.into_any_element()), &self.places, cx));
         }
 
         // Settings the target inherits from the project, read-only.
@@ -852,7 +1043,7 @@ fn static_row_mono(label: String, value: String, cx: &App) -> impl IntoElement {
         .child(div().flex_1().min_w_0().truncate().child(value))
 }
 
-fn field_row(field: &Field, suffix: Option<AnyElement>, cx: &App) -> impl IntoElement {
+fn field_row(field: &Field, suffix: Option<AnyElement>, places: &Places, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     let mono = field.label.as_ref() == field.key;
     h_flex()
@@ -867,12 +1058,14 @@ fn field_row(field: &Field, suffix: Option<AnyElement>, cx: &App) -> impl IntoEl
                 .when(!mono, |el| el.text_right().text_color(theme.muted_foreground))
                 .child(field.label.clone()),
         )
-        .child(div().flex_1().min_w_0().child(Input::new(&field.input).small()))
+        .child(div().flex_1().min_w_0().relative().child(Input::new(&field.input).small()).child(place(places, format!("field:{}", field.key))))
         .when_some(suffix, |el, suffix| el.child(suffix))
 }
 
 impl Render for ProjectSettings {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Focus moving redraws the window, this view included.
+        self.follow_editing(window, cx);
         let theme = cx.theme().clone();
         let load_error = self.projects.get(self.selection.project).and_then(|p| p.as_ref().err()).cloned();
         let content = if let Some(err) = load_error {
@@ -895,6 +1088,16 @@ impl Render for ProjectSettings {
             .id("project-settings")
             .key_context("ProjectSettings")
             .track_focus(&self.focus_handle)
+            // Ahead of the Info tab's property list editor, whose own undo
+            // would only reach the Info.plist's text.
+            .capture_action(cx.listener(|this, _: &Undo, window, cx| {
+                this.undo(window, cx).ok();
+                cx.stop_propagation();
+            }))
+            .capture_action(cx.listener(|this, _: &Redo, window, cx| {
+                this.redo(window, cx).ok();
+                cx.stop_propagation();
+            }))
             .size_full()
             .bg(theme.background)
             .child(self.render_sidebar(cx))

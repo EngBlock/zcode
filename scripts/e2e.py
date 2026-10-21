@@ -2460,6 +2460,144 @@ def plist_checks(samples):
         z.quit()
 
 
+def files_on_disk_checks(samples):
+    """Files changed outside zcode and the project editors' writes, on a copy
+    of HelloClassic: Project Settings fields written when they're left, its
+    edits undone byte for byte, files made in a shell listed, a save over a
+    change on disk asking first, case-only renames."""
+    root = os.path.join(WORK, "DiskClassic")
+    shutil.copytree(os.path.join(samples, "HelloClassic"), root)
+    app = os.path.join(root, "HelloClassic")
+    pbxproj = os.path.join(root, "HelloClassic.xcodeproj", "project.pbxproj")
+    original = open(pbxproj).read()
+    z = Zcode(root)
+    try:
+        def place(key):
+            return project_settings_part(z, "places")[key]
+
+        def fields_written_when_left():
+            z.wait_for(lambda s: s["files"] > 0, timeout=30, interval=0.3)
+            z.run("action zcode::ShowProjectSettings", "wait 300", "project-pane HelloClassic General", "wait 300")
+            # Typed, then another field clicked: written then, without Enter
+            # (also when the window isn't active, which sends no blur).
+            x, y = place("field:INFOPLIST_KEY_CFBundleDisplayName")
+            z.run(f"click {x} {y}", "keys cmd-a", "type Blurry", "wait 200")
+            x, y = place("field:MARKETING_VERSION")
+            z.run(f"click {x} {y}", "wait 300")
+            assert open(pbxproj).read().count("INFOPLIST_KEY_CFBundleDisplayName = Blurry;") == 2, project_settings_part(z, "fields")
+            # Typed, then another target chosen: written before the fields go.
+            z.run("keys cmd-a", "type 7.7", "wait 200")
+            x, y = place("target:HelloClassicTests")
+            z.run(f"click {x} {y}", "wait 300")
+            assert open(pbxproj).read().count("MARKETING_VERSION = 7.7;") == 2
+            z.run("project-pane HelloClassic General", "wait 300")
+            assert "MARKETING_VERSION = 7.7" in project_settings_part(z, "fields")
+
+        def undo_byte_for_byte():
+            # The two field edits, a build setting removed, a capability: one ⌘Z each.
+            assert project_settings_part(z, "undo") == 2
+            z.run("project-pane HelloClassic BuildSettings", "wait 300", "project-setting SWIFT_VERSION ", "wait 200")
+            assert open(pbxproj).read().count("SWIFT_VERSION = 5.0;") == 3, "removed from the app's Debug configuration"
+            z.run("project-pane HelloClassic Signing", "wait 200")
+            wait_signing_loaded(z)
+            entitlements = os.path.join(app, "HelloClassic.entitlements")
+            files = z.dump()["files"]
+            z.run("signing add App Groups", "wait 300")
+            assert os.path.exists(entitlements)
+            z.wait_for(lambda s: s["files"] == files + 1, timeout=15, interval=0.3)
+            assert project_settings_part(z, "undo") == 4
+            z.run("keys cmd-z", "wait 300")
+            assert not os.path.exists(entitlements), "the file App Groups made goes"
+            z.wait_for(lambda s: s["files"] == files, timeout=15, interval=0.3)
+            z.run("keys cmd-z", "keys cmd-z", "keys cmd-z", "wait 300")
+            assert open(pbxproj).read() == original, "undone byte for byte"
+            z.run("keys cmd-shift-z", "keys cmd-shift-z", "keys cmd-shift-z", "keys cmd-shift-z", "wait 300")
+            text = open(pbxproj).read()
+            assert "MARKETING_VERSION = 7.7;" in text and "CODE_SIGN_ENTITLEMENTS" in text and os.path.exists(entitlements)
+            z.run("keys cmd-z", "keys cmd-z", "keys cmd-z", "keys cmd-z", "wait 300")
+            assert open(pbxproj).read() == original and not os.path.exists(entitlements)
+            # A change made elsewhere since: the step no longer applies.
+            z.run("project-pane HelloClassic General", "wait 200", "project-setting MARKETING_VERSION 3.0", "wait 200")
+            with open(pbxproj, "a") as f:
+                f.write("\n")
+            z.run("keys cmd-z", "wait 300")
+            s = z.dump()["project_settings"]
+            assert "changed since" in (s["error"] or "") and s["undo"] == 0, s
+            with open(pbxproj, "w") as f:
+                f.write(original)
+            z.run("keys cmd-w", "wait 200")
+
+        def files_made_outside():
+            files = z.dump()["files"]
+            outside = os.path.join(app, "Outside.swift")
+            with open(outside, "w") as f:
+                f.write("struct Outside {}\n")
+            os.makedirs(os.path.join(app, "Shell", "Deep"))
+            with open(os.path.join(app, "Shell", "Deep", "Made.swift"), "w") as f:
+                f.write("")
+            z.wait_for(lambda s: s["files"] == files + 2, timeout=15, interval=0.3)
+            z.run("keys cmd-shift-o", "type Outside", "wait 300", "keys enter", "wait 300")
+            assert z.dump()["active"]["path"].endswith("/Outside.swift")
+            z.run("keys cmd-w")
+            os.remove(outside)
+            os.rename(os.path.join(app, "Shell"), os.path.join(app, "Moved"))
+            z.wait_for(lambda s: s["files"] == files + 1, timeout=15, interval=0.3)
+            shutil.rmtree(os.path.join(app, "Moved"))
+            z.wait_for(lambda s: s["files"] == files, timeout=15, interval=0.3)
+
+        def save_over_a_change_on_disk():
+            view = os.path.join(app, "ContentView.swift")
+            saved = open(view).read()
+            z.run(f"open {view}", "wait 300", "keys cmd-up", "type // mine", "wait 200")
+            with open(view, "a") as f:
+                f.write("// disk\n")
+            z.run("alert answer Keep zcode Version", "keys cmd-s", "wait 300")
+            text = open(view).read()
+            assert text.startswith("// mine") and "// disk" not in text, text
+            z.run("type  again", "wait 200")
+            with open(view, "a") as f:
+                f.write("// disk\n")
+            z.run("alert answer Revert", "keys cmd-s", "wait 300")
+            s = z.dump()["active"]
+            assert not s["dirty"] and s["text"].endswith("// disk\n") and "again" not in s["text"], s["text"][-60:]
+            with open(view, "w") as f:
+                f.write(saved)
+            # zcode's own write to settings.json, open with unsaved changes: made there too.
+            z.run("keys cmd-w", "settings open settings", "wait 300")
+            settings = z.dump()["active"]["path"]
+            before = open(settings).read()
+            try:
+                z.run("keys cmd-down", "type // note", "wait 200", "action zcode::ToggleInvisibles", "wait 300", "keys cmd-s", "wait 300")
+                text = open(settings).read()
+                assert '"show_whitespaces"' in text and text.rstrip().endswith("// note"), text
+            finally:
+                with open(settings, "w") as f:
+                    f.write(before)
+                z.run("settings reload", "keys cmd-w")
+
+        def case_only_renames():
+            z.run(f"rename {os.path.join(app, 'ContentView.swift')} -> CONTENTVIEW.swift")
+            text = wait_file(pbxproj, lambda t: "path = CONTENTVIEW.swift;" in t)
+            assert "ContentView.swift" not in text
+            assert "CONTENTVIEW.swift" in os.listdir(app), os.listdir(app)
+            z.run(f"rename {os.path.join(app, 'Model')} -> MODEL")
+            wait_file(pbxproj, lambda t: "path = MODEL;" in t)
+            assert "MODEL" in os.listdir(app)
+            catalog = os.path.join(app, "Assets.xcassets")
+            z.run(f"open {catalog}", "wait 300", "assets select AccentColor", "assets rename ACCENTCOLOR", "wait 500")
+            assert "ACCENTCOLOR.colorset" in os.listdir(catalog), os.listdir(catalog)
+            assert not z.dump()["asset_catalog"]["error"]
+            z.run("keys cmd-w")
+
+        check("Project Settings: a General field is written when it's left (another field, another target), not only on Enter", fields_written_when_left)
+        check("Project Settings: ⌘Z/⇧⌘Z undo field, build setting and capability edits byte for byte; the entitlements file comes and goes in the navigator", undo_byte_for_byte)
+        check("Files made, moved and deleted in a shell show in the navigator and Open Quickly", files_made_outside)
+        check("Saving over a change on disk asks: Keep zcode Version or Revert; a setting toggled while settings.json is edited keeps both", save_over_a_change_on_disk)
+        check("Case-only renames: a file, a folder (pbxproj follows) and an asset set", case_only_renames)
+    finally:
+        z.quit()
+
+
 def classic_project_checks(z, samples):
     root = os.path.join(samples, "HelloClassic")
     app = os.path.join(root, "HelloClassic")
@@ -8260,6 +8398,9 @@ def main():
         classic_project_checks(z, samples)
     finally:
         z.quit()
+
+    print("Files on disk and the project editors (a copy of HelloClassic):")
+    files_on_disk_checks(samples)
 
     print("Profile (copies of HelloClassic and, with --simulator, HelloZ; scripts/fake_xctrace.py):")
     profile_checks(samples, sim)

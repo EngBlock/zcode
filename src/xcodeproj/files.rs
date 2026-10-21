@@ -1064,6 +1064,44 @@ impl Editor<'_> {
     }
 }
 
+impl Editor<'_> {
+    /// A synchronized folder's exception sets: (ID, its membership
+    /// exceptions).
+    fn exception_sets(&self, root: &str) -> Vec<(String, Vec<String>)> {
+        let strings = |node: Option<&Node>| -> Vec<String> {
+            node.map(Node::items).unwrap_or_default().iter().filter_map(Node::as_str).map(str::to_string).collect()
+        };
+        strings(self.batch.object(root).and_then(|o| o.get("exceptions")))
+            .into_iter()
+            .filter_map(|id| {
+                let set = self.batch.object(&id)?;
+                (set.get_str("isa") == Some(EXCEPTION_SET)).then(|| (id.clone(), strings(set.get("membershipExceptions"))))
+            })
+            .collect()
+    }
+
+    /// Renames the exceptions for `from` (a file, or a folder's files) in
+    /// synchronized folder `root` after it moved to `to` inside it.
+    fn rename_exceptions(&mut self, root: &Item, from: &Path, to: &Path) {
+        let Some(dir) = root.resolved.clone() else { return };
+        let (Ok(old), Ok(new)) = (from.strip_prefix(&dir), to.strip_prefix(&dir)) else { return };
+        for (set, members) in self.exception_sets(&root.id) {
+            for (ix, member) in members.iter().enumerate() {
+                let Ok(rest) = Path::new(member).strip_prefix(old) else { continue };
+                let renamed = if rest.as_os_str().is_empty() { new.to_path_buf() } else { new.join(rest) };
+                let renamed = renamed.to_string_lossy().to_string();
+                if renamed == *member {
+                    continue;
+                }
+                let position = members.get(ix + 1).map_or(Position::End, |next| Position::Before(next.clone()));
+                self.batch.remove_from_list(&set, "membershipExceptions", member);
+                self.batch.add_to_list(&set, "membershipExceptions", &super::quote(&renamed), None, position);
+                self.changed = true;
+            }
+        }
+    }
+}
+
 /// Adds a file Xcode creates for a target (its Info.plist or entitlements)
 /// to the project: a file reference in the group for its folder, in no build
 /// phase. In a synchronized folder there's no reference to add; `exclude`
@@ -1113,18 +1151,50 @@ pub fn remove_paths(xcodeproj: &Path, text: &str, paths: &[PathBuf]) -> Result<O
 /// Updates references after a file or folder moved from `from` to `to`
 /// (renamed in place or moved to another folder).
 pub fn move_path(xcodeproj: &Path, text: &str, from: &Path, to: &Path) -> Result<Option<String>> {
-    let (from, to) = (canonical(from), canonical(to));
+    // `from` keeps its name as given: after a case-only rename on a
+    // case-insensitive volume it still resolves, to the file's new name.
+    let from = match (from.parent(), from.file_name()) {
+        (Some(parent), Some(name)) => canonical(parent).join(name),
+        _ => canonical(from),
+    };
+    let to = canonical(to);
     let mut editor = Editor::new(xcodeproj, text)?;
-    match (editor.files.synchronized_root(&from).is_some(), editor.files.synchronized_root(&to).is_some()) {
-        (true, true) => return Ok(None),
+    // A synchronized folder renamed in place: its group follows.
+    if let Some(root) = editor.files.synchronized_root(&from).filter(|r| r.resolved.as_deref() == Some(from.as_path())).cloned()
+        && from.parent() == to.parent()
+        && let Some(new_name) = to.file_name().map(|n| n.to_string_lossy().to_string())
+    {
+        let old_name = from.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if root.path.as_deref() == Some(old_name.as_str()) {
+            editor.batch.set_value(&root.id, "path", &new_name);
+            if root.name.as_deref() == Some(old_name.as_str()) {
+                editor.batch.set_value(&root.id, "name", &new_name);
+            }
+            editor.rename_comments(&root.id, &old_name, &new_name);
+            for (set, _) in editor.exception_sets(&root.id) {
+                editor.batch.rename_comments(&set, |c| {
+                    let old = format!("Exceptions for \"{old_name}\" folder");
+                    c.starts_with(&old).then(|| c.replacen(&old, &format!("Exceptions for \"{new_name}\" folder"), 1))
+                });
+            }
+        }
+        return editor.finish();
+    }
+    match (editor.files.synchronized_root(&from).cloned(), editor.files.synchronized_root(&to).is_some()) {
+        // Within a synchronized folder: files it leaves out of a target
+        // stay left out under their new names.
+        (Some(root), true) => {
+            editor.rename_exceptions(&root, &from, &to);
+            return editor.finish();
+        }
         // Into a synchronized folder: the folder takes over.
-        (false, true) => return remove_paths(xcodeproj, text, &[from]),
+        (None, true) => return remove_paths(xcodeproj, text, &[from]),
         // Out of one: reference it where it landed.
-        (true, false) => {
+        (Some(_), false) => {
             let targets = editor.files.suggested_targets(&to);
             return add_files(xcodeproj, text, &[to], &targets, &AddOptions::default());
         }
-        (false, false) => {}
+        (None, false) => {}
     }
 
     let under = |p: &Path, root: &Path| p.starts_with(root);
@@ -1486,6 +1556,62 @@ mod tests {
         assert_eq!(move_path(&proj, &out, &new, &old).unwrap().unwrap(), CLASSIC);
         // Untracked paths change nothing.
         assert_eq!(move_path(&proj, CLASSIC, &dir.join("notes.txt"), &dir.join("notes.md")).unwrap(), None);
+    }
+
+    /// A temporary project folder with `files` (relative paths) on disk.
+    fn on_disk(name: &str, files: &[&str]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("zcode-files-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        for file in files {
+            std::fs::create_dir_all(dir.join(file).parent().unwrap()).unwrap();
+            std::fs::write(dir.join(file), "").unwrap();
+        }
+        canonical(&dir)
+    }
+
+    #[test]
+    fn renames_in_case_only() {
+        // After the rename on disk, as the navigator does it: on a
+        // case-insensitive volume the old name still finds the file.
+        let dir = on_disk("case", &["HelloClassic/Model/Greeter.swift", "HelloClassic.xcodeproj/project.pbxproj"]);
+        let proj = dir.join("HelloClassic.xcodeproj");
+        let (old, new) = (dir.join("HelloClassic/Model/Greeter.swift"), dir.join("HelloClassic/Model/GREETER.swift"));
+        std::fs::rename(&old, &new).unwrap();
+        let out = move_path(&proj, CLASSIC, &old, &new).unwrap().unwrap();
+        assert!(out.contains("path = GREETER.swift;") && !out.contains("Greeter.swift"), "{:?}", inserted(CLASSIC, &out));
+        std::fs::rename(&new, &old).unwrap();
+        assert_eq!(move_path(&proj, &out, &new, &old).unwrap().unwrap(), CLASSIC);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn renames_in_synchronized_folders() {
+        let dir = on_disk("synced", &["HelloZ/Counter.swift", "HelloZ.xcodeproj/project.pbxproj"]);
+        let proj = dir.join("HelloZ.xcodeproj");
+        let app = "A10000000000000000000006";
+        // Counter.swift left out of the app: the exception follows it.
+        let (old, new) = (dir.join("HelloZ/Counter.swift"), dir.join("HelloZ/COUNTER.swift"));
+        let excluded = add_target_file(&proj, SYNCED, &old, app, true).unwrap().unwrap();
+        assert!(excluded.contains("\t\t\t\tCounter.swift,\n"));
+        std::fs::rename(&old, &new).unwrap();
+        let out = move_path(&proj, &excluded, &old, &new).unwrap().unwrap();
+        assert!(out.contains("\t\t\t\tCOUNTER.swift,\n") && !out.contains("Counter.swift"), "{out}");
+        let files = ProjectFiles::parse(&proj, &out).unwrap();
+        assert!(!files.compiled_files(files.target(app).unwrap()).iter().any(|p| p.ends_with("COUNTER.swift")));
+        // A file nothing leaves out changes nothing.
+        assert_eq!(move_path(&proj, SYNCED, &new, &dir.join("HelloZ/Count.swift")).unwrap(), None);
+
+        // The folder itself, renamed in case only: its group follows.
+        let (folder, renamed) = (dir.join("HelloZ"), dir.join("HELLOZ"));
+        std::fs::rename(&folder, &renamed).unwrap();
+        let out = move_path(&proj, &excluded, &folder, &renamed).unwrap().unwrap();
+        assert!(out.contains("A10000000000000000000002 /* HELLOZ */ = {\n\t\t\tisa = PBXFileSystemSynchronizedRootGroup;\n\t\t\texceptions = ("), "{out}");
+        assert!(out.contains("path = HELLOZ;") && out.contains("Exceptions for \"HELLOZ\" folder"), "{out}");
+        let files = ProjectFiles::parse(&proj, &out).unwrap();
+        assert!(files.synchronized_root(&renamed.join("Counter.swift")).is_some());
+        std::fs::rename(&renamed, &folder).unwrap();
+        assert_eq!(move_path(&proj, &out, &renamed, &folder).unwrap().unwrap(), excluded);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

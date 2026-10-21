@@ -346,6 +346,16 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (yoe + era * 400 + if month <= 2 { 1 } else { 0 }, month, day)
 }
 
+/// The days in a month of the proleptic Gregorian calendar.
+fn days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
 /// `2024-01-02T03:04:05Z`, as `<date>` holds it (whole seconds, UTC).
 pub fn format_date(since_2001: f64) -> String {
     let unix = (since_2001 + UNIX_TO_2001).floor() as i64;
@@ -364,7 +374,7 @@ pub fn parse_date(text: &str) -> Option<f64> {
     let mut t = time.trim().splitn(3, ':').map(|p| p.parse::<i64>().ok());
     let (hh, mm) = (t.next()??, t.next().flatten().unwrap_or(0));
     let ss = t.next().flatten().unwrap_or(0);
-    if !(1..=12).contains(&m) || !(1..=31).contains(&day) || hh > 23 || mm > 59 || ss > 60 {
+    if !(1..=12).contains(&m) || !(1..=days_in_month(y, m)).contains(&day) || hh > 23 || mm > 59 || ss > 60 {
         return None;
     }
     let unix = days_from_civil(y, m, day) * 86_400 + hh * 3600 + mm * 60 + ss;
@@ -679,6 +689,11 @@ mod tests {
         assert_eq!(parse_date("2001-01-01T00:00:00Z"), Some(0.));
         assert_eq!(format_date(parse_date("2024-05-06 07:08").unwrap()), "2024-05-06T07:08:00Z");
         assert!(parse_date("yesterday").is_none());
+        // Days a month doesn't have are refused, not rolled into the next.
+        for text in ["2026-02-30T00:00:00Z", "2026-02-29", "2100-02-29", "2026-04-31", "2026-13-01", "2026-00-10"] {
+            assert!(parse_date(text).is_none(), "{text}");
+        }
+        assert!(parse_date("2000-02-29").is_some() && parse_date("2026-12-31").is_some());
     }
 
     #[test]

@@ -72,6 +72,36 @@ pub struct Buffer {
     pub(super) _subscriptions: Vec<Subscription>,
 }
 
+/// Whether a buffer's file changed on disk since the buffer was read or
+/// saved: its time moved and its text isn't the one the buffer started
+/// from (a file that's gone is saved again as usual).
+fn changed_on_disk(buffer: &Buffer) -> bool {
+    let Ok(modified) = std::fs::metadata(&buffer.path).and_then(|m| m.modified()) else { return false };
+    if buffer.mtime.is_none_or(|mtime| mtime == modified) {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(&buffer.path) else { return false };
+    let text = match buffer.plist_format {
+        Some(_) => crate::plist::load(bytes).ok().map(|(_, text)| text),
+        None => String::from_utf8(bytes).ok(),
+    };
+    text.is_none_or(|text| zcode_editor::Rope::from(text.as_str()) != buffer.saved_text)
+}
+
+/// The one range of `old` that differs from `new`, and what replaces it
+/// there (on character boundaries).
+pub(super) fn changed_range(old: &str, new: &str) -> (std::ops::Range<usize>, String) {
+    let mut start = old.bytes().zip(new.bytes()).take_while(|(a, b)| a == b).count();
+    while !old.is_char_boundary(start) || !new.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = old[start..].bytes().rev().zip(new[start..].bytes().rev()).take_while(|(a, b)| a == b).count();
+    while !old.is_char_boundary(old.len() - end) || !new.is_char_boundary(new.len() - end) {
+        end -= 1;
+    }
+    (start..old.len() - end, new[start..new.len() - end].to_string())
+}
+
 /// An npm package's file (a definition in a library's `.d.ts`): shown,
 /// never edited.
 fn is_installed_package(path: &Path) -> bool {
@@ -544,7 +574,61 @@ impl Workspace {
         self.file_changed_on_disk(cx);
     }
 
+    /// Saves a buffer, unless its file changed on disk since it was read
+    /// or saved here: then it asks whether to keep this version or the
+    /// file's, as Xcode does.
     pub fn save_buffer(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(buffer) = self.buffers.get(ix).filter(|b| !b.read_only) else { return };
+        if changed_on_disk(buffer) {
+            let path = buffer.path.clone();
+            self.ask_about_disk_change(path, window, cx);
+            return;
+        }
+        self.write_buffer(ix, window, cx);
+    }
+
+    /// Keep zcode Version (the file is overwritten), Revert (the unsaved
+    /// changes are dropped for the file's text) or Cancel.
+    fn ask_about_disk_change(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let name = super::pane::file_title(&path);
+        let message = format!("The file “{name}” has been changed by another application.");
+        let buttons = ["Keep zcode Version", "Revert", "Cancel"];
+        let answer = match crate::debug::scripted_answer(&message, &buttons) {
+            Some(choice) => Task::ready(choice),
+            None => {
+                let answer = window.prompt(
+                    PromptLevel::Warning,
+                    &message,
+                    Some("Do you want to keep the version in zcode, or revert to the version on disk? Reverting loses your unsaved changes."),
+                    &[PromptButton::ok(buttons[0]), PromptButton::new(buttons[1]), PromptButton::cancel(buttons[2])],
+                    cx,
+                );
+                cx.background_spawn(async move { answer.await.unwrap_or(2) })
+            }
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            match answer.await {
+                0 => {
+                    this.update_in(cx, |this, window, cx| {
+                        if let Some(ix) = this.buffers.iter().position(|b| b.path == path) {
+                            this.write_buffer(ix, window, cx);
+                        }
+                    })
+                    .ok();
+                }
+                1 => {
+                    // Outside the window's update: the reload sets the
+                    // editor's text through the window.
+                    this.update(cx, |this, cx| this.discard_changes(&path, cx)).ok();
+                    this.update_in(cx, |this, window, _| window.set_window_edited(this.buffers.iter().any(|b| b.dirty))).ok();
+                }
+                _ => {}
+            }
+        })
+        .detach();
+    }
+
+    fn write_buffer(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let (trim, final_newline) = (self.settings.current.remove_trailing_whitespace_on_save, self.settings.current.ensure_final_newline_on_save);
         let Some(buffer) = self.buffers.get_mut(ix).filter(|b| !b.read_only) else { return };
         if trim {
@@ -923,5 +1007,18 @@ mod tests {
         let ranges = super::trailing_whitespace(text);
         assert_eq!(ranges, [9..11, 12..13, 20..22]);
         assert!(super::trailing_whitespace("clean\n").is_empty());
+    }
+
+    #[test]
+    fn the_range_two_texts_differ_in() {
+        let old = "{\n  \"a\": 1\n}// note";
+        let new = "{\n  \"a\": 1,\n  \"b\": \"all\"\n}// note";
+        let (range, with) = super::changed_range(old, new);
+        assert_eq!(format!("{}{with}{}", &old[..range.start], &old[range.end..]), new);
+        assert_eq!((range, with.as_str()), (10..10, ",\n  \"b\": \"all\""));
+        // On character boundaries, and for equal texts nothing.
+        let (range, with) = super::changed_range("aé", "aè");
+        assert_eq!((range, with.as_str()), (1..3, "è"));
+        assert_eq!(super::changed_range("same", "same"), (4..4, String::new()));
     }
 }

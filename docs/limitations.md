@@ -23,7 +23,8 @@
   or a folder that doesn't exist yet, so a file directly in `~` and a
   settings folder created later are polled as before; on a volume
   FSEvents doesn't journal (some network shares) changes are noticed
-  within 30 s. An idle window's display link pauses, so GPUI no longer
+  within 30 s, and files made or deleted there outside zcode reach the
+  project navigator when its window next becomes active. An idle window's display link pauses, so GPUI no longer
   presents unchanged frames for a second after fast input (which keeps a
   ProMotion display at its top rate); input that changes anything draws
   as before.

@@ -12,6 +12,9 @@
 //! the home folder itself or a folder that doesn't exist, which aren't
 //! watched), the check polls at its old interval; FSEvents can also drop
 //! events, so a watched check runs every `SAFETY_INTERVAL` anyway.
+//!
+//! `TreeChanges` is told which paths were added, removed or renamed under a
+//! folder (the project navigator rescans for them); it doesn't poll.
 
 use std::path::{Path, PathBuf};
 use std::pin::pin;
@@ -39,6 +42,24 @@ struct Subscriber {
     /// A change is pending (at most one is kept).
     tx: smol::channel::Sender<()>,
     rx: smol::channel::Receiver<()>,
+    /// For a `TreeChanges`, the paths added, removed or renamed since it
+    /// last took them; other changes don't wake it.
+    tree: Option<Mutex<TreeLog>>,
+}
+
+#[derive(Default)]
+struct TreeLog {
+    paths: Vec<PathBuf>,
+    /// Too many to keep, or FSEvents dropped some: look at everything.
+    overflow: bool,
+}
+
+/// More paths than this between two looks is a rescan of everything.
+const TREE_LOG_LIMIT: usize = 4096;
+
+/// Files and folders added, removed or renamed under a folder.
+pub struct TreeChanges {
+    subscriber: Arc<Subscriber>,
 }
 
 /// A project's root, watched whole: files under it are covered by it
@@ -80,18 +101,25 @@ pub fn start() {
         .ok();
 }
 
-impl Changes {
-    /// For `paths` (more can be set later).
-    pub fn new(paths: Vec<PathBuf>) -> Self {
+impl Subscriber {
+    fn register(tree: bool) -> Arc<Self> {
         let (tx, rx) = smol::channel::bounded(1);
         let subscriber = Arc::new(Subscriber {
             interests: Mutex::new(vec![]),
             covered: AtomicBool::new(false),
             tx,
             rx,
+            tree: tree.then(Default::default),
         });
         HUB.lock().unwrap().subscribers.push(Arc::downgrade(&subscriber));
-        let changes = Self { subscriber };
+        subscriber
+    }
+}
+
+impl Changes {
+    /// For `paths` (more can be set later).
+    pub fn new(paths: Vec<PathBuf>) -> Self {
+        let changes = Self { subscriber: Subscriber::register(false) };
         changes.set_paths(paths);
         changes
     }
@@ -130,6 +158,44 @@ impl Drop for Changes {
     fn drop(&mut self) {
         update();
     }
+}
+
+impl TreeChanges {
+    /// For the tree under `dir`.
+    pub fn new(dir: &Path) -> Self {
+        let subscriber = Subscriber::register(true);
+        *subscriber.interests.lock().unwrap() = vec![canonical(dir)];
+        update();
+        Self { subscriber }
+    }
+
+    /// Until something under the folder may have been added, removed or
+    /// renamed (or a new stream starts, which may have missed some).
+    pub async fn wait(&self) {
+        self.subscriber.rx.recv().await.ok();
+    }
+
+    /// The paths reported since the last call (canonical, as FSEvents has
+    /// them), and whether some were dropped (look at everything).
+    pub fn take(&self) -> (Vec<PathBuf>, bool) {
+        let Some(tree) = &self.subscriber.tree else { return (vec![], false) };
+        let log = std::mem::take(&mut *tree.lock().unwrap());
+        (log.paths, log.overflow)
+    }
+}
+
+impl Drop for TreeChanges {
+    fn drop(&mut self) {
+        update();
+    }
+}
+
+/// Whether an event may add, remove or rename something (not just write
+/// to a file or change its attributes).
+fn is_structural(kind: &notify::EventKind) -> bool {
+    use notify::EventKind;
+    use notify::event::ModifyKind;
+    matches!(kind, EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(ModifyKind::Name(_) | ModifyKind::Any) | EventKind::Any | EventKind::Other)
 }
 
 impl Root {
@@ -245,7 +311,7 @@ fn run(requests: mpsc::Receiver<()>) {
 fn stream(dirs: &[PathBuf]) -> Option<notify::RecommendedWatcher> {
     let mut watcher = notify::recommended_watcher(|event: notify::Result<notify::Event>| {
         if let Ok(event) = event {
-            dispatch(&event.paths);
+            dispatch(&event);
         }
     })
     .inspect_err(|err| log::warn!("file watching: {err}"))
@@ -260,9 +326,10 @@ fn stream(dirs: &[PathBuf]) -> Option<notify::RecommendedWatcher> {
     Some(watcher)
 }
 
-/// Wakes the checks with something at or under one of `paths` (or above
-/// it: a folder renamed or deleted).
-fn dispatch(paths: &[PathBuf]) {
+/// Wakes the checks with something at or under one of the event's paths
+/// (or above it: a folder renamed or deleted).
+fn dispatch(event: &notify::Event) {
+    let paths = &event.paths;
     let hub = HUB.lock().unwrap();
     for subscriber in hub.subscribers.iter().filter_map(Weak::upgrade) {
         let hit = subscriber
@@ -271,9 +338,23 @@ fn dispatch(paths: &[PathBuf]) {
             .unwrap()
             .iter()
             .any(|interest| paths.iter().any(|path| path.starts_with(interest) || interest.starts_with(path)));
-        if hit {
-            subscriber.tx.try_send(()).ok();
+        if !hit {
+            continue;
         }
+        if let Some(tree) = &subscriber.tree {
+            let rescan = event.need_rescan();
+            if !rescan && !is_structural(&event.kind) {
+                continue;
+            }
+            let mut log = tree.lock().unwrap();
+            if rescan || log.paths.len() + paths.len() > TREE_LOG_LIMIT {
+                log.overflow = true;
+                log.paths.clear();
+            } else if !log.overflow {
+                log.paths.extend(paths.iter().cloned());
+            }
+        }
+        subscriber.tx.try_send(()).ok();
     }
 }
 
@@ -292,6 +373,10 @@ pub fn status() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tests that follow the stream run one at a time: a new stream
+    /// (another test's) wakes every check once.
+    static STREAM: Mutex<()> = Mutex::new(());
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("zcode-fs-watch-{name}-{}", std::process::id()));
@@ -320,7 +405,37 @@ mod tests {
     }
 
     #[test]
+    fn a_tree_hears_of_files_added_and_removed_not_written() {
+        let _stream = STREAM.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = temp_dir("tree");
+        let existing = dir.join("Existing.swift");
+        std::fs::write(&existing, "").unwrap();
+        start();
+        let tree = TreeChanges::new(&dir);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !tree.subscriber.covered.load(Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline, "the stream never covered the folder");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let _ = tree.take();
+        while tree.subscriber.rx.try_recv().is_ok() {}
+        let added = dir.join("Sources/New.swift");
+        std::fs::create_dir_all(added.parent().unwrap()).unwrap();
+        std::fs::write(&added, "").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut seen = vec![];
+        while !seen.contains(&added) {
+            assert!(std::time::Instant::now() < deadline, "no event for the new file: {seen:?}");
+            std::thread::sleep(Duration::from_millis(20));
+            seen.extend(tree.take().0);
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn a_change_wakes_the_check_that_follows_the_file() {
+        let _stream = STREAM.lock().unwrap_or_else(|e| e.into_inner());
         let dir = temp_dir("events");
         let file = dir.join("settings.json");
         std::fs::write(&file, "{}").unwrap();

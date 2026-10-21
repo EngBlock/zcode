@@ -80,8 +80,10 @@ fn exists_error(path: &Path) -> std::io::Error {
 }
 
 /// Moves a file or folder, across volumes too (the stash may be on another).
+/// A new name that differs only in case is the same item on a
+/// case-insensitive volume, so it isn't taken.
 fn move_item(from: &Path, to: &Path) -> std::io::Result<()> {
-    if to.exists() {
+    if to.exists() && !same_item(from, to) {
         return Err(exists_error(to));
     }
     match std::fs::rename(from, to) {
@@ -92,6 +94,12 @@ fn move_item(from: &Path, to: &Path) -> std::io::Result<()> {
         }
         Err(err) => Err(err),
     }
+}
+
+/// Whether two paths name the same file or folder (on a case-insensitive
+/// volume, `Icon.imageset` and `icon.imageset`).
+fn same_item(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
 }
 
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -259,6 +267,28 @@ mod tests {
         };
         assert!(apply(&edit, &stash).unwrap_err().contains("already exists"));
         assert_eq!(std::fs::read(a.join("Contents.json")).unwrap(), b"{}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_case_only_rename() {
+        let dir = temp("case");
+        let stash = Stash::new(dir.join("stash"));
+        let (old, new, other) = (dir.join("icon.imageset"), dir.join("Icon.imageset"), dir.join("Other.imageset"));
+        std::fs::create_dir(&old).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        let rename = |to: &Path| Edit { name: "Rename".into(), ops: vec![Op::Move { from: old.clone(), to: to.to_path_buf() }], select: None };
+        // Another item's name is taken; the same item's in other case isn't.
+        assert!(apply(&rename(&other), &stash).unwrap_err().contains("“Other.imageset” already exists"));
+        let undo = apply(&rename(&new), &stash).unwrap();
+        let names = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+            names.sort();
+            names
+        };
+        assert!(names(&dir).contains(&"Icon.imageset".to_string()) && !names(&dir).contains(&"icon.imageset".to_string()), "{:?}", names(&dir));
+        apply(&undo, &stash).unwrap();
+        assert!(names(&dir).contains(&"icon.imageset".to_string()), "{:?}", names(&dir));
         std::fs::remove_dir_all(&dir).ok();
     }
 

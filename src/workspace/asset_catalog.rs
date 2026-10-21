@@ -494,10 +494,10 @@ impl AssetCatalogView {
                     }
                     Err(err) => {
                         if step == Step::Do {
-                            this.report(format!("Couldn’t {}: {err}", edit.name.to_lowercase()), cx);
+                            this.report(format!("Couldn’t {}: {err}", lowercase_first(&edit.name)), cx);
                         } else {
                             // The files changed under the step: it's gone.
-                            this.report(format!("Couldn’t undo or redo {}: {err}", edit.name.to_lowercase()), cx);
+                            this.report(format!("Couldn’t undo or redo {}: {err}", lowercase_first(&edit.name)), cx);
                         }
                     }
                 }
@@ -1533,6 +1533,13 @@ impl AssetCatalogView {
         }
         panel
     }
+}
+
+/// An edit's name inside a sentence (“Rename to “Icon”” → “rename to
+/// “Icon””): only its first letter is lowered, so a name typed stays as typed.
+fn lowercase_first(name: &str) -> String {
+    let mut chars = name.chars();
+    chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
 }
 
 fn format_bytes(len: u64) -> String {

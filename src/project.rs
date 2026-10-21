@@ -146,6 +146,11 @@ const SKIP_DIRS: &[&str] = &[
 
 const MAX_FILES: usize = 100_000;
 
+/// Folders the scan doesn't go into (besides hidden and ignored ones).
+pub fn skips_dir(name: &str) -> bool {
+    SKIP_DIRS.contains(&name) || name.ends_with(".xcodeproj") || name.ends_with(".xcworkspace")
+}
+
 /// Scans the project for files, honoring `.gitignore`. Blocking.
 pub fn scan_files(root: &Path) -> Vec<PathBuf> {
     let walker = ignore::WalkBuilder::new(root)
@@ -159,9 +164,7 @@ pub fn scan_files(root: &Path) -> Vec<PathBuf> {
             if !is_dir {
                 return true;
             }
-            !(SKIP_DIRS.contains(&name.as_ref())
-                || name.ends_with(".xcodeproj")
-                || name.ends_with(".xcworkspace"))
+            !skips_dir(&name)
         })
         .build();
 
