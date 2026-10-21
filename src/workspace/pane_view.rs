@@ -19,15 +19,24 @@ use crate::actions::*;
 impl Workspace {
     pub(super) fn render_editor_area(&mut self, cx: &mut Context<Self>) -> AnyElement {
         self.note_shown_documents(cx);
-        if self.zoomed || self.panes.len() == 1 {
-            return self.render_pane(self.active_pane, cx);
-        }
-        let root = self.pane_group.root.clone();
-        // Sizes of splits that are gone go with them.
-        let mut keys = vec![];
-        root.split_keys(&mut keys);
-        self.split_states.retain(|key, _| keys.iter().any(|k| k == key.as_ref()));
-        self.render_member(&root, cx)
+        let panes = if self.zoomed || self.panes.len() == 1 {
+            self.render_pane(self.active_pane, cx)
+        } else {
+            let root = self.pane_group.root.clone();
+            // Sizes of splits that are gone go with them.
+            let mut keys = vec![];
+            root.split_keys(&mut keys);
+            self.split_states.retain(|key, _| keys.iter().any(|k| k == key.as_ref()));
+            self.render_member(&root, cx)
+        };
+        // Its size, for how many panes fit (`split_fits`).
+        let size = self.editor_area_size.clone();
+        div()
+            .relative()
+            .size_full()
+            .child(canvas(move |bounds, _, _| size.set(bounds.size), |_, _, _, _| {}).absolute().inset_0())
+            .child(panes)
+            .into_any_element()
     }
 
     /// Tells the language servers which files the panes show, the focused
@@ -143,6 +152,8 @@ impl Workspace {
         v_flex()
             .id(("pane", id.0))
             .size_full()
+            // Nothing of a narrow pane draws over the next one.
+            .overflow_hidden()
             // A click anywhere in a pane focuses it, before its content
             // takes the click.
             .capture_any_mouse_down(cx.listener(move |this, _, window, cx| this.pane_clicked(id, window, cx)))
@@ -153,6 +164,14 @@ impl Workspace {
 
     fn render_tabs(&mut self, id: PaneId, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
+        // A tab newly shown scrolls into view when the tabs overflow.
+        if let Some(pane) = self.pane_mut(id) {
+            let shown = pane.active_item().map(Item::view_id);
+            if shown.is_some() && pane.revealed_tab != shown {
+                pane.tab_scroll.scroll_to_item(pane.active);
+                pane.revealed_tab = shown;
+            }
+        }
         let Some(pane) = self.pane(id) else { return div().into_any_element() };
         let focused = id == self.active_pane;
         let split = self.panes.len() > 1;
@@ -300,7 +319,16 @@ impl Workspace {
             .bg(theme.tab_bar)
             .border_b_1()
             .border_color(theme.border)
-            .child(h_flex().id(("tab-strip", id.0)).h_full().flex_1().min_w_0().overflow_x_scroll().children(tabs))
+            .child(
+                h_flex()
+                    .id(("tab-strip", id.0))
+                    .h_full()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_x_scroll()
+                    .track_scroll(&pane.tab_scroll)
+                    .children(tabs),
+            )
             .child(
                 h_flex()
                     .flex_none()
@@ -341,7 +369,6 @@ impl Workspace {
 
     fn render_jump_bar(&self, id: PaneId, item: &EditorItem, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
-        let rel = item.path.strip_prefix(&self.project.root).unwrap_or(&item.path).to_path_buf();
         // The symbol at the cursor, from the outline of the focused file.
         let symbol = (id == self.active_pane && self.outline_path.as_ref() == Some(&item.path))
             .then(|| {
@@ -349,23 +376,31 @@ impl Workspace {
                 self.outline.iter().rfind(|e| e.selection_range.start.line <= cursor_line).map(|e| e.name.clone())
             })
             .flatten();
-        // A package's sources show under the package, as in Xcode.
+        // A package's sources show under the package, as in Xcode; a file
+        // outside the project, under its own folders.
         let mut crumbs = vec![];
         match self.package_path(&item.path) {
             Some((name, rel)) => {
                 crumbs.push(name);
                 crumbs.extend(rel.iter().map(|c| c.to_string_lossy().to_string()));
             }
-            None => {
-                crumbs.push(self.project.name.clone());
-                crumbs.extend(rel.iter().map(|c| c.to_string_lossy().to_string()));
-            }
+            None => match item.path.strip_prefix(&self.project.root) {
+                Ok(rel) => {
+                    crumbs.push(self.project.name.clone());
+                    crumbs.extend(rel.iter().map(|c| c.to_string_lossy().to_string()));
+                }
+                Err(_) => crumbs = outside_crumbs(&item.path, std::env::var_os("HOME").map(PathBuf::from).as_deref()),
+            },
         }
         let count = crumbs.len();
+        // In a narrow pane the crumbs shrink and elide rather than run into
+        // the next pane.
         h_flex()
             .h(px(24.))
             .px_2()
             .gap_1()
+            .min_w_0()
+            .overflow_hidden()
             .text_xs()
             .text_color(theme.muted_foreground)
             .border_b_1()
@@ -373,15 +408,27 @@ impl Workspace {
             .children(crumbs.into_iter().enumerate().flat_map(move |(ix, crumb)| {
                 let mut parts = vec![];
                 if ix > 0 {
-                    parts.push(Icon::new(IconName::ChevronRight).xsmall().into_any_element());
+                    parts.push(Icon::new(IconName::ChevronRight).xsmall().flex_none().into_any_element());
                 }
-                parts.push(div().when(ix + 1 == count, |el| el.text_color(theme.foreground)).child(crumb).into_any_element());
+                // The folders give way before the file's name.
+                let last = ix + 1 == count;
+                parts.push(
+                    div()
+                        .min_w_0()
+                        .flex_shrink(if last { 1. } else { 100. })
+                        .truncate()
+                        .when(last, |el| el.text_color(theme.foreground))
+                        .child(crumb)
+                        .into_any_element(),
+                );
                 parts
             }))
             .when_some(symbol, |el, symbol| {
-                el.child(Icon::new(IconName::ChevronRight).xsmall()).child(
+                el.child(Icon::new(IconName::ChevronRight).xsmall().flex_none()).child(
                     div()
                         .id("jump-symbol")
+                        .min_w_0()
+                        .truncate()
                         .text_color(cx.theme().foreground)
                         .child(symbol)
                         .on_click(cx.listener(|this, _, window, cx| this.show_document_items(&ShowDocumentItems, window, cx))),
@@ -400,6 +447,38 @@ impl Workspace {
         let of = assistant.of;
         self.follow_counterparts(of, window, cx);
         cx.notify();
+    }
+}
+
+/// The jump bar of a file outside the project: its folders from the home
+/// folder (`~`), or from the disk's root.
+fn outside_crumbs(path: &std::path::Path, home: Option<&std::path::Path>) -> Vec<String> {
+    let (first, rest) = match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rel) => (Some("~".to_string()), rel),
+        None => (None, path),
+    };
+    first
+        .into_iter()
+        .chain(rest.components().filter_map(|c| match c {
+            std::path::Component::Normal(name) => Some(name.to_string_lossy().to_string()),
+            _ => None,
+        }))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::outside_crumbs;
+
+    #[test]
+    fn a_file_outside_the_project_shows_its_own_folders() {
+        let home = Path::new("/Users/me");
+        let settings = Path::new("/Users/me/Library/Application Support/zcode/default-settings.json");
+        assert_eq!(outside_crumbs(settings, Some(home)), ["~", "Library", "Application Support", "zcode", "default-settings.json"]);
+        assert_eq!(outside_crumbs(Path::new("/tmp/a.swift"), Some(home)), ["tmp", "a.swift"]);
+        assert_eq!(outside_crumbs(Path::new("/tmp/a.swift"), None), ["tmp", "a.swift"]);
     }
 }
 

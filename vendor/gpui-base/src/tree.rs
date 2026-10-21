@@ -367,12 +367,17 @@ impl TreeState {
     }
 
     fn rebuild_entries(&mut self) {
+        // zcode patch: the selection stays on its item wherever a folder
+        // opening or closing moves it, and goes when it's hidden, rather than
+        // staying on a row that's now another item.
+        let selected = self.selected_item().map(|item| item.id.clone());
         let roots = std::mem::take(&mut self.entries)
             .into_iter()
             .filter(TreeEntry::is_root)
             .map(|entry| entry.item)
             .collect::<Vec<_>>();
         self.replace_items(roots);
+        self.selected_ix = selected.and_then(|id| self.index_of(&id));
     }
 
     fn on_action_confirm(&mut self, _: &Confirm, _: &mut Window, cx: &mut Context<Self>) {
@@ -688,6 +693,27 @@ mod tests {
             assert_eq!(state.entries.len(), 2);
             state.toggle_expand(0, cx);
             assert_eq!(state.entries.len(), 1);
+        });
+    }
+
+    // zcode patch
+    #[gpui::test]
+    fn the_selection_follows_its_item_and_goes_when_hidden(cx: &mut gpui::TestAppContext) {
+        let docs = TreeItem::new("docs", "docs").child(TreeItem::new("docs/a.md", "a.md"));
+        let src = TreeItem::new("src", "src")
+            .expanded(true)
+            .child(TreeItem::new("src/lib.rs", "lib.rs"));
+        let state = cx.new(|cx| TreeState::new(cx).items(vec![docs, src]));
+
+        state.update(cx, |state, cx| {
+            state.set_selected_index(state.index_of(&"src/lib.rs".into()), cx);
+            // A folder above it opens: the selection moves down with it.
+            state.toggle_expand(0, cx);
+            assert_eq!(state.selected_item().map(|item| item.id.as_str()), Some("src/lib.rs"));
+            // Its own folder closes: nothing is selected.
+            let src = state.index_of(&"src".into()).unwrap();
+            state.toggle_expand(src, cx);
+            assert_eq!(state.selected_index(), None);
         });
     }
 

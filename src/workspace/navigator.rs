@@ -127,6 +127,8 @@ impl Workspace {
         match tab {
             NavigatorTab::SourceControl => self.refresh_scm(cx),
             NavigatorTab::Find => {
+                // The search field, not a call or type hierarchy.
+                self.hierarchy.shown = false;
                 let selected = self
                     .active_editor()
                     .map(|e| e.read(cx).selected_text().to_string())

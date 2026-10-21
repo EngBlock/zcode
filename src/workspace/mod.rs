@@ -142,6 +142,8 @@ pub struct Workspace {
     /// Each split's pane sizes as dragged, and as the session had them.
     split_states: std::collections::HashMap<SharedString, Entity<gpui_kit::component::resizable::ResizableState>>,
     restored_split_sizes: std::collections::HashMap<SharedString, Vec<f32>>,
+    /// The editor area's size at the last frame, for how many panes fit.
+    editor_area_size: Rc<std::cell::Cell<Size<Pixels>>>,
     /// The project editor, in whichever pane has its tab.
     pub project_settings: Option<Entity<ProjectSettings>>,
     project_settings_subscriptions: Vec<Subscription>,
@@ -288,6 +290,9 @@ impl Workspace {
                 this.refresh_scm(cx);
             }
         }));
+        // A navigator, panel or inspector holding focus was hidden: GPUI
+        // would send keys to the window's root, past every shortcut.
+        subscriptions.push(cx.on_focus_lost(window, |this, window, cx| this.restore_lost_focus(window, cx)));
         // A settings, keymap or theme file changed, or a toggle wrote one.
         subscriptions.push(cx.observe_global_in::<crate::settings::SettingsStore>(window, |this, window, cx| this.settings_changed(window, cx)));
         // Semantic token colors come from the theme, which follows the appearance.
@@ -322,6 +327,7 @@ impl Workspace {
             zoomed: false,
             lsp_shown: vec![],
             split_states: Default::default(),
+            editor_area_size: Default::default(),
             restored_split_sizes: Default::default(),
             project_settings: None,
             project_settings_subscriptions: vec![],
@@ -952,6 +958,9 @@ impl Workspace {
         state["run_pid"] = self.debugger.read(cx).local_debuggee_pid().or(build.run_pid()).into();
         state["debugger"]["thread"] = self.debugger.read(cx).stopped_thread_label().into();
         state["timings"] = perf.timings_json();
+        state["popup_menu_open"] = self.popup_menu.is_some().into();
+        // The project navigator's selected row (its path).
+        state["tree_selected"] = self.tree.read(cx).selected_item().map(|item| item.id.to_string()).into();
         state["profile"] = self.profile_summary(cx);
         state["archives"] = self.archives_summary(cx);
         state["asset_catalog"] = self.asset_catalog_summary(cx);

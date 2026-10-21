@@ -4128,6 +4128,96 @@ def pane_checks(samples):
         z.quit()
 
 
+def navigation_checks(samples):
+    """Navigation, focus and panes on a copy of HelloClassic: focus coming
+    back from hidden navigators and panels, Go Back / Forward around a
+    closed tab, the project navigator's selection, splits that don't fit,
+    Show Callers' menu and a file outside the project."""
+    project = os.path.realpath(os.path.join(WORK, "NavClassic"))
+    shutil.copytree(os.path.join(samples, "HelloClassic"), project)
+    app = os.path.join(project, "HelloClassic")
+    content, greeter = os.path.join(app, "ContentView.swift"), os.path.join(app, "Model", "Greeter.swift")
+    suite, tests = (os.path.join(project, "HelloClassicTests", name) for name in ("GreeterSuite.swift", "GreeterTests.swift"))
+    z = Zcode(project)
+
+    def panes():
+        return z.dump()["panes"]
+
+    def focus_comes_back():
+        # The Find navigator's field had focus; ⌘5 hides it, and shortcuts
+        # still work (they went nowhere until a click).
+        z.run(f"open {content}", "wait 300")
+        x, y = panes()["list"][0]["shown"]["click"]
+        z.run(f"click {x} {y}", "keys cmd-4", "wait 200", "keys cmd-5", "wait 200", "keys cmd-6", "wait 300")
+        assert z.dump()["navigator"] == "Tests", z.dump()["navigator"]
+        z.run("keys cmd-4", "wait 200", "keys cmd-0", "wait 200", "keys cmd-1", "wait 300")
+        s = z.dump()
+        assert s["navigator"] == "Project" and s["show_navigator"], (s["navigator"], s["show_navigator"])
+        # The terminal had focus; hiding the debug area gives it back.
+        z.run("keys cmd-shift-y", "wait 600", "keys cmd-shift-y", "wait 300", "keys cmd-3", "wait 300")
+        assert z.dump()["navigator"] == "Bookmarks", z.dump()["navigator"]
+
+    def back_after_closing():
+        z.run("keys cmd-1", f"open {tests}", "wait 200", f"open {suite}", "wait 200", "keys cmd-w", "wait 300")
+        z.run("keys ctrl-cmd-left", "wait 300")
+        assert z.dump()["active"]["path"] == content, z.dump()["active"]["path"]
+        z.run("keys ctrl-cmd-right", "wait 300")
+        assert z.dump()["active"]["path"] == tests, z.dump()["active"]["path"]
+        z.run("keys ctrl-cmd-right", "wait 300")
+        assert z.dump()["active"]["path"] == suite, "Go Forward reopens the closed tab"
+
+    def navigator_selection():
+        z.run(f"open {content}", "wait 300")
+        assert z.dump()["tree_selected"] == content, z.dump()["tree_selected"]
+        # Model is closed: nothing selected, not ContentView.swift still.
+        z.run(f"open {greeter}", "wait 300")
+        assert z.dump()["tree_selected"] is None, z.dump()["tree_selected"]
+        z.run(f"open {content}", "wait 200", "action zcode::ShowProjectSettings", "wait 400")
+        assert z.dump()["tree_selected"] is None, z.dump()["tree_selected"]
+
+    def outside_the_project():
+        z.run("action zcode::OpenDefaultSettings", "keys cmd-alt-1", "wait 400")
+        s = z.dump()
+        assert s["tree_selected"] is None, s["tree_selected"]
+        i = s["inspector"]
+        assert i["path"].endswith("default-settings.json") and i["type_label"] == "Default - JSON" and i["location"] == "Absolute Path", i
+        z.run("keys cmd-alt-1", "keys cmd-w", "wait 200", "keys cmd-w", "wait 200")
+
+    def splits_that_dont_fit():
+        z.run("keys ctrl-alt-shift-cmd-w", f"open {content}", "wait 300", *["keys ctrl-cmd-t"] * 30, "wait 600")
+        p = panes()
+        count = len(p["list"])
+        assert 2 < count < 30, p["layout"]
+        # Every pane fits at the splits' minimum, the focused (last) one too.
+        assert count * 100 <= p["area"][0] and p["focused"] == count - 1, (count, p["area"])
+        z.run(f"open {greeter}", "wait 300")
+        assert panes()["list"][-1]["active"] == "Greeter.swift"
+        z.run("keys ctrl-alt-shift-cmd-w", "wait 300")
+        assert panes()["layout"] == "0"
+
+    def callers_menu_closes():
+        # Show Callers' menu ("No Callers" here) goes with a tab switch.
+        z.run(f"open {greeter}", f"open {content}", "wait 200")
+        z.wait_for(lambda s: s["lsp"] == "Ready", timeout=300)
+        deadline = time.time() + 120
+        while time.time() < deadline and not z.dump()["popup_menu_open"]:
+            z.run("action zcode::ShowCallers", "wait 1500")
+        assert z.dump()["popup_menu_open"], "no callers menu"
+        z.run("keys cmd-shift-[", "wait 300")
+        s = z.dump()
+        assert not s["popup_menu_open"] and s["active"]["path"] == greeter, (s["popup_menu_open"], s["active"]["path"])
+
+    try:
+        check("Navigation: hiding the focused Find field, navigator or terminal gives focus back (⌘4 ⌘5 then ⌘6 switches)", focus_comes_back)
+        check("Navigation: Go Back after closing the shown tab goes where it was before; Go Forward reopens the tab", back_after_closing)
+        check("Navigation: the project navigator selects nothing for a file without a row or Project Settings", navigator_selection)
+        check("Navigation: a file outside the project gets its type and location in the File inspector", outside_the_project)
+        check("Navigation: splits that don't fit at the minimum width are refused; every pane stays on screen", splits_that_dont_fit)
+        check("Navigation: Show Callers' menu closes on a tab switch", callers_menu_closes)
+    finally:
+        z.quit()
+
+
 def bookmark_checks(samples):
     """Bookmarks on a copy of ZKit, relaunched at the end to check they're kept."""
     project = os.path.join(WORK, "BookmarkKit")
@@ -8102,6 +8192,9 @@ def main():
 
     print("Editor panes (a copy of samples/ZKit):")
     pane_checks(samples)
+
+    print("Navigation, focus and panes (a copy of samples/HelloClassic):")
+    navigation_checks(samples)
 
     print("Source control (a copy of samples/ZKit in a new repository, with a local origin):")
     git_checks(samples)

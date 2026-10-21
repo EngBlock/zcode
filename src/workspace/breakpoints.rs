@@ -46,7 +46,7 @@ pub(super) struct BreakpointGutter {
 pub(super) struct PopupMenuState {
     pub menu: Entity<PopupMenu>,
     pub position: Point<Pixels>,
-    _subscription: Subscription,
+    _subscriptions: [Subscription; 2],
 }
 
 /// Paints a breakpoint marker: a tag pointing at the line, as in Xcode.
@@ -270,7 +270,16 @@ impl Workspace {
             }
             cx.notify();
         });
-        self.popup_menu = Some(PopupMenuState { menu, position, _subscription: subscription });
+        // Focus going elsewhere (a tab or pane switched to, a click in an
+        // editor) closes it, as a menu would.
+        let menu_id = menu.entity_id();
+        let focus_out = cx.on_focus_out(&menu.focus_handle(cx), window, move |this, _, _, cx| {
+            if this.popup_menu.as_ref().is_some_and(|p| p.menu.entity_id() == menu_id) {
+                this.popup_menu = None;
+                cx.notify();
+            }
+        });
+        self.popup_menu = Some(PopupMenuState { menu, position, _subscriptions: [subscription, focus_out] });
         cx.notify();
     }
 
