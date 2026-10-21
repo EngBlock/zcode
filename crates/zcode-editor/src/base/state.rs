@@ -2746,16 +2746,33 @@ impl<M: InputModeKind> InputBaseState<M> {
     }
 
     /// The intent of a batch the caller did not label: inserting text at
-    /// collapsed cursors is typing, anything else stands on its own.
+    /// collapsed cursors, or a keystroke typed over selections, is typing;
+    /// anything else stands on its own.
     fn typing_intent(&self, edits: &[(Range<usize>, String)], new_text: &str) -> EditIntent {
         if !new_text.is_empty()
             && !new_text.contains(['\n', '\r'])
-            && edits.iter().all(|(range, _)| range.is_empty())
+            && (!self.silent_replace_text || edits.iter().all(|(range, _)| range.is_empty()))
         {
             EditIntent::Typing
         } else {
             EditIntent::Atomic
         }
+    }
+
+    /// Whether an edit is a keystroke typed over the selection: it replaces
+    /// the selected text with one line of text.
+    fn types_over_selection(
+        &self,
+        selection: CursorSelection,
+        range: &Range<usize>,
+        new_text: &str,
+    ) -> bool {
+        !self.silent_replace_text
+            && !selection.is_empty()
+            && selection.start == range.start
+            && selection.end == range.end
+            && !new_text.is_empty()
+            && !new_text.contains(['\n', '\r'])
     }
 
     /// Where a cursor stood before an edit made with this intent.
@@ -2821,6 +2838,11 @@ impl<M: InputModeKind> InputBaseState<M> {
                 && !new_text.contains(['\n', '\r'])
                 || self.rewrites_typed_char(selection_before, &range, &old_text, new_text)
             {
+                EditIntent::Typing
+            } else if self.types_over_selection(selection_before, &range, new_text) {
+                // The replaced selection and the keystrokes after it are one
+                // undo step, as in Xcode, but never part of a burst before.
+                self.undo_manager.break_transaction_coalescing();
                 EditIntent::Typing
             } else {
                 EditIntent::Atomic
@@ -3004,6 +3026,25 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// in the underlying rope's byte units.
     pub fn selected_range(&self) -> std::ops::Range<usize> {
         (*self.selections.active()).into()
+    }
+
+    /// Every selection's range, in document order.
+    pub fn selected_ranges(&self) -> Vec<Range<usize>> {
+        let mut ranges: Vec<Range<usize>> =
+            self.selections.iter().map(|sel| sel.start..sel.end).collect();
+        ranges.sort_by_key(|range| range.start);
+        ranges
+    }
+
+    /// The range of the selection added last ([`Self::add_selection`]), the
+    /// active one while there is only one.
+    pub fn newest_selected_range(&self) -> Range<usize> {
+        let newest = self
+            .selections
+            .iter()
+            .max_by_key(|sel| sel.id)
+            .unwrap_or(self.selections.active());
+        newest.start..newest.end
     }
 
     pub fn select_all(&mut self, _: &mut Window, cx: &mut Context<Self>) {
@@ -4096,6 +4137,13 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
                 // into one undo just like single-cursor typing.
                 let intent =
                     requested_intent.unwrap_or_else(|| self.typing_intent(&edits, new_text));
+                // Typing over selections starts a burst of its own.
+                if requested_intent.is_none()
+                    && intent == EditIntent::Typing
+                    && edits.iter().any(|(range, _)| !range.is_empty())
+                {
+                    self.undo_manager.break_transaction_coalescing();
+                }
                 self.undo_manager.begin_transaction_with(intent);
                 self.undo_manager.set_pending_intent(intent);
                 self.replace_text_in_ranges(&edits, window, cx);
@@ -7234,8 +7282,11 @@ mod tests {
         });
     }
 
+    /// Typing over a selection, and the keystrokes that follow, is one undo
+    /// step that brings the selection back, as in Xcode. It's never part of
+    /// the typing before it.
     #[gpui::test]
-    fn test_undo_manager_selected_replacement_is_atomic(cx: &mut TestAppContext) {
+    fn test_undo_manager_typing_over_a_selection_is_one_step(cx: &mut TestAppContext) {
         let input_view = InputView::build(cx, |state| state);
         let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
         let input = input_view.input;
@@ -7249,11 +7300,66 @@ mod tests {
                 assert_eq!(state.value(), "aXzc");
 
                 state.on_action_undo(&Undo, window, cx);
-                assert_eq!(state.value(), "aXc");
-                state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "abc");
+                assert_eq!(state.selected_range(), 1..2);
                 state.on_action_undo(&Undo, window, cx);
                 assert_eq!(state.value(), "");
+
+                state.on_action_redo(&Redo, window, cx);
+                state.on_action_redo(&Redo, window, cx);
+                assert_eq!(state.value(), "aXzc");
+
+                // Select all, type: one ⌘Z restores the text.
+                state.select_all(window, cx);
+                for ch in ["a", "b", "c"] {
+                    state.replace_text_in_range(None, ch, window, cx);
+                }
+                assert_eq!(state.value(), "abc");
+                state.on_action_undo(&Undo, window, cx);
+                assert_eq!(state.value(), "aXzc");
+                assert_eq!(state.selected_range(), 0..4);
+            });
+        });
+    }
+
+    /// The same with several selections (Select Next Occurrence, then type).
+    #[gpui::test]
+    fn test_undo_manager_typing_over_several_selections_is_one_step(cx: &mut TestAppContext) {
+        let view = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        cx.update(|window, cx| {
+            view.input.update(cx, |state, cx| {
+                state.focus(window, cx);
+                state.set_value("foo\nfoo\nfoo\n", window, cx);
+                state.set_selected_range(0..3, cx);
+                state.add_selection(4..7, cx);
+                state.add_selection(8..11, cx);
+                for ch in ["X", "Y", "Z"] {
+                    state.replace_text_in_range(None, ch, window, cx);
+                }
+                assert_eq!(state.text.to_string(), "XYZ\nXYZ\nXYZ\n");
+                state.on_action_undo(&Undo, window, cx);
+                assert_eq!(state.text.to_string(), "foo\nfoo\nfoo\n");
+                assert_eq!(state.selected_ranges(), vec![0..3, 4..7, 8..11]);
+            });
+        });
+    }
+
+    /// The newest selection is the one added last, wherever it is.
+    #[gpui::test]
+    fn test_newest_selected_range(cx: &mut TestAppContext) {
+        let view = InputView::<EditorMode>::new(cx);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        cx.update(|window, cx| {
+            view.input.update(cx, |state, cx| {
+                state.set_value("foo foo foo foo", window, cx);
+                state.set_selected_range(4..7, cx);
+                assert_eq!(state.newest_selected_range(), 4..7);
+                state.add_selection(12..15, cx);
+                assert_eq!(state.newest_selected_range(), 12..15);
+                state.add_selection(0..3, cx);
+                assert_eq!(state.newest_selected_range(), 0..3);
+                assert_eq!(state.selected_ranges(), vec![0..3, 4..7, 12..15]);
             });
         });
     }

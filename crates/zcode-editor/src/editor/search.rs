@@ -15,7 +15,9 @@ pub struct SearchMatcher {
     pub query: Option<AhoCorasick>,
     matched_ranges: Rc<Vec<Range<usize>>>,
     current_match_ix: usize,
-    replacing: bool,
+    /// Set by a replacement: the offset just past the inserted text, where
+    /// the next scan picks the current match.
+    replacing: Option<usize>,
 }
 
 /// One search over an input: the query, how the built-in panel shows it, and
@@ -79,15 +81,17 @@ impl SearchSession {
         self.active
     }
 
-    pub(crate) fn update_query(&mut self, query: impl Into<String>, case_insensitive: bool) {
+    /// Returns whether the query or its case sensitivity changed.
+    pub(crate) fn update_query(&mut self, query: impl Into<String>, case_insensitive: bool) -> bool {
         let query = query.into();
         if self.query == query && self.case_insensitive == case_insensitive {
-            return;
+            return false;
         }
 
         self.query = query;
         self.case_insensitive = case_insensitive;
         self.matcher.update_query(&self.query, case_insensitive);
+        true
     }
 }
 
@@ -169,6 +173,11 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// [`InputBaseState::previous_search_match`], read the count and the
     /// current index from [`InputBaseState::search_session`], and end the
     /// search with [`InputBaseState::close_search`].
+    ///
+    /// A new query selects its first match at or after the selection (the
+    /// first one in the document when none follows) and scrolls to it, as
+    /// typing in Xcode's or VS Code's find field does, so the caret is at the
+    /// match when the search ends. Setting the same query again moves nothing.
     pub fn set_search_query(
         &mut self,
         query: impl Into<String>,
@@ -176,8 +185,16 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx: &mut Context<Self>,
     ) {
         self.search_session.activate();
-        self.search_session.update_query(query, case_insensitive);
+        let changed = self.search_session.update_query(query, case_insensitive);
         self.search_session.matcher.update(&self.text);
+        if changed {
+            let anchor = self.selected_range().start;
+            let matcher = &mut self.search_session.matcher;
+            matcher.set_current_at_or_after(anchor);
+            if let Some(range) = matcher.current_range() {
+                self.select_search_match(range, cx);
+            }
+        }
         cx.notify();
     }
 
@@ -188,26 +205,35 @@ impl<M: InputModeKind> InputBaseState<M> {
         cx.notify();
     }
 
+    /// Move to the next match and select it, so ending the search leaves the
+    /// caret there (Xcode, VS Code and Zed do the same).
     pub fn next_search_match(&mut self, cx: &mut Context<Self>) -> Option<Range<usize>> {
         self.sync_search_matcher();
         let range = self.search_session.matcher.next()?;
-        // Match order does not describe viewport direction after a manual
-        // scroll. Always allow search navigation to reveal the active match.
-        self.scroll_to_with_padding(range.end, None, ScrollPadding::SurroundingLines, cx);
+        self.select_search_match(range.clone(), cx);
         Some(range)
     }
 
+    /// Move to the previous match and select it.
     pub fn previous_search_match(&mut self, cx: &mut Context<Self>) -> Option<Range<usize>> {
         self.sync_search_matcher();
         let range = self.search_session.matcher.next_back()?;
-        // Match order does not describe viewport direction after a manual
-        // scroll. Always allow search navigation to reveal the active match.
-        self.scroll_to_with_padding(range.start, None, ScrollPadding::SurroundingLines, cx);
+        self.select_search_match(range.clone(), cx);
         Some(range)
     }
 
-    /// Replace the current match and move on to the next one. Returns whether
-    /// there was a match to replace.
+    /// Select a match and bring it into view.
+    fn select_search_match(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        self.set_selected_range(range.clone(), cx);
+        // Match order does not describe viewport direction after a manual
+        // scroll. Always allow search navigation to reveal the active match.
+        self.scroll_to_with_padding(range.start, None, ScrollPadding::SurroundingLines, cx);
+    }
+
+    /// Replace the current match and move on to the next one, the first that
+    /// starts after the inserted text (wrapping to the top), so a replacement
+    /// that contains the query is never matched again. The next match is
+    /// selected. Returns whether there was a match to replace.
     pub fn replace_current_search_match(
         &mut self,
         replacement: &str,
@@ -218,25 +244,20 @@ impl<M: InputModeKind> InputBaseState<M> {
             return false;
         }
         self.sync_search_matcher();
-        let matcher = &mut self.search_session.matcher;
-        let Some(range) = matcher
-            .matched_ranges()
-            .get(matcher.current_match_index())
-            .cloned()
-        else {
+        let Some(range) = self.search_session.matcher.current_range() else {
             return false;
         };
-        let next = matcher.peek().unwrap_or_else(|| range.clone());
-        let direction = matcher
-            .has_next_without_wrap()
-            .then_some(MoveDirection::Down);
-        if direction.is_none() {
-            matcher.set_current_match_index(0);
-        }
-        matcher.begin_replacement();
+        // The edit rescans the matches; the current one becomes the first
+        // past the inserted text.
+        self.search_session
+            .matcher
+            .begin_replacement(range.start + replacement.len());
         let range_utf16 = self.range_to_utf16(&range);
-        self.scroll_to(next.end, direction, cx);
         self.replace_text_in_range_silent(Some(range_utf16), replacement, window, cx);
+        self.sync_search_matcher();
+        if let Some(next) = self.search_session.matcher.current_range() {
+            self.select_search_match(next, cx);
+        }
         true
     }
 
@@ -259,7 +280,7 @@ impl<M: InputModeKind> InputBaseState<M> {
         for range in ranges.iter().rev() {
             text.replace(range.clone(), replacement);
         }
-        self.search_session.matcher.begin_replacement();
+        self.search_session.matcher.begin_replacement(0);
         let count = ranges.len();
         self.replace_text_in_range_silent(Some(0..self.text.len()), &text.to_string(), window, cx);
         self.scroll_to(0, Some(MoveDirection::Down), cx);
@@ -318,14 +339,14 @@ impl SearchMatcher {
             query: None,
             matched_ranges: Rc::new(Vec::new()),
             current_match_ix: 0,
-            replacing: false,
+            replacing: None,
         }
     }
 
     /// Update the source text and recompute matches.
     pub fn update(&mut self, text: &Rope) {
         if self.text.eq(text) {
-            self.replacing = false;
+            self.replacing = None;
             return;
         }
         self.text = text.clone();
@@ -372,9 +393,19 @@ impl SearchMatcher {
         }
     }
 
-    fn peek(&self) -> Option<Range<usize>> {
-        self.next_index()
-            .and_then(|ix| self.matched_ranges.get(ix).cloned())
+    /// The current match, `None` while there is no match.
+    pub fn current_range(&self) -> Option<Range<usize>> {
+        self.matched_ranges.get(self.current_match_ix).cloned()
+    }
+
+    /// Make the first match starting at or after `offset` the current one,
+    /// the first match when none does.
+    fn set_current_at_or_after(&mut self, offset: usize) {
+        self.current_match_ix = self
+            .matched_ranges
+            .iter()
+            .position(|range| range.start >= offset)
+            .unwrap_or(0);
     }
 
     fn has_next_without_wrap(&self) -> bool {
@@ -390,11 +421,14 @@ impl SearchMatcher {
         }
     }
 
-    /// Preserve the current logical match while a replacement mutates text.
-    fn begin_replacement(&mut self) {
-        self.replacing = true;
+    /// A replacement is about to change the text: the next scan makes the
+    /// first match starting at or after `resume_at` (the end of the inserted
+    /// text, in the new text) the current one, wrapping to the first.
+    fn begin_replacement(&mut self, resume_at: usize) {
+        self.replacing = Some(resume_at);
     }
 
+    #[cfg(test)]
     fn set_current_match_index(&mut self, index: usize) {
         self.current_match_ix = index.min(self.matched_ranges.len().saturating_sub(1));
     }
@@ -420,12 +454,10 @@ impl SearchMatcher {
             );
         }
         self.matched_ranges = Rc::new(ranges);
-        if !self.replacing || self.is_empty() {
-            self.current_match_ix = 0;
-        } else {
-            self.current_match_ix = self.current_match_ix.min(self.len() - 1);
+        match self.replacing.take() {
+            Some(resume_at) => self.set_current_at_or_after(resume_at),
+            None => self.current_match_ix = 0,
         }
-        self.replacing = false;
     }
 }
 
@@ -457,18 +489,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn finds_navigates_and_preserves_replacement_position() {
+    fn finds_and_navigates() {
         let mut matcher = SearchMatcher::new();
         matcher.update(&Rope::from("foo FOO foo"));
         matcher.update_query("foo", true);
         assert_eq!(&*matcher.matched_ranges(), &[0..3, 4..7, 8..11]);
         assert_eq!(matcher.next(), Some(4..7));
         assert_eq!(matcher.next_back(), Some(0..3));
-
-        matcher.set_current_match_index(2);
-        matcher.begin_replacement();
-        matcher.update(&Rope::from("foo FOO bar"));
-        assert_eq!(matcher.current_match_index(), 1);
     }
 
     #[test]
@@ -517,41 +544,42 @@ mod tests {
     }
 
     #[test]
-    fn replacement_keeps_current_match_index_on_next_match() {
+    fn a_replacement_moves_on_to_the_first_match_after_the_inserted_text() {
         let mut matcher = SearchMatcher::new();
         matcher.update(&Rope::from("foo foo foo"));
         matcher.update_query("foo", true);
         assert_eq!(matcher.label(), "1/3");
 
-        assert!(matcher.has_next_without_wrap());
-        matcher.begin_replacement();
+        // `foo` → `bar`: the match that followed becomes the first.
+        matcher.begin_replacement(3);
         matcher.update(&Rope::from("bar foo foo"));
-        assert_eq!(matcher.current_match_index(), 0);
-        assert_eq!(matcher.matched_ranges()[0], 4..7);
+        assert_eq!(matcher.current_range(), Some(4..7));
         assert_eq!(matcher.label(), "1/2");
 
+        // The last one replaced wraps to the top.
         matcher.set_current_match_index(1);
-        assert!(!matcher.has_next_without_wrap());
-        matcher.set_current_match_index(0);
-        matcher.begin_replacement();
+        matcher.begin_replacement(11);
         matcher.update(&Rope::from("bar foo bar"));
-        assert_eq!(matcher.current_match_index(), 0);
-        assert_eq!(matcher.matched_ranges()[0], 4..7);
+        assert_eq!(matcher.current_range(), Some(4..7));
         assert_eq!(matcher.label(), "1/1");
     }
 
+    /// `foo` → `foobar` leaves a match inside the inserted text; Replace must
+    /// not land on it, or the next Replace gives `foobarbar`.
     #[test]
-    fn update_matches_clamps_current_match_index_while_replacing() {
+    fn a_replacement_containing_the_query_is_not_matched_again() {
         let mut matcher = SearchMatcher::new();
-        matcher.update(&Rope::from("foo foo foo"));
+        matcher.update(&Rope::from("foo one\nfoo two\nfoo three\n"));
         matcher.update_query("foo", true);
+        matcher.begin_replacement(6);
+        matcher.update(&Rope::from("foobar one\nfoo two\nfoo three\n"));
+        assert_eq!(matcher.current_range(), Some(11..14));
+        assert_eq!(matcher.label(), "2/3");
+
+        // The last match replaced wraps to the first, a replacement itself.
         matcher.set_current_match_index(2);
-        matcher.begin_replacement();
-
-        matcher.update(&Rope::from("foo xoo foo"));
-
-        assert_eq!(matcher.len(), 2);
-        assert_eq!(matcher.current_match_index(), 1);
-        assert_eq!(matcher.label(), "2/2");
+        matcher.begin_replacement(25);
+        matcher.update(&Rope::from("foobar one\nfoo two\nfoobar three\n"));
+        assert_eq!(matcher.current_range(), Some(0..3));
     }
 }

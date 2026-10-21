@@ -632,9 +632,10 @@ fn is_adjacent(intent: EditIntent, previous: &Change, current: &Change) -> bool 
         return false;
     }
     match intent {
+        // The burst may begin by replacing a selection (or a character the
+        // Korean IME rewrites), so `previous` may have replaced text.
         EditIntent::Typing => {
-            previous.old_range.is_empty()
-                && !previous.new_text.contains(['\n', '\r'])
+            !previous.new_text.contains(['\n', '\r'])
                 && !current.new_text.contains(['\n', '\r'])
                 && previous.new_range.start <= current.old_range.start
                 && previous.new_range.end == current.old_range.end

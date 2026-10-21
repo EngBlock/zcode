@@ -560,6 +560,47 @@ mod tests {
         });
     }
 
+    /// Replace moves past its own replacement, and Find selects the match it
+    /// moves to, so ending the search leaves the caret there.
+    #[gpui::test]
+    fn replace_skips_the_replacement_and_find_selects_the_match(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::test_init);
+        let (probe, cx) = cx.add_window_view(|window, cx| OverlayProbe {
+            state: cx.new(|cx| crate::EditorState::new(window, cx).searchable(true)),
+        });
+        let state = probe.read_with(cx, |probe, _| probe.state.clone());
+
+        cx.update(|window, cx| {
+            state.update(cx, |state, cx| {
+                state.set_value("foo one\nfoo two\nfoo three\n", window, cx);
+                state.open_search(true, cx);
+                state.set_search_query("foo", true, cx);
+                assert!(state.replace_current_search_match("foobar", window, cx));
+                assert!(state.replace_current_search_match("foobar", window, cx));
+                assert_eq!(state.text().to_string(), "foobar one\nfoobar two\nfoo three\n");
+                // The next match is selected; the last one replaced wraps to
+                // the first, which is now the replacement's `foo`.
+                assert_eq!(state.selected_range(), 22..25);
+                assert!(state.replace_current_search_match("foobar", window, cx));
+                assert_eq!(state.text().to_string(), "foobar one\nfoobar two\nfoobar three\n");
+                assert_eq!(state.selected_range(), 0..3);
+                state.close_search(cx);
+
+                // A typed query selects the first match after the caret, and
+                // Enter (next) selects the one after that.
+                state.set_value("a needle\nb\nc needle\n", window, cx);
+                state.set_selected_range(4..4, cx);
+                state.open_search(false, cx);
+                state.set_search_query("needle", true, cx);
+                assert_eq!(state.selected_range(), 13..19);
+                assert_eq!(state.next_search_match(cx), Some(2..8));
+                assert_eq!(state.selected_range(), 2..8);
+                state.close_search(cx);
+                assert_eq!(state.selected_range(), 2..8);
+            });
+        });
+    }
+
     /// A frame that changed nothing must not rebuild the popovers.
     ///
     /// Sync runs every frame, so the change check has to be cheap and stable.

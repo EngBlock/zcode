@@ -5098,6 +5098,69 @@ def long_line_checks():
         z.quit()
 
 
+def find_and_selection_checks():
+    """Find, Replace and multiple selections in one file's editor, through
+    the real keys, in a folder of its own: Select Next Occurrence reaches
+    every match, Find leaves the caret at the match, Replace skips its own
+    replacement, and typing over selections undoes in one ⌘Z."""
+    project = os.path.realpath(os.path.join(WORK, "FindSelect"))
+    os.makedirs(project, exist_ok=True)
+    occurrences = os.path.join(project, "occurrences.txt")
+    needle = os.path.join(project, "needle.txt")
+    replace = os.path.join(project, "replace.txt")
+    with open(occurrences, "w") as f:
+        f.write("foo\nfoo\nfoo\nfoo\n")
+    with open(needle, "w") as f:
+        f.write("".join(f"line {i}\n" for i in range(1, 150)) + "the needle here\n")
+    with open(replace, "w") as f:
+        f.write("foo one\nfoo two\nfoo three\n")
+    z = Zcode(project)
+
+    def text():
+        return z.dump()["active"]["text"]
+
+    def select_next_occurrence():
+        z.run(f"open {occurrences}:1", "wait 300", *["keys alt-cmd-e"] * 4, "type XY", "wait 100")
+        assert text() == "XY\nXY\nXY\nXY\n", text()
+        z.run("keys cmd-z", "wait 100")
+        s = z.dump()["active"]
+        assert s["text"] == "foo\nfoo\nfoo\nfoo\n" and not s["dirty"], s["text"]
+
+    def typing_over_a_selection():
+        z.run(f"open {occurrences}:1", "wait 300", "keys cmd-a", "type abc", "wait 100")
+        assert text() == "abc", text()
+        z.run("keys cmd-z", "wait 100")
+        s = z.dump()["active"]
+        assert s["text"] == "foo\nfoo\nfoo\nfoo\n" and not s["dirty"], s["text"]
+
+    def find_moves_the_caret():
+        z.run(f"open {needle}:1", "wait 300", "keys cmd-f", "wait 200", "type needle", "keys enter", "wait 100",
+              "keys escape", "wait 100", "type X", "wait 100")
+        s = z.dump()["active"]
+        assert s["line"] == 150 and s["line_text"].startswith("the X here"), (s["line"], s["line_text"])
+        z.run("keys cmd-z", "wait 100")
+        assert not z.dump()["active"]["dirty"]
+
+    def replace_skips_its_replacement():
+        z.run(f"open {replace}:1", "wait 300", "keys cmd-alt-f", "wait 200", "type foo", "keys tab", "type foobar", "wait 200")
+        # The panel's Replace button, placed from the editor's top-right
+        # corner (the window's, with the inspector closed).
+        width = z.dump()["drawing"]["window_size"][0]
+        for _ in range(2):
+            z.run(f"click {width - 190} 144", "wait 150")
+        assert text() == "foobar one\nfoobar two\nfoo three\n", text()
+        z.run("keys escape", "wait 100", "keys cmd-z cmd-z", "wait 100")
+        assert not z.dump()["active"]["dirty"]
+
+    try:
+        check("Find: Select Next Occurrence (⌥⌘E) four times selects all four matches; typing replaces them, one ⌘Z undoes it", select_next_occurrence)
+        check("Find: typing over a selection (⌘A, type) is one ⌘Z", typing_over_a_selection)
+        check("Find: ⌘F, a query, Enter, Escape leaves the caret at the match; typing replaces it there", find_moves_the_caret)
+        check("Find: Replace (foo → foobar) twice replaces the first two matches, never inside its own replacement", replace_skips_its_replacement)
+    finally:
+        z.quit()
+
+
 def rusage(pid):
     """`proc_pid_rusage` of `pid` (RUSAGE_INFO_V0)."""
     import ctypes
@@ -7752,6 +7815,9 @@ def main():
 
     print("Long lines (a folder with a minified script):")
     long_line_checks()
+
+    print("Find, Replace and multiple selections (a folder of text files):")
+    find_and_selection_checks()
 
     print("Idle (a copy of samples/ZKit):")
     idle_checks(samples)
