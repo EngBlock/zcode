@@ -278,7 +278,7 @@ impl Workspace {
         }
         // An open tab shows the new text.
         if self.buffer(&path).is_some() {
-            self.reload_from_disk(&path, cx);
+            self.reload_from_disk(&path, Some(window), cx);
         }
         self.open_file(path, None, true, window, cx);
     }

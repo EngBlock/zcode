@@ -1020,7 +1020,7 @@ impl Render for Workspace {
                 } else if this.panes.len() > 1 {
                     this.close_pane(pane, window, cx);
                 } else {
-                    window.remove_window();
+                    this.close_window(window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &CloseOtherTabs, window, cx| this.close_other_tabs(window, cx)))
@@ -1042,10 +1042,7 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &JumpToCounterpartInNextPane, window, cx| {
                 this.jump_to_counterpart_in_next_pane(window, cx)
             }))
-            .on_action(cx.listener(|this, _: &CloseProject, window, _| {
-                let _ = this;
-                window.remove_window();
-            }))
+            .on_action(cx.listener(|this, _: &CloseProject, window, cx| this.close_window(window, cx)))
             .on_action(cx.listener(|this, _: &RevealInFinder, _, cx| {
                 let path = this
                     .active_buffer()

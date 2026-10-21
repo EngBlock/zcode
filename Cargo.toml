@@ -57,8 +57,8 @@ lsp-types = { version = "0.97", features = ["proposed"] }
 notify = "8.2"
 nucleo-matcher = "0.3"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSResponder", "NSGraphics", "NSView"] }
-objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSError"] }
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSWindow", "NSResponder", "NSGraphics", "NSView", "NSScreen"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSError", "NSGeometry"] }
 # zcode ▸ Open at Login: SMAppService (Zlib OR Apache-2.0 OR MIT, like objc2).
 objc2-service-management = { version = "0.3", default-features = false, features = ["std", "SMAppService", "objc2", "objc2-foundation"] }
 # Asset catalog thumbnails of PDFs, drawn by Core Graphics (already built

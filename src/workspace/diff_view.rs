@@ -468,8 +468,8 @@ impl super::Workspace {
         }
         let text = self.buffer(path).and_then(|b| b.git.bases.as_ref()).and_then(|b| b.head.clone()).unwrap_or_default();
         // Outside the window's update this may run in.
+        let window = self.window;
         cx.defer(move |cx| {
-            let Some(window) = cx.windows().first().copied() else { return };
             window
                 .update(cx, |_, window, cx| {
                     for view in views {

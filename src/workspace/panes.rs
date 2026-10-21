@@ -16,7 +16,7 @@ use crate::session::{PaneLayout, PaneState, ProjectSession, SavedPreview};
 
 /// The narrowest (and lowest) a pane can be: the splits' minimum
 /// (`PANEL_MIN_SIZE`) and the divider beside it.
-const MIN_PANE_SIZE: f32 = 101.;
+pub(super) const MIN_PANE_SIZE: f32 = 101.;
 
 impl Workspace {
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {
@@ -315,7 +315,8 @@ impl Workspace {
             if let Some((pane, ix)) = this.find_view(view) {
                 this.force_close_item(pane, ix, window, cx);
             }
-        });
+        })
+        .detach();
     }
 
     /// The files whose last tabs are among `items` and that have unsaved
@@ -346,50 +347,88 @@ impl Workspace {
     }
 
     /// Runs `then` once the user chose to save or discard `unsaved` (right
-    /// away when there is none); Save saves them first. Don't Save puts the
-    /// saved text back in a buffer a preview keeps open.
-    fn confirm_close(
+    /// away when there is none). Save saves them first, asking about a file
+    /// changed on disk since, and runs nothing if one isn't saved; Don't
+    /// Save puts the saved text back in a buffer still open after `then` (a
+    /// preview keeps it). Whether `then` ran.
+    pub(super) fn confirm_close(
         &mut self,
         unsaved: Vec<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
         then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
-    ) {
+    ) -> Task<bool> {
         if unsaved.is_empty() {
             then(self, window, cx);
-            return;
+            return Task::ready(true);
         }
         let message = match &unsaved[..] {
             [path] => format!("Do you want to save the changes you made to “{}”?", super::pane::file_title(path)),
             paths => format!("Do you want to save the changes you made to {} files?", paths.len()),
         };
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            &message,
-            Some("Your changes will be lost if you don’t save them."),
-            &[PromptButton::ok("Save"), PromptButton::new("Don’t Save"), PromptButton::cancel("Cancel")],
-            cx,
-        );
+        let answer = crate::debug::ask(&message, "Your changes will be lost if you don’t save them.", &["Save", "Don’t Save", "Cancel"], window, cx);
         cx.spawn_in(window, async move |this, cx| {
-            let choice = answer.await.unwrap_or(2);
-            this.update_in(cx, |this, window, cx| {
-                if choice == 0 {
-                    for path in &unsaved {
-                        this.save_path(path, window, cx);
+            let choice = answer.await;
+            if choice == 0 {
+                for path in &unsaved {
+                    let Ok(saved) = this.update_in(cx, |this, window, cx| this.save_or_ask(path, window, cx)) else { return false };
+                    if !saved.await {
+                        return false;
                     }
                 }
-                if choice <= 1 {
-                    then(this, window, cx);
-                }
+            }
+            if choice > 1 {
+                return false;
+            }
+            this.update_in(cx, |this, window, cx| {
+                then(this, window, cx);
                 if choice == 1 {
+                    // In the window's update: the reload is handed the window.
                     for path in &unsaved {
-                        this.discard_changes(path, cx);
+                        this.discard_changes(path, window, cx);
                     }
                 }
             })
-            .ok();
+            .is_ok()
+        })
+    }
+
+    /// Whether a file open here has unsaved changes.
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.buffers.iter().any(|b| b.dirty)
+    }
+
+    /// Closing the window (File ▸ Close Workspace, its close button) or
+    /// quitting: every file with unsaved changes asks first, as a tab's
+    /// last does. Whether the window may go.
+    pub fn confirm_close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
+        let unsaved: Vec<PathBuf> = self.buffers.iter().filter(|b| b.dirty).map(|b| b.path.clone()).collect();
+        self.confirm_close(unsaved, window, cx, |_, _, _| {})
+    }
+
+    /// File ▸ Close Workspace, and the window's close button with unsaved
+    /// changes: closes the window once they're saved or discarded.
+    pub fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let confirmed = self.confirm_close_window(window, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            if confirmed.await {
+                this.update_in(cx, |this, window, cx| {
+                    this.window_closing(cx);
+                    window.remove_window();
+                })
+                .ok();
+            }
         })
         .detach();
+    }
+
+    /// What goes with the window: the session is saved, terminals, runs
+    /// and language servers end.
+    pub fn window_closing(&mut self, cx: &mut Context<Self>) {
+        self.save_session(cx);
+        self.stop_terminals(cx);
+        self.end_runs(cx);
+        self.lsp.update(cx, |lsp, cx| lsp.shutdown(cx)).detach();
     }
 
     pub(super) fn force_close_item(&mut self, pane: PaneId, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -499,7 +538,8 @@ impl Workspace {
                     this.force_close_item(pane, ix, window, cx);
                 }
             }
-        });
+        })
+        .detach();
     }
 
     // ---------------------------------------------------------------------
@@ -563,7 +603,7 @@ impl Workspace {
         }
         let Some(p) = self.pane(pane) else { return };
         let unsaved = self.unsaved_if_closed(&p.items, cx);
-        self.confirm_close(unsaved, window, cx, move |this, window, cx| this.remove_pane(pane, window, cx));
+        self.confirm_close(unsaved, window, cx, move |this, window, cx| this.remove_pane(pane, window, cx)).detach();
     }
 
     /// File ▸ Close Other Editor Panes (⌃⌥⇧⌘W).
@@ -575,7 +615,8 @@ impl Workspace {
             for pane in others {
                 this.remove_pane(pane, window, cx);
             }
-        });
+        })
+        .detach();
     }
 
     /// Takes a pane out of the split tree with its tabs. Focus goes to the
@@ -1036,11 +1077,11 @@ impl Workspace {
 
     /// Don't Save on closing a file's last editor: a buffer still open (a
     /// preview keeps it) goes back to the saved text.
-    pub(super) fn discard_changes(&mut self, path: &Path, cx: &mut Context<Self>) {
+    pub(super) fn discard_changes(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         if !self.buffer(path).is_some_and(|b| b.dirty) {
             return;
         }
-        self.reload_from_disk(path, cx);
+        self.reload_from_disk(path, Some(window), cx);
         if let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) {
             buffer.dirty = false;
             self.lsp.update(cx, |lsp, cx| lsp.set_unsaved(path, false, cx));

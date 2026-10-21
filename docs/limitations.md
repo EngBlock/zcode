@@ -135,9 +135,10 @@
   stash, cherry-pick, tags, history inspector, clone, or merge conflict
   editor. git never prompts, so a remote that wants a password fails unless
   a credential helper or SSH agent has it. A package checkout (its own
-  repository) gets no change bars. ⌘Z after Discard Change brings the
-  lines back to the editor but not to the index: a change that was staged
-  has to be staged again. A rename is followed only once it is staged
+  repository) gets no change bars. ⌘Z after Discard Change stages again
+  what the discard unstaged only while the index has what the discard left
+  (a change staged, unstaged or committed since stops it, with a notice),
+  and only while the tab's undo history lasts. A rename is followed only once it is staged
   (`git mv`, or both paths added).
 * Editor panes: the assistant has Counterparts and Manual modes only (no
   Callers, Superclasses, Preview or other Xcode modes), and Swift files have
@@ -145,7 +146,10 @@
   Pane… (⌘J) and the ⌥⇧ destination chooser aren't there; ⌥-click opens in
   the assistant or the next pane. Panes aren't dragged between windows, and
   tabs can't be dragged between panes. Project Settings is one tab, in one
-  pane at a time, and isn't restored with the session.
+  pane at a time, and isn't restored with the session. zcode ▸ Quit, ⌘Q
+  and closing a window ask about unsaved changes; quitting from the Dock's
+  menu or by logging out doesn't (GPUI's macOS backend has no
+  `applicationShouldTerminate:`), and unsaved changes are lost there.
 * Language features come from sourcekit-lsp: the hierarchies come from
   its index, so they're empty until a new project's background index is
   built (the Find navigator says so) and cover what the index has seen;
@@ -286,8 +290,7 @@
   every file and do nothing for others (zcode's menus have no
   per-file state); Quick Actions hides them. A preview of a file whose
   last editor closed keeps the buffer open; Don't Save on that close
-  puts the saved text back, which wasn't checked end to end (the e2e
-  suite can't answer the dialog).
+  puts the saved text back.
 * Profile: a recording couldn't be made on the machine zcode was built on
   (`xctrace record` needs Developer Tools access, `DevToolsSecurity
   -enable`, and failed there with "Error connecting to DTServiceHub"), so

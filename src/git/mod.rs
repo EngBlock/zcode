@@ -478,6 +478,20 @@ pub fn write_index(root: &Path, rel: &str, text: Option<&str>, mode: Option<&str
     run(cmd).map(drop)
 }
 
+/// `write_index`, if the index's version of `rel` is still `expected`
+/// (`None`: it isn't in the index); otherwise nothing is written and the
+/// error says so. How the undo of a Discard Change stages again what the
+/// discard unstaged without undoing a change made to the index since.
+pub fn write_index_if(root: &Path, rel: &str, expected: Option<&str>, text: Option<&str>, mode: Option<&str>) -> Result<()> {
+    let mut cmd = git(root);
+    cmd.args(["cat-file", "blob", &format!(":{rel}")]);
+    let current = run_bytes(cmd, None).ok();
+    if current.as_deref() != expected.map(str::as_bytes) {
+        bail!("“{rel}” changed in the index since Discard Change, so the index was left as it is.");
+    }
+    write_index(root, rel, text, mode)
+}
+
 /// Discard Changes: tracked files back to `HEAD`, in the index and the work
 /// tree (files added since `HEAD` leave the index; the caller trashes them).
 pub fn discard_files(root: &Path, rels: &[String]) -> Result<()> {
@@ -813,6 +827,18 @@ mod tests {
         assert_eq!(repo.git(&["show", ":a.txt"]), "one\ntwo\nthree\nfour\n");
         let file = super::status(repo.path()).unwrap().files.remove(0);
         assert!(file.is_staged() && file.is_unstaged(), "{file:?}");
+
+        // Only over the text expected: what Discard Change's undo stages again.
+        let unstaged = bases[0].index.as_deref();
+        assert!(write_index_if(repo.path(), "a.txt", unstaged, Some("other\n"), None).is_err());
+        assert_eq!(repo.git(&["show", ":a.txt"]), staged, "left as it was");
+        write_index_if(repo.path(), "a.txt", Some(&staged), unstaged, None).unwrap();
+        assert_eq!(repo.git(&["show", ":a.txt"]), "one\ntwo\nthree\n");
+        write_index_if(repo.path(), "a.txt", unstaged, Some(&staged), None).unwrap();
+        assert!(write_index_if(repo.path(), "gone.txt", Some(""), Some("x\n"), None).is_err(), "not in the index");
+        write_index_if(repo.path(), "gone.txt", None, Some("x\n"), None).unwrap();
+        write_index_if(repo.path(), "gone.txt", Some("x\n"), None, None).unwrap();
+        assert!(repo.git(&["ls-files", "--", "gone.txt"]).is_empty());
 
         // Unstage it again, then stage the whole file and commit it.
         unstage_files(repo.path(), &["a.txt".into()]).unwrap();

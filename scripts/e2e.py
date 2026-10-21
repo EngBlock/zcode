@@ -238,7 +238,8 @@ class Zcode:
 
     def quit(self):
         try:
-            self.run("action zcode::Quit", timeout=5)
+            # Unsaved changes left by a check: Don't Save when Quit asks.
+            self.run("alert answer Don’t Save", "action zcode::Quit", timeout=5)
         except Exception:
             pass
         try:
@@ -1233,7 +1234,7 @@ def archive_checks(samples):
     uploaded or sent to Apple. ArchiveProject over MCP; Delete Archive."""
     import datetime
     project = os.path.join(WORK, "Archive", "HelloClassic")
-    shutil.copytree(os.path.join(samples, "HelloClassic"), project)
+    pristine_sample("HelloClassic", project)
     archives_dir = os.path.join(CONFIG_DIR, "archives")
     exports = os.path.join(WORK, "Archive", "exports")
     archived = {}
@@ -1776,6 +1777,147 @@ def rendered_checks():
         check("live preview: a renamed file's preview follows it, and the session brings previews back", rename_and_session)
     finally:
         z.quit()
+
+
+def closing_checks():
+    """Closing with unsaved changes, every way it asks (a tab, a pane, Close
+    Other Tabs, the window, Quit) and every answer, answered through `alert
+    answer`, with the file's buffer staying open after its last editor
+    closes (a preview keeps it): Don't Save puts the file's text back in
+    it, Save writes it (asking first when the file changed on disk), Cancel
+    keeps everything."""
+    folder = os.path.realpath(tempfile.mkdtemp(prefix="Closing-", dir=WORK))
+    readme, notes = os.path.join(folder, "README.md"), os.path.join(folder, "notes.md")
+    original = "# Read Me\n\nSome text.\n"
+
+    def reset():
+        open(readme, "w").write(original)
+        open(notes, "w").write("notes\n")
+
+    def previews(z):
+        return [r for r in z.dump()["rendered"] if r["path"] == readme]
+
+    def edit(z):
+        # README.md beside its preview, typed in at the top.
+        z.run("pane focus 0", f"open {readme}", "keys cmd-up", "type Unsaved.", "wait 300")
+        assert z.dump()["active"]["dirty"]
+
+    def reopened(z):
+        z.run("pane focus 0", f"open {readme}", "wait 200")
+        return z.dump()["active"]
+
+    reset()
+    z = Zcode(folder)
+    try:
+        z.run(f"open {readme}", "action zcode::OpenPreviewToTheSide", "wait 500")
+
+        def tab_answers():
+            edit(z)
+            z.run("alert answer Cancel", "keys cmd-w", "wait 300")
+            a = z.dump()["active"]
+            assert a["path"] == readme and a["dirty"] and a["text"].startswith("Unsaved."), a["path"]
+            # Don't Save: the tab goes, and the buffer the preview keeps goes
+            # back to the file (it used to keep the typing, unsaved but not
+            # dirty, for the next ⌘S to write).
+            z.run("alert answer Don’t Save", "keys cmd-w", "wait 300")
+            assert all("README.md" not in p["tabs"] for p in z.dump()["panes"]["list"])
+            z.wait_for(lambda s: all(r["text"] == original for r in s["rendered"] if r["path"] == readme), timeout=10, interval=0.2)
+            a = reopened(z)
+            assert a["text"] == original and not a["dirty"], a["text"][:40]
+            z.run("keys cmd-s", "wait 200")
+            assert open(readme).read() == original
+            # Save writes it, and the preview has the saved text.
+            edit(z)
+            z.run("alert answer Save", "keys cmd-w", "wait 300")
+            assert open(readme).read() == "Unsaved." + original
+            assert all(r["text"] == "Unsaved." + original for r in previews(z))
+            a = reopened(z)
+            assert not a["dirty"], a
+            reset()
+            z.run("wait 300")
+
+        def save_on_close_over_a_change_on_disk():
+            # Save, then the file changed on disk: the tab waits for Keep or
+            # Revert, and Cancel keeps it.
+            edit(z)
+            time.sleep(1.1)
+            with open(readme, "a") as f:
+                f.write("Disk.\n")
+            z.run("alert answer Save", "alert answer Cancel", "keys cmd-w", "wait 300")
+            a = z.dump()["active"]
+            assert a["path"] == readme and a["dirty"], a["path"]
+            assert open(readme).read() == original + "Disk.\n"
+            z.run("alert answer Save", "alert answer Revert", "keys cmd-w", "wait 300")
+            assert all("README.md" not in p["tabs"] for p in z.dump()["panes"]["list"])
+            a = reopened(z)
+            assert a["text"] == original + "Disk.\n" and not a["dirty"], a["text"]
+            edit(z)
+            time.sleep(1.1)
+            reset()
+            z.run("alert answer Save", "alert answer Keep zcode Version", "keys cmd-w", "wait 300")
+            assert open(readme).read() == "Unsaved." + original + "Disk.\n"
+            assert all(r["text"] == "Unsaved." + original + "Disk.\n" for r in previews(z))
+            reset()
+            z.run("wait 300")
+
+        def pane_and_other_tabs():
+            # README.md alone in a pane, its preview in another: Close Editor
+            # Pane, Don't Save.
+            z.run("pane focus 0", f"open {readme}", "keys cmd-w", "wait 200", f"pane open-next {readme}", "wait 300")
+            s = z.dump()
+            assert [p["tabs"] for p in s["panes"]["list"]] == [["README.md (Preview)"], ["README.md"]], s["panes"]
+            assert s["active"]["path"] == readme, s["active"]["path"]
+            z.run("keys cmd-up", "type Unsaved.", "wait 300", "alert answer Don’t Save", "action zcode::CloseEditorPane", "wait 300")
+            s = z.dump()
+            assert [p["tabs"] for p in s["panes"]["list"]] == [["README.md (Preview)"]], s["panes"]
+            assert all(r["text"] == original for r in previews(z))
+            assert reopened(z)["text"] == original
+            # Close Other Tabs from notes.md, Don't Save for README.md only.
+            z.run(f"open {notes}", "keys cmd-up", "type x", f"open {readme}", "keys cmd-up", "type Unsaved.", f"open {notes}", "wait 300")
+            z.run("alert answer Don’t Save", "action zcode::CloseOtherTabs", "wait 300")
+            s = z.dump()
+            assert s["panes"]["list"][0]["tabs"] == ["notes.md"] and s["active"]["dirty"], s["panes"]
+            assert open(readme).read() == original
+            z.run("keys cmd-z", "wait 200")
+            assert not z.dump()["active"]["dirty"]
+
+        check("Closing: a tab's Cancel, Don't Save and Save with a preview keeping the buffer open (Don't Save puts the file's text back)", tab_answers)
+        check("Closing: Save on closing a file changed on disk asks Keep or Revert before the tab goes; Cancel keeps it", save_on_close_over_a_change_on_disk)
+        check("Closing: Close Editor Pane and Close Other Tabs, Don't Save with a preview keeping the buffer open", pane_and_other_tabs)
+    finally:
+        z.quit()
+
+    def closing(z, *commands):
+        # zcode quits before it logs the last command.
+        try:
+            z.run(*commands)
+        except RuntimeError:
+            pass
+        z.proc.wait(timeout=10)
+
+    def window_and_quit():
+        # Close Workspace asks: Cancel keeps the window, Don't Save closes it
+        # (a scripted zcode then quits) with the file as it was.
+        reset()
+        z = Zcode(folder)
+        try:
+            z.run(f"open {readme}", "keys cmd-up", "type Unsaved.", "wait 300", "alert answer Cancel", "action zcode::CloseProject", "wait 500")
+            assert z.dump()["active"]["dirty"]
+            closing(z, "alert answer Don’t Save", "action zcode::CloseProject")
+            assert open(readme).read() == original
+        finally:
+            z.quit()
+        # Quit asks too: Save writes the file, then zcode quits.
+        z = Zcode(folder)
+        try:
+            z.run(f"open {readme}", "keys cmd-up", "type Saved.", "wait 300", "alert answer Cancel", "action zcode::Quit", "wait 500")
+            assert z.dump()["active"]["dirty"], "Cancel stops the quit"
+            closing(z, "alert answer Save", "action zcode::Quit")
+            assert open(readme).read() == "Saved." + original
+        finally:
+            z.quit()
+
+    check("Closing: the window and Quit ask about unsaved changes (Cancel stays; Don't Save closes as it was; Save writes)", window_and_quit)
 
 
 def asset_catalog_checks(samples):
@@ -2466,7 +2608,7 @@ def files_on_disk_checks(samples):
     edits undone byte for byte, files made in a shell listed, a save over a
     change on disk asking first, case-only renames."""
     root = os.path.join(WORK, "DiskClassic")
-    shutil.copytree(os.path.join(samples, "HelloClassic"), root)
+    pristine_sample("HelloClassic", root)
     app = os.path.join(root, "HelloClassic")
     pbxproj = os.path.join(root, "HelloClassic.xcodeproj", "project.pbxproj")
     original = open(pbxproj).read()
@@ -2866,13 +3008,26 @@ def package_checks(z, samples):
             z.run("keys cmd-b")
             s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=300)
             assert "success: false" in s["phase"], s["phase"]
-            located = [i for i in s["issues"] if i.startswith(f"Error Greeter.swift:{broken_line} consecutive declarations")]
-            assert located and all("FixIt(" not in i for i in s["issues"]), s["issues"]
-            assert any(i.endswith("(fix-it: insert “;”)") for i in located), located
-            assert not any("/Greeter.swift" in i for i in s["issues"]), s["issues"]
+            built = [i for i in s["build_issues"] if i.startswith(f"Error Greeter.swift:{broken_line} consecutive declarations")]
+            assert built and all("FixIt(" not in i for i in s["build_issues"]), s["build_issues"]
+            assert any(i.endswith("(fix-it: insert “;”)") for i in built), built
+            assert not any("/Greeter.swift" in i for i in s["build_issues"]), s["build_issues"]
+            # sourcekit-lsp reports it too ("Consecutive declarations … ';'"):
+            # one row, one mark in the gutter, counted once, as in Xcode.
+            def merged(s):
+                return [i for i in s["issues"] if i.lower().startswith(f"error greeter.swift:{broken_line} consecutive declarations")]
+            s = z.wait_for(lambda s: s["active"]["diagnostics"] >= 1 and any("Consecutive" in i for i in merged(s)), timeout=60, interval=0.5)
+            assert len(merged(s)) == 1, s["issues"]
+            assert s["issue_counts"][0] == len([i for i in s["issues"] if i.startswith("Error")]) == len([i for i in s["build_issues"] if i.startswith("Error")]), (s["issue_counts"], s["issues"])
+            assert s["active"]["diagnostics"] == 1, s["active"]["diagnostics"]
+            # ⌘' goes to it, and again to it: it's the only issue in a file.
             z.run(f"open {main}", "wait 300", "keys cmd-'", "wait 300")
-            a = z.dump()["active"]
+            s = z.dump()
+            a = s["active"]
             assert a["path"].endswith("Greeter.swift") and a["line"] == broken_line, a
+            z.run(f"open {main}", "wait 300", "keys cmd-'", "wait 300")
+            s = z.dump()
+            assert s["active"]["path"].endswith("Greeter.swift") and s["issue_cursor"] == 0, (s["issue_cursor"], s["issues"])
         finally:
             with open(greeter, "w") as f:
                 f.write(original)
@@ -2944,7 +3099,7 @@ def package_checks(z, samples):
     check("Swift package: re-run failed tests", rerun_failed)
     check("Swift package: Run on My Mac (⌘R)", run_package)
     check("Swift package: Test (⌘U) → Test navigator", test_package)
-    check("Swift package: a swift build error is listed at its file and line, its fix-it said, ⌘' goes there", package_build_error)
+    check("Swift package: a swift build error is listed at its file and line, its fix-it said, once with sourcekit-lsp's (one row, one gutter mark, counted once), ⌘' goes there", package_build_error)
     check("Swift package: breakpoint, variables, step over (F6)", debug_package)
 
     tick_line = line_of(main, 'print("tick')
@@ -4369,7 +4524,7 @@ def navigation_checks(samples):
     closed tab, the project navigator's selection, splits that don't fit,
     Show Callers' menu and a file outside the project."""
     project = os.path.realpath(os.path.join(WORK, "NavClassic"))
-    shutil.copytree(os.path.join(samples, "HelloClassic"), project)
+    pristine_sample("HelloClassic", project)
     app = os.path.join(project, "HelloClassic")
     content, greeter = os.path.join(app, "ContentView.swift"), os.path.join(app, "Model", "Greeter.swift")
     suite, tests = (os.path.join(project, "HelloClassicTests", name) for name in ("GreeterSuite.swift", "GreeterTests.swift"))
@@ -4430,6 +4585,39 @@ def navigation_checks(samples):
         z.run("keys ctrl-alt-shift-cmd-w", "wait 300")
         assert panes()["layout"] == "0"
 
+    def shrinking_the_window_keeps_panes_usable():
+        # The window can't be made smaller than its other parts and the
+        # panes at their minimum: shrinking it stops there (Xcode's
+        # windows do the same), and a panel shown grows it instead.
+        def window():
+            s = z.dump()
+            return s["window"], s["panes"]
+        z.run("keys ctrl-alt-shift-cmd-w", f"open {content}", "wait 300", *["keys ctrl-cmd-t"] * 4, "wait 600")
+        w, p = window()
+        assert len(p["list"]) == 5, p["layout"]
+        chrome = w["size"][0] - p["area"][0]
+        assert abs(w["min_size"][0] - max(720, chrome + 5 * 101)) <= 1, (w, p["area"])
+        z.run("window resize 500 500", "wait 800")
+        w, p = window()
+        assert w["size"][0] > 500 and p["area"][0] >= 5 * 100 and min(p["sizes"]) >= 100, (w, p["area"], p["sizes"])
+        z.run("action zcode::ToggleInspector", "wait 800")
+        w, p = window()
+        assert p["area"][0] >= 5 * 100 and min(p["sizes"]) >= 100, (w, p["area"], p["sizes"])
+        z.run("action zcode::ToggleInspector", "wait 300")
+        # Stacked: the height's least size follows.
+        z.run("keys ctrl-alt-shift-cmd-w", "wait 300", *["keys ctrl-alt-cmd-t"] * 3, "wait 600")
+        w, p = window()
+        assert len(p["list"]) == 4 and abs(w["min_size"][1] - max(420, w["size"][1] - p["area"][1] + 4 * 101)) <= 1, (w, p)
+        z.run("window resize 500 300", "wait 800")
+        w, p = window()
+        assert w["size"][1] > 300 and p["area"][1] >= 4 * 100 and min(p["sizes"]) >= 100, (w, p["area"], p["sizes"])
+        # One pane: as small as the window's other parts and one pane allow.
+        z.run("keys ctrl-alt-shift-cmd-w", "wait 600", "window resize 500 300", "wait 800")
+        w, p = window()
+        least = [max(720, w["size"][0] - p["area"][0] + 101), max(420, w["size"][1] - p["area"][1] + 101)]
+        assert all(abs(a - b) <= 1 for a, b in zip(w["min_size"] + w["size"], least + least)), (w, p["area"])
+        z.run("window resize 1440 900", "wait 800")
+
     def callers_menu_closes():
         # Show Callers' menu ("No Callers" here) goes with a tab switch.
         z.run(f"open {greeter}", f"open {content}", "wait 200")
@@ -4448,6 +4636,7 @@ def navigation_checks(samples):
         check("Navigation: the project navigator selects nothing for a file without a row or Project Settings", navigator_selection)
         check("Navigation: a file outside the project gets its type and location in the File inspector", outside_the_project)
         check("Navigation: splits that don't fit at the minimum width are refused; every pane stays on screen", splits_that_dont_fit)
+        check("Navigation: shrinking the window stops before a pane is under the minimum; a panel shown grows it", shrinking_the_window_keeps_panes_usable)
         check("Navigation: Show Callers' menu closes on a tab switch", callers_menu_closes)
     finally:
         z.quit()
@@ -4651,6 +4840,15 @@ def bookmark_checks(samples):
 # git in tests: never the user's global or system configuration (no
 # signing, hooks or aliases), and only on temporary repositories.
 GIT_ENV = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+
+
+def pristine_sample(name, dest):
+    """Copies samples/<name> as committed to `dest`: the run's samples are
+    changed by the checks on them (HelloClassic's group renames and moves
+    files), which a group working on a copy of its own doesn't expect."""
+    with tempfile.TemporaryDirectory(dir=WORK) as tmp:
+        subprocess.run(["tar", "-xf", os.path.join(WORK, "samples.tar"), "-C", tmp, f"samples/{name}"], check=True)
+        shutil.copytree(os.path.join(tmp, "samples", name), dest)
 
 
 def git(cwd, *args):
@@ -4901,6 +5099,31 @@ def git_checks(samples):
         s = z.wait_for(lambda s: settled(s) and hunks(s) == [] and not g(s)["staged"], timeout=15, interval=0.3)
         assert "// staged" not in s["active"]["text"]
         assert git(project, "diff", "--cached") == "", git(project, "diff", "--cached")
+        # ⌘Z brings the line back to the editor and the index; ⇧⌘Z takes it
+        # from both again.
+        z.run("keys cmd-z", "wait 300")
+        s = z.wait_for(lambda s: settled(s) and hunks(s) == [("Modified", line, "Staged")], timeout=15, interval=0.3)
+        assert "// staged" in s["active"]["text"] and not s["active"]["dirty"]
+        assert "// staged" in git(project, "diff", "--cached"), git(project, "diff", "--cached")
+        z.run("keys cmd-shift-z", "wait 300")
+        s = z.wait_for(lambda s: settled(s) and hunks(s) == [] and not g(s)["staged"], timeout=15, interval=0.3)
+        assert "// staged" not in s["active"]["text"]
+        assert git(project, "diff", "--cached") == "", git(project, "diff", "--cached")
+        # The index changed in between (here from a shell): the undo leaves
+        # it alone and says so, and the next redo and undo don't touch it.
+        elsewhere = git(project, "show", f"HEAD:{rel}") + "// elsewhere\n"
+        oid = subprocess.run(["git", "hash-object", "-w", "--stdin", "--path", rel], cwd=project, input=elsewhere,
+                             check=True, capture_output=True, text=True, env=GIT_ENV).stdout.strip()
+        git(project, "update-index", "--cacheinfo", f"100644,{oid},{rel}")
+        z.run("keys cmd-z", "wait 300")
+        s = z.wait_for(lambda s: settled(s) and "// staged" in s["active"]["text"] and g(s)["last_error"], timeout=15, interval=0.3)
+        assert "changed in the index since" in g(s)["last_error"], g(s)["last_error"]
+        cached = git(project, "diff", "--cached")
+        assert "// elsewhere" in cached and "// staged" not in cached, cached
+        z.run("keys cmd-shift-z", "wait 300", "keys cmd-z", "wait 300", "keys cmd-shift-z", "wait 300")
+        z.wait_for(lambda s: settled(s) and "// staged" not in s["active"]["text"], timeout=15, interval=0.3)
+        assert git(project, "diff", "--cached") == cached
+        git(project, "reset", "-q", "--", rel)
         z.run("keys cmd-s", "wait 300")
         z.wait_for(lambda s: settled(s) and not g(s)["unstaged"] and not g(s)["staged"], timeout=15, interval=0.3)
         assert git(project, "status", "--porcelain") == "", git(project, "status", "--porcelain")
@@ -5022,7 +5245,7 @@ def git_checks(samples):
         check("Git: New Branch, a commit, Push… to a new remote branch, Switch Branch back", branches_and_push)
         check("Git: Fetch Changes and Pull… (⌥⌘X) from a local origin; the open file reloads", fetch_and_pull)
         check("Git: a commit made outside zcode clears the bars; Discard Changes on a file", outside_changes)
-        check("Git: Discard Change on a staged hunk unstages it too (git diff --cached is empty)", discard_a_staged_hunk)
+        check("Git: Discard Change on a staged hunk unstages it too (git diff --cached is empty), ⌘Z stages it again and ⇧⌘Z unstages it", discard_a_staged_hunk)
         check("Git: Discard Change at the end of a file with no final newline doesn't add one", discard_without_a_final_newline)
         check("Git: a staged rename is compared with its old path, in the gutter and the commit sheet", renamed_file)
         check("Git: Authors (⌃⇧⌘A) on an untracked file says Not Committed Yet", authors_on_an_untracked_file)
@@ -8416,6 +8639,9 @@ def main():
 
     print("Live previews (a folder of an SVG and Markdown):")
     rendered_checks()
+
+    print("Closing with unsaved changes (a folder of Markdown files):")
+    closing_checks()
 
     print("SwiftUI previews (a copy of HelloZ; Xcode's commands recorded, never run):")
     preview_checks(samples)

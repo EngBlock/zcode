@@ -146,6 +146,9 @@ pub struct Workspace {
     restored_split_sizes: std::collections::HashMap<SharedString, Vec<f32>>,
     /// The editor area's size at the last frame, for how many panes fit.
     editor_area_size: Rc<std::cell::Cell<Size<Pixels>>>,
+    /// The window's least content size, as last set from the panes
+    /// (`render_editor_area`).
+    window_min_size: Rc<std::cell::Cell<Size<Pixels>>>,
     /// The project editor, in whichever pane has its tab.
     pub project_settings: Option<Entity<ProjectSettings>>,
     project_settings_subscriptions: Vec<Subscription>,
@@ -334,6 +337,7 @@ impl Workspace {
             lsp_shown: vec![],
             split_states: Default::default(),
             editor_area_size: Default::default(),
+            window_min_size: Default::default(),
             restored_split_sizes: Default::default(),
             project_settings: None,
             project_settings_subscriptions: vec![],
@@ -556,7 +560,7 @@ impl Workspace {
                 if !changed.is_empty() {
                     let ok = this.update(cx, |this, cx| {
                         for path in &changed {
-                            this.reload_from_disk(path, cx);
+                            this.reload_from_disk(path, None, cx);
                         }
                     });
                     if ok.is_err() {
@@ -868,6 +872,12 @@ impl Workspace {
 
 }
 
+/// An issue as the dump lists it: `Error Greeter.swift:3 message`.
+fn issue_line(i: &crate::build::log::Issue) -> String {
+    let file = i.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    format!("{:?} {file}:{} {}", i.severity, i.line.unwrap_or(0), i.message)
+}
+
 impl Workspace {
     /// A JSON summary of UI state for the debug harness and tests.
     /// A debug-channel command for the property list editor on screen: the
@@ -953,7 +963,7 @@ impl Workspace {
             "destination_menu": build.destinations.iter().map(|d| format!("{} | {} | {}", d.group(), d.menu_label(), d.detail())).collect::<Vec<_>>(),
             "phase": format!("{:?}", build.phase),
             "indexing": build.indexing,
-            "issues": issues.iter().map(|i| format!("{:?} {}:{} {}", i.severity, i.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), i.line.unwrap_or(0), i.message)).collect::<Vec<_>>(),
+            "issues": issues.iter().map(issue_line).collect::<Vec<_>>(),
             "tests": build.tests.iter().map(|t| format!("{:?} {}", t.status, t.full_name())).collect::<Vec<_>>(),
             "testing": testing,
             "console_tail": build.console.iter().rev().take(40).rev().cloned().collect::<Vec<_>>(),
@@ -978,6 +988,12 @@ impl Workspace {
         // this Mac, else what Run started (the app, simctl or devicectl).
         state["run_pid"] = self.debugger.read(cx).local_debuggee_pid().or(build.run_pid()).into();
         state["debugger"]["thread"] = self.debugger.read(cx).stopped_thread_label().into();
+        // The build's own issues, before those the live check has too are
+        // merged; the toolbar's counts; the issue ⌘' went to last.
+        state["build_issues"] = build.issues.iter().map(issue_line).collect::<Vec<_>>().into();
+        let count = |severity| issues.iter().filter(|i| i.severity == severity).count();
+        state["issue_counts"] = serde_json::json!([count(crate::build::log::Severity::Error), count(crate::build::log::Severity::Warning)]);
+        state["issue_cursor"] = self.issue_cursor.into();
         state["timings"] = perf.timings_json();
         state["popup_menu_open"] = self.popup_menu.is_some().into();
         // The project navigator's selected row (its path).
@@ -992,6 +1008,11 @@ impl Workspace {
         state["packages"] = self.packages_summary(cx);
         state["console"] = self.console_summary(cx);
         state["panes"] = self.panes_summary(cx);
+        // The window's content size and the least the panes leave it.
+        if let Some(ns) = crate::window_size::ns_window(window) {
+            let (size, min) = crate::window_size::content_sizes(&ns);
+            state["window"] = serde_json::json!({ "size": [size.0, size.1], "min_size": [min.0, min.1] });
+        }
         state["git"] = self.git_summary(cx);
         state["multibuffer"] = self.multibuffer_summary(cx);
         state["terminals"] = self.terminals_summary(window, cx);
