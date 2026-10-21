@@ -3048,6 +3048,170 @@ int main(void) {
 """
 
 
+def editing_checks(samples):
+    """Editing through the real keys, on a copy of ZKit: folded blocks with
+    ⌥↓ and ⌘L, Enter and a closing brace on indented lines, ⌘/ on blank lines
+    and whole lines, grapheme clusters, Tab in the completion menu, Wrap
+    Lines at the end of a long line, and each file's own indentation."""
+    project = os.path.join(WORK, "EditingKit")
+    shutil.copytree(os.path.join(samples, "ZKit"), project, ignore=shutil.ignore_patterns(".build"))
+    greeter = os.path.join(project, "Sources", "ZKit", "Greeter.swift")
+    with open(greeter) as f:
+        original = f.read()
+    init_line = line_of(greeter, "public init")
+    web = os.path.join(project, "web")
+    os.makedirs(os.path.join(web, "tabs"))
+    two_space = os.path.join(web, "main.ts")
+    with open(two_space, "w") as f:
+        f.write("export function a(x: number) {\n  if (x > 1) {\n    return x\n  }\n  return 0\n}\n")
+    pinned = os.path.join(web, "tabs", "b.ts")
+    with open(pinned, "w") as f:
+        f.write("export function b() {\n  return 1\n}\n")
+    with open(os.path.join(web, "tabs", ".editorconfig"), "w") as f:
+        f.write("[*.ts]\nindent_style = tab\ntab_width = 3\n")
+    page = os.path.join(web, "index.html")
+    with open(page, "w") as f:
+        f.write("<body>\n</body>\n")
+    long_text = os.path.join(project, "long.txt")
+    with open(long_text, "w") as f:
+        f.write("\n".join(f"line {i}" for i in range(30)) + "\n" + " ".join(f"word{i}" for i in range(3000)) + "\nafter\n")
+    messy = os.path.join(project, "Sources", "ZKit", "Messy.swift")
+    with open(messy, "w") as f:
+        f.write(original.replace("        self.name = name", "self.name = name").replace('        "Hello', '"Hello').replace("struct Greeter", "struct Messy"))
+    emoji = os.path.join(project, "emoji.txt")
+    with open(emoji, "w") as f:
+        f.write("a\U0001F44D\U0001F3FDb\n")
+    z = Zcode(project)
+
+    def active():
+        return z.dump()["active"]
+
+    def probe():
+        return active()["probe"]
+
+    def lines():
+        return active()["text"].split("\n")
+
+    def revert():
+        for _ in range(12):
+            if not active()["dirty"]:
+                return
+            z.run("keys cmd-z", "wait 150")
+        assert not active()["dirty"], "still edited"
+
+    def fold_init():
+        z.run(f"open {greeter}:{init_line}", "wait 300")
+        z.wait_for(lambda s: s["active"]["fold_candidates"] > 0, timeout=20, interval=0.3)
+        z.run("vim on", "wait 200", "keys z c", "vim off", "wait 200")
+        assert probe()["folds"] == [[init_line, init_line + 2]], probe()["folds"]
+
+    def folded_block_moves_whole():
+        fold_init()
+        z.run("keys alt-down", "wait 200")
+        l = lines()
+        assert l[init_line - 1] == "" and l[init_line].strip() == "public init(name: String) {", l[init_line - 2:init_line + 3]
+        assert l[init_line + 1].strip() == "self.name = name" and l[init_line + 2].strip() == "}", l
+        assert probe()["folds"] == [[init_line + 1, init_line + 3]], "still folded where it went"
+        z.run("keys alt-up", "wait 200")
+        assert active()["text"] == original and probe()["folds"] == [[init_line, init_line + 2]], probe()["folds"]
+        revert()
+
+    def jump_into_fold_opens_it():
+        fold_init()
+        z.run("keys cmd-l", "wait 200", f"type {init_line + 1}", "keys enter", "wait 300")
+        s = active()
+        assert s["line"] == init_line + 1 and s["probe"]["folds"] == [], (s["line"], s["probe"]["folds"])
+        assert init_line + 1 in [row for row, _ in s["probe"]["rows"]], "the line is drawn"
+
+    def enter_and_closing_brace():
+        name_line = line_of(greeter, "public let name")
+        z.run(f"open {greeter}:{name_line}", "wait 200", "keys enter", "wait 100")
+        s = active()
+        assert s["text"].split("\n")[name_line - 1:name_line + 1] == ["", "    public let name: String"], s["line_text"]
+        assert (s["line"], s["column"]) == (name_line + 1, 1), (s["line"], s["column"])
+        revert()
+        body = line_of(greeter, '"Hello, ')
+        z.run(f"open {greeter}:{body}", "keys end", "keys enter", "type }", "wait 100")
+        assert active()["line_text"] == "    }", repr(active()["line_text"])
+        revert()
+
+    def comments_on_blank_and_whole_lines():
+        blank = original.split("\n").index("", 2) + 1
+        z.run(f"open {greeter}:{blank}", "keys cmd-/", "type x", "wait 100")
+        assert active()["line_text"] == "// x", active()["line_text"]
+        revert()
+        # Lines 2–3 selected to the start of line 4: ⌘/ keeps them whole, so ⌘D duplicates lines.
+        z.run(f"open {greeter}:2", "keys shift-down shift-down", "keys cmd-/", "keys cmd-d", "wait 100")
+        l = lines()
+        assert l[1].startswith("// ") and l[1:3] == l[3:5], l[:6]
+        revert()
+
+    def grapheme_clusters():
+        z.run(f"open {emoji}:1", "keys right right", "type Z", "wait 100")
+        assert active()["line_text"] == "a\U0001F44D\U0001F3FDZb", active()["line_text"]
+        z.run("keys left", "keys backspace", "wait 100")
+        assert active()["line_text"] == "aZb", active()["line_text"]
+        revert()
+
+    def tab_accepts_completion():
+        z.run(f"open {page}:1", "keys end", "keys enter", "type ul>li*2")
+        items = z.wait_for(lambda s: s["active"]["completion_menu_open"], timeout=30, interval=0.3)["active"]["completion_items"]
+        assert items[0] == "ul>li*2", items
+        # Tab accepts, then goes through the snippet's stops.
+        z.run("keys tab", "type One", "keys tab", "type Two", "wait 200")
+        t = active()["text"]
+        assert "<li>One</li>" in t and "<li>Two</li>" in t, t
+        revert()
+
+    def wrap_keeps_the_cursor_in_view():
+        z.run(f"open {long_text}:31", "keys cmd-right", "wait 200", "action zcode::ToggleSoftWrap", "wait 600")
+        try:
+            p = probe()
+            rows = dict(map(tuple, p["rows"]))
+            # Unwrapped, the caret was far right; wrapped, it's on the line's last row, just above line 32.
+            assert 32 in rows and rows[32] - 40 < p["caret_on_screen_y"] < rows[32], (p["caret_on_screen_y"], rows)
+        finally:
+            z.run("action zcode::ToggleSoftWrap", "wait 200")
+
+    def reindent_undoes_in_one_step():
+        z.run(f"open {messy}:1", "wait 300")
+        deadline = time.time() + 120
+        # sourcekit-lsp formats once it has the file.
+        while "        self.name = name" not in active()["text"]:
+            assert time.time() < deadline, "Re-Indent changed nothing"
+            z.run("keys cmd-a", "keys ctrl-i", "wait 1000")
+        assert '        "Hello' in active()["text"], "both lines in one Re-Indent"
+        z.run("keys cmd-z", "wait 200")
+        assert not active()["dirty"], "one ⌘Z undoes it"
+
+    def each_file_its_indentation():
+        z.run(f"open {two_space}:2", "wait 300")
+        s = z.dump()
+        assert (s["settings"]["active_editor"]["tab_size"], s["settings"]["active_editor"]["hard_tabs"]) == (2, False), s["settings"]["active_editor"]
+        z.run("keys end", "keys enter", "wait 100")
+        assert active()["line_text"] == "    ", repr(active()["line_text"])
+        revert()
+        # .editorconfig says tabs, 3 wide, over what the text says.
+        z.run(f"open {pinned}:1", "wait 300")
+        assert z.dump()["settings"]["active_editor"]["tab_size"] == 3 and z.dump()["settings"]["active_editor"]["hard_tabs"]
+        # A Swift file of 4 spaces.
+        z.run(f"open {greeter}:1", "wait 300")
+        assert z.dump()["settings"]["active_editor"]["tab_size"] == 4
+
+    try:
+        check("Editing: ⌥↓ / ⌥↑ on a folded block move it whole and keep it folded", folded_block_moves_whole)
+        check("Editing: ⌘L to a line inside a fold opens it", jump_into_fold_opens_it)
+        check("Editing: Enter at column 1 keeps the indentation; `}` lines up with its `{`", enter_and_closing_brace)
+        check("Editing: ⌘/ on a blank line types `// `; on whole lines keeps them whole for ⌘D", comments_on_blank_and_whole_lines)
+        check("Editing: →, typing and Backspace step over a whole emoji", grapheme_clusters)
+        check("Editing: Tab accepts the completion, then visits the snippet's stops", tab_accepts_completion)
+        check("Editing: Wrap Lines at the end of a long line keeps the cursor on screen", wrap_keeps_the_cursor_in_view)
+        check("Editing: each file's indentation, from its text or .editorconfig", each_file_its_indentation)
+        check("Editing: Re-Indent (⌃I) of several lines undoes in one ⌘Z", reindent_undoes_in_one_step)
+    finally:
+        z.quit()
+
+
 def big_swift(blocks=300):
     """About 6,000 lines of Swift with inferred types, calls and properties."""
     out = []
@@ -3486,7 +3650,8 @@ def web_language_checks(samples):
         assert items[0] == "ul.list>li*3", items
         z.run("keys enter", "type One", "keys tab", "type Two", "wait 200")
         t = text()
-        assert '<ul class="list">\n        <li>One</li>\n        <li>Two</li>\n        <li></li>\n    </ul>' in t, t[t.find("<ul"):][:200]
+        # index.html is indented by 2 spaces, so Emmet's are too.
+        assert '<ul class="list">\n      <li>One</li>\n      <li>Two</li>\n      <li></li>\n    </ul>' in t, t[t.find("<ul"):][:200]
         revert(index)
         # ⌃⌥E expands without the menu; nothing to expand says so.
         z.run(f"open {index}:{line_of(index, '<div id=')}", "keys end", "keys enter", "type nav>a*2", "keys escape", "keys ctrl-alt-e", "wait 200")
@@ -7797,6 +7962,9 @@ def main():
 
     print("Hidden tabs at the language server (a copy of samples/ZKit, sourcekit-lsp through lsp_proxy.py):")
     hidden_tab_checks(samples)
+
+    print("Editing (a copy of samples/ZKit):")
+    editing_checks(samples)
 
     print("Editor panes (a copy of samples/ZKit):")
     pane_checks(samples)

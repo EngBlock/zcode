@@ -197,6 +197,9 @@ impl InputBaseState<EditorMode> {
             let start = self.text.position_to_offset(&target_range.start);
             let end = self.text.position_to_offset(&target_range.end);
 
+            // A definition inside a fold opens it.
+            self.unfold_at(target_range.start, cx);
+            self.unfold_at(target_range.end, cx);
             self.move_to(start, None, cx);
             self.select_to(end, cx);
         }

@@ -154,7 +154,7 @@ pub use highlighting::{
     DiagnosticColors, FoldIconRenderer, HighlightStyleResolver, InputEditorStyle, InputHighlighter,
     InputHighlighterFactory, SharedHighlightStyleResolver, SyntaxContext, SyntaxContextProvider,
 };
-pub use indent::TabSize;
+pub use indent::{DetectedIndent, TabSize, detect_indent};
 #[doc(hidden)]
 pub use input::{Input, InputState};
 pub use kind::{

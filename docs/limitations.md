@@ -171,6 +171,11 @@
   other filters, or Emmet's other actions (Balance, Go to Edit Point,
   Update Tag); a snippet's repeated tab stops aren't linked (typing in
   one doesn't change the others).
+* Indentation is read from a file's first 2,000 lines when it opens, and
+  isn't read again as it's edited. `.editorconfig` globs don't support
+  numeric ranges (`{1..3}`), and only its indentation properties are
+  used. A closing bracket lines up with its opening one when that is
+  within 64 KB before it.
 * Multibuffers: excerpts are highlighted in the language most of their
   files are in, and have no completion, Quick Help, Jump to Definition or
   inlay hints (⌥↩ opens the file, where they work); bookmarks, test

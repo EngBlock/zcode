@@ -140,6 +140,12 @@ impl DisplayMap {
         self.rebuild_fold_projection();
     }
 
+    /// Fold `range`, whether or not it is a candidate yet.
+    pub fn fold_range(&mut self, range: FoldRange) {
+        self.fold_map.fold_range(range);
+        self.rebuild_fold_projection();
+    }
+
     /// Toggle fold at the given start_line
     pub fn toggle_fold(&mut self, start_line: usize) {
         self.fold_map.toggle_fold(start_line);

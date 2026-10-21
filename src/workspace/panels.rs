@@ -812,10 +812,10 @@ impl Workspace {
                             .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(explanation.clone()).build(window, cx)),
                     )
                 })
-                .child(if self.settings.current.hard_tabs {
-                    format!("Tab Width: {}", self.settings.current.tab_size)
-                } else {
-                    format!("Spaces: {}", self.settings.current.tab_size)
+                // The file's own (`crate::settings::indentation`).
+                .child({
+                    let tab = self.active_tab(cx);
+                    if tab.hard_tabs { format!("Tab Width: {}", tab.tab_size) } else { format!("Spaces: {}", tab.tab_size) }
                 })
             })
             .child(

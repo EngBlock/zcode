@@ -18,7 +18,9 @@
   "buffer_font_family": null,
   // Its size in points (Editor ▸ Font Size: ⌘+, ⌘-, ⌃⌘0 sets it back).
   "buffer_font_size": 13,
-  // Columns a tab takes, and whether the Tab key types tabs or spaces.
+  // Columns a tab takes, and whether the Tab key types tabs or spaces. Left
+  // out, a file is indented as its .editorconfig says, or as its own lines
+  // are; set here, yours win over its lines, a project's over .editorconfig.
   "tab_size": 4,
   "hard_tabs": false,
   // Editor ▸ Wrap Lines (⌃⇧⌘L): "none", or "editor_width" to wrap long

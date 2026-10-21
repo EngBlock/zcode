@@ -3786,6 +3786,7 @@ impl<M: InputModeKind> Element for TextElement<M> {
             cx,
         );
 
+        let mut reveal = false;
         self.state.update(cx, |state, cx| {
             let geometry_changed = state.last_bounds != Some(bounds)
                 || state.input_bounds != input_bounds
@@ -3810,6 +3811,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
             state.scroll_size = prepaint.scroll_size;
             state.update_scroll_offset(Some(prepaint.cursor_scroll_offset), cx);
             state.deferred_scroll_offset = None;
+            // The rows the cursor is on moved (wrapping turned on or off):
+            // scroll to it in the next frame.
+            if std::mem::take(&mut state.reveal_cursor_after_layout) {
+                state.scroll_to(state.cursor(), None, cx);
+                reveal = true;
+            }
 
             // Layout consumers need changed geometry, not another notification
             // for every paint of an unchanged input.
@@ -3817,6 +3824,12 @@ impl<M: InputModeKind> Element for TextElement<M> {
                 cx.notify();
             }
         });
+        if reveal {
+            // A notification during paint is lost with the frame; the next
+            // one is asked for once this one is done.
+            let state = self.state.clone();
+            cx.defer(move |cx| state.update(cx, |_, cx| cx.notify()));
+        }
 
         if let Some(hitbox) = prepaint.hover_definition_hitbox.as_ref()
             && !window.modifiers().alt
