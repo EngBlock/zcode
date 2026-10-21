@@ -444,6 +444,7 @@ fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("enter", PickerConfirm, Some("AddPackageDialog")),
         KeyBinding::new("escape", PickerDismiss, Some("AddPackageDialog")),
         KeyBinding::new("escape", PickerDismiss, Some("EditSchemeDialog")),
+        KeyBinding::new("enter", PickerConfirm, Some("BreakpointEditor")),
         KeyBinding::new("escape", PickerDismiss, Some("BreakpointEditor")),
         KeyBinding::new("enter", PickerConfirm, Some("BookmarkDialog")),
         KeyBinding::new("escape", PickerDismiss, Some("BookmarkDialog")),

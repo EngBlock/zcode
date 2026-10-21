@@ -282,8 +282,7 @@ impl Workspace {
         let Some(bp) = self.debugger.read(cx).breakpoint(id).cloned() else { return };
         // Below the marker when it's on screen.
         let position = position.or_else(|| self.marker_anchor(id, cx));
-        let workspace = cx.weak_entity();
-        let editor = cx.new(|cx| BreakpointEditor::new(workspace, bp, window, cx));
+        let editor = cx.new(|cx| BreakpointEditor::new(bp, window, cx));
         self.breakpoint_editor = Some(editor.downgrade());
         self.show_modal_at(editor, position, window, cx);
     }
@@ -615,11 +614,17 @@ impl Workspace {
 
 impl Workspace {
     /// Debug ▸ Breakpoints ▸ Create Breakpoint at Current Line (⌘\).
+    /// In a multibuffer, on the excerpt line's file and line.
     pub(super) fn toggle_breakpoint(&mut self, _: &crate::actions::ToggleBreakpoint, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(item) = self.active_item() else { return };
-        let path = item.path.clone();
-        let line = item.editor.read(cx).cursor_position().line + 1;
+        let (path, line) = match self.active_item() {
+            Some(item) => (item.path.clone(), item.editor.read(cx).cursor_position().line),
+            None => match self.multibuffer_cursor_line(cx) {
+                Some((path, line, _)) => (path, line),
+                None => return,
+            },
+        };
         self.debugger
-            .update(cx, |d, cx| d.toggle_breakpoint(path, line, cx));
+            .update(cx, |d, cx| d.toggle_breakpoint(path, line + 1, cx));
+        cx.notify();
     }
 }

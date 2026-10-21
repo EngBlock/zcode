@@ -5,6 +5,9 @@
 //! exception breakpoint's exception and break. Like Xcode's popover it has
 //! no Cancel: closing it (Done, Escape, a click outside) keeps the changes.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
@@ -14,7 +17,6 @@ use gpui_kit::component::{ActiveTheme as _, Selectable as _, Sizable as _, h_fle
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::Workspace;
 use crate::actions::{PickerConfirm, PickerDismiss};
 use crate::debugger::Breakpoint;
 use crate::debugger::breakpoints::{self, Action, ExceptionLanguage, ExceptionPhase, Kind, SOUNDS};
@@ -57,7 +59,6 @@ struct ActionRow {
 
 pub struct BreakpointEditor {
     focus_handle: FocusHandle,
-    workspace: WeakEntity<Workspace>,
     /// The breakpoint as opened; exception choices are edited in place.
     breakpoint: Breakpoint,
     name: Entity<InputState>,
@@ -67,13 +68,22 @@ pub struct BreakpointEditor {
     module: Entity<InputState>,
     actions: Vec<ActionRow>,
     auto_continue: bool,
+    /// Where Done was last drawn (window points), for the test harness.
+    done_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
 impl EventEmitter<DismissEvent> for BreakpointEditor {}
 
 impl Focusable for BreakpointEditor {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
+    /// Typing goes to a symbolic breakpoint's symbol, else to the condition,
+    /// else to the name.
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        let field = match self.breakpoint.kind {
+            Kind::Symbolic { .. } => &self.symbol,
+            _ if self.breakpoint.has_condition() => &self.condition,
+            _ => &self.name,
+        };
+        field.read(cx).focus_handle(cx)
     }
 }
 
@@ -90,7 +100,7 @@ fn placeholder(kind: ActionKind) -> &'static str {
 }
 
 impl BreakpointEditor {
-    pub fn new(workspace: WeakEntity<Workspace>, breakpoint: Breakpoint, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(breakpoint: Breakpoint, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (symbol, module) = match &breakpoint.kind {
             Kind::Symbolic { symbol, module } => (symbol.clone(), module.clone()),
             _ => Default::default(),
@@ -110,7 +120,6 @@ impl BreakpointEditor {
             .collect();
         Self {
             focus_handle: cx.focus_handle(),
-            workspace,
             name: input("Name", breakpoint.name.clone(), window, cx),
             condition: input("Condition, e.g. count > 3", breakpoint.condition.clone(), window, cx),
             ignore: input("0", ignore, window, cx),
@@ -119,6 +128,7 @@ impl BreakpointEditor {
             actions,
             auto_continue: breakpoint.auto_continue,
             breakpoint,
+            done_bounds: Rc::default(),
         }
     }
 
@@ -151,16 +161,18 @@ impl BreakpointEditor {
         bp
     }
 
-    fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |ws, cx| ws.dismiss_modal(window, cx)).ok();
+    /// The workspace saves the edit as the modal closes, once this update
+    /// is over: it reads the editor, which it can't do from inside it.
+    fn close(&mut self, cx: &mut Context<Self>) {
+        cx.emit(DismissEvent);
     }
 
-    fn confirm(&mut self, _: &PickerConfirm, window: &mut Window, cx: &mut Context<Self>) {
-        self.close(window, cx);
+    fn confirm(&mut self, _: &PickerConfirm, _: &mut Window, cx: &mut Context<Self>) {
+        self.close(cx);
     }
 
-    fn dismiss(&mut self, _: &PickerDismiss, window: &mut Window, cx: &mut Context<Self>) {
-        self.close(window, cx);
+    fn dismiss(&mut self, _: &PickerDismiss, _: &mut Window, cx: &mut Context<Self>) {
+        self.close(cx);
     }
 
     fn add_action(&mut self, kind: ActionKind, at: usize, text: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -246,10 +258,12 @@ impl BreakpointEditor {
 
     pub fn summary(&self, cx: &App) -> serde_json::Value {
         let bp = self.edited(cx);
+        let done = self.done_bounds.get().map(|b| serde_json::json!({ "x": f32::from(b.center().x), "y": f32::from(b.center().y) }));
         serde_json::json!({
             "title": bp.title(),
             "shows_condition": bp.has_condition(),
             "actions": bp.actions.iter().map(Action::label).collect::<Vec<_>>(),
+            "done": done,
         })
     }
 }
@@ -482,6 +496,7 @@ impl Render for BreakpointEditor {
         let has_condition = self.breakpoint.has_condition();
         let kind = self.render_kind(cx);
         let actions = self.render_actions(cx);
+        let done_bounds = self.done_bounds.clone();
         v_flex()
             .id("breakpoint-editor")
             .key_context("BreakpointEditor")
@@ -524,11 +539,16 @@ impl Render for BreakpointEditor {
             ))
             .child(
                 h_flex().justify_end().pt_1().child(
-                    Button::new("bp-done")
-                        .label("Done")
-                        .small()
-                        .primary()
-                        .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
+                    div()
+                        .relative()
+                        .child(
+                            Button::new("bp-done")
+                                .label("Done")
+                                .small()
+                                .primary()
+                                .on_click(cx.listener(|this, _, _, cx| this.close(cx))),
+                        )
+                        .child(canvas(move |bounds, _, _| done_bounds.set(Some(bounds)), |_, _, _, _| {}).absolute().top_0().left_0().size_full()),
                 ),
             )
     }

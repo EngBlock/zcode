@@ -723,7 +723,7 @@ impl Workspace {
         let state = debugger.state.clone();
         let frames = debugger.frames.clone();
         let selected = debugger.selected_frame;
-        let threads = debugger.threads.clone();
+        let thread = debugger.stopped_thread_label();
         let mut list = v_flex().id("debug-nav").size_full().overflow_y_scroll();
         let status = match &state {
             crate::debugger::DebugState::Inactive | crate::debugger::DebugState::Exited => {
@@ -739,17 +739,12 @@ impl Workspace {
             }
         };
         list = list.child(section_header(status, cx));
-        if let crate::debugger::DebugState::Stopped { thread_id, .. } = &state {
-            let thread_name = threads
-                .iter()
-                .find(|(id, _)| id == thread_id)
-                .map(|(_, name)| name.clone())
-                .unwrap_or_default();
+        if let Some(thread) = thread {
             list = list.child(
                 row("debug-thread")
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(Icon::new(IconName::Layers).small().text_color(theme.muted_foreground))
-                    .child(format!("Thread {thread_id} {thread_name}")),
+                    .child(thread),
             );
         }
         for (ix, frame) in frames.into_iter().enumerate() {

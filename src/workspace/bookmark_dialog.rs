@@ -21,18 +21,16 @@ pub struct BookmarkDialog {
 impl EventEmitter<DismissEvent> for BookmarkDialog {}
 
 impl Focusable for BookmarkDialog {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
+    /// Typing goes to the description.
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.title.read(cx).focus_handle(cx)
     }
 }
 
 impl BookmarkDialog {
     pub fn new(workspace: WeakEntity<Workspace>, location: Location, title: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let title = cx.new(|cx| InputState::new(window, cx).placeholder("Description").default_value(title));
-        title.update(cx, |input, cx| {
-            input.focus(window, cx);
-            input.select_all(window, cx);
-        });
+        title.update(cx, |input, cx| input.select_all(window, cx));
         Self { focus_handle: cx.focus_handle(), workspace, location, title }
     }
 
