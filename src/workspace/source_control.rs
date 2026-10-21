@@ -319,7 +319,7 @@ impl Workspace {
             workspace
                 .update(cx, |this, cx| {
                     for path in &changed {
-                        this.reload_from_disk(path, cx);
+                        this.reload_from_disk(path, None, cx);
                     }
                 })
                 .ok();
@@ -374,15 +374,10 @@ impl Workspace {
             [file] => format!("Discard changes in “{}”?", super::pane::file_title(&file.path)),
             files => format!("Discard changes in {} files?", files.len()),
         };
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            &message,
-            Some("Files are returned to their last committed versions; new files are moved to the Trash. Edits not yet saved in these files are lost."),
-            &[PromptButton::ok("Discard Changes"), PromptButton::cancel("Cancel")],
-            cx,
-        );
+        let detail = "Files are returned to their last committed versions; new files are moved to the Trash. Edits not yet saved in these files are lost.";
+        let answer = crate::debug::ask(&message, detail, &["Discard Changes", "Cancel"], window, cx);
         cx.spawn_in(window, async move |this, cx| {
-            if answer.await.unwrap_or(1) != 0 {
+            if answer.await != 0 {
                 return;
             }
             this.update_in(cx, |this, window, cx| this.discard_files_now(root, files, window, cx)).ok();

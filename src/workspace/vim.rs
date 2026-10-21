@@ -121,13 +121,18 @@ impl Workspace {
             }
             VimCommand::Quit { all: false, force } => {
                 let Some(item) = self.pane(pane).and_then(|p| p.items.get(ix)) else { return };
-                if !force && !self.unsaved_if_closed([item], cx).is_empty() {
+                let unsaved = self.unsaved_if_closed([item], cx);
+                if !force && !unsaved.is_empty() {
                     editor.update(cx, |state, cx| {
                         state.set_vim_message("E37: No write since last change (add ! to override)", true, cx)
                     });
                     return;
                 }
                 self.force_close_item(pane, ix, window, cx);
+                // As Don't Save: a buffer a preview keeps goes back to the file.
+                for path in &unsaved {
+                    self.discard_changes(path, window, cx);
+                }
             }
             VimCommand::Quit { all: true, force } => {
                 let items: Vec<&Item> = self.panes.iter().flat_map(|p| p.items.iter()).collect();
@@ -138,6 +143,9 @@ impl Workspace {
                     return;
                 }
                 self.close_all_tabs(window, cx);
+                for path in &unsaved {
+                    self.discard_changes(path, window, cx);
+                }
             }
             VimCommand::NextTab => window.dispatch_action(Box::new(NextTab), cx),
             VimCommand::PreviousTab => window.dispatch_action(Box::new(PreviousTab), cx),

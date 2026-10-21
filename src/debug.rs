@@ -181,8 +181,31 @@ pub fn scripted_answer(message: &str, buttons: &[&str]) -> Option<usize> {
     let mut alerts = ALERTS.lock().unwrap();
     alerts.1.push(message.to_string());
     let answer = alerts.0.pop_front()?;
+    // Don't Save typed with a straight quote is Don’t Save.
+    let plain = |b: &str| b.replace('’', "'");
     // A button it doesn't have: the last (Cancel).
-    Some(buttons.iter().position(|b| *b == answer).unwrap_or(buttons.len().saturating_sub(1)))
+    Some(buttons.iter().position(|b| plain(b) == plain(&answer)).unwrap_or(buttons.len().saturating_sub(1)))
+}
+
+/// Asks with a warning alert: the index of the button chosen, `buttons`
+/// being the default first and Cancel last. Under the control channel,
+/// `alert answer` answers it (`scripted_answer`).
+pub fn ask(message: &str, detail: &str, buttons: &[&str], window: &mut Window, cx: &mut App) -> Task<usize> {
+    if let Some(choice) = scripted_answer(message, buttons) {
+        return Task::ready(choice);
+    }
+    let last = buttons.len().saturating_sub(1);
+    let prompt_buttons: Vec<PromptButton> = buttons
+        .iter()
+        .enumerate()
+        .map(|(ix, b)| match ix {
+            0 => PromptButton::ok(b.to_string()),
+            ix if ix == last => PromptButton::cancel(b.to_string()),
+            _ => PromptButton::new(b.to_string()),
+        })
+        .collect();
+    let answer = window.prompt(PromptLevel::Warning, message, Some(detail), &prompt_buttons, cx);
+    cx.background_spawn(async move { answer.await.unwrap_or(last) })
 }
 
 /// Types `text` a character at a time, timing each keystroke from its

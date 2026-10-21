@@ -184,16 +184,18 @@ pub fn open_project(path: PathBuf, cx: &mut App) {
             let weak = workspace.downgrade();
             window
                 .update(cx, |_, window, cx| {
-                    window.on_window_should_close(cx, move |_, cx| {
-                        if let Some(workspace) = weak.upgrade() {
-                            workspace.update(cx, |ws, cx| {
-                                ws.save_session(cx);
-                                ws.stop_terminals(cx);
-                                ws.end_runs(cx);
-                                ws.lsp.update(cx, |lsp, cx| lsp.shutdown(cx)).detach();
-                            });
-                        }
-                        true
+                    window.on_window_should_close(cx, move |window, cx| {
+                        let Some(workspace) = weak.upgrade() else { return true };
+                        workspace.update(cx, |ws, cx| {
+                            // Unsaved changes ask first; the window closes
+                            // once they're saved or discarded.
+                            if ws.has_unsaved_changes() {
+                                ws.close_window(window, cx);
+                                return false;
+                            }
+                            ws.window_closing(cx);
+                            true
+                        })
                     });
                 })
                 .ok();
@@ -313,6 +315,8 @@ fn prompt_open(cx: &mut App) {
     .detach();
 }
 
+/// zcode ▸ Quit: each window with unsaved changes asks first, in turn
+/// (Cancel stops the quit), then everything ends.
 fn quit(cx: &mut App) {
     let workspaces: Vec<_> = cx
         .default_global::<Workspaces>()
@@ -320,6 +324,30 @@ fn quit(cx: &mut App) {
         .iter()
         .filter_map(|w| w.upgrade())
         .collect();
+    cx.spawn(async move |cx| {
+        for workspace in &workspaces {
+            let asked = cx.update(|cx| {
+                let handle = workspace.read(cx).window;
+                handle.update(cx, |_, window, cx| {
+                    let unsaved = workspace.read(cx).has_unsaved_changes();
+                    if unsaved {
+                        window.activate_window();
+                    }
+                    workspace.update(cx, |ws, cx| ws.confirm_close_window(window, cx))
+                })
+            });
+            if let Ok(confirmed) = asked
+                && !confirmed.await
+            {
+                return;
+            }
+        }
+        cx.update(|cx| shut_down(workspaces, cx));
+    })
+    .detach();
+}
+
+fn shut_down(workspaces: Vec<Entity<Workspace>>, cx: &mut App) {
     let mut shutdowns = vec![];
     for workspace in &workspaces {
         workspace.update(cx, |ws, cx| {

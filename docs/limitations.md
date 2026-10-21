@@ -145,7 +145,10 @@
   Pane… (⌘J) and the ⌥⇧ destination chooser aren't there; ⌥-click opens in
   the assistant or the next pane. Panes aren't dragged between windows, and
   tabs can't be dragged between panes. Project Settings is one tab, in one
-  pane at a time, and isn't restored with the session.
+  pane at a time, and isn't restored with the session. zcode ▸ Quit, ⌘Q
+  and closing a window ask about unsaved changes; quitting from the Dock's
+  menu or by logging out doesn't (GPUI's macOS backend has no
+  `applicationShouldTerminate:`), and unsaved changes are lost there.
 * Language features come from sourcekit-lsp: the hierarchies come from
   its index, so they're empty until a new project's background index is
   built (the Find navigator says so) and cover what the index has seen;
@@ -286,8 +289,7 @@
   every file and do nothing for others (zcode's menus have no
   per-file state); Quick Actions hides them. A preview of a file whose
   last editor closed keeps the buffer open; Don't Save on that close
-  puts the saved text back, which wasn't checked end to end (the e2e
-  suite can't answer the dialog).
+  puts the saved text back.
 * Profile: a recording couldn't be made on the machine zcode was built on
   (`xctrace record` needs Developer Tools access, `DevToolsSecurity
   -enable`, and failed there with "Error connecting to DTServiceHub"), so

@@ -238,7 +238,8 @@ class Zcode:
 
     def quit(self):
         try:
-            self.run("action zcode::Quit", timeout=5)
+            # Unsaved changes left by a check: Don't Save when Quit asks.
+            self.run("alert answer Don’t Save", "action zcode::Quit", timeout=5)
         except Exception:
             pass
         try:
@@ -1776,6 +1777,147 @@ def rendered_checks():
         check("live preview: a renamed file's preview follows it, and the session brings previews back", rename_and_session)
     finally:
         z.quit()
+
+
+def closing_checks():
+    """Closing with unsaved changes, every way it asks (a tab, a pane, Close
+    Other Tabs, the window, Quit) and every answer, answered through `alert
+    answer`, with the file's buffer staying open after its last editor
+    closes (a preview keeps it): Don't Save puts the file's text back in
+    it, Save writes it (asking first when the file changed on disk), Cancel
+    keeps everything."""
+    folder = os.path.realpath(tempfile.mkdtemp(prefix="Closing-", dir=WORK))
+    readme, notes = os.path.join(folder, "README.md"), os.path.join(folder, "notes.md")
+    original = "# Read Me\n\nSome text.\n"
+
+    def reset():
+        open(readme, "w").write(original)
+        open(notes, "w").write("notes\n")
+
+    def previews(z):
+        return [r for r in z.dump()["rendered"] if r["path"] == readme]
+
+    def edit(z):
+        # README.md beside its preview, typed in at the top.
+        z.run("pane focus 0", f"open {readme}", "keys cmd-up", "type Unsaved.", "wait 300")
+        assert z.dump()["active"]["dirty"]
+
+    def reopened(z):
+        z.run("pane focus 0", f"open {readme}", "wait 200")
+        return z.dump()["active"]
+
+    reset()
+    z = Zcode(folder)
+    try:
+        z.run(f"open {readme}", "action zcode::OpenPreviewToTheSide", "wait 500")
+
+        def tab_answers():
+            edit(z)
+            z.run("alert answer Cancel", "keys cmd-w", "wait 300")
+            a = z.dump()["active"]
+            assert a["path"] == readme and a["dirty"] and a["text"].startswith("Unsaved."), a["path"]
+            # Don't Save: the tab goes, and the buffer the preview keeps goes
+            # back to the file (it used to keep the typing, unsaved but not
+            # dirty, for the next ⌘S to write).
+            z.run("alert answer Don’t Save", "keys cmd-w", "wait 300")
+            assert all("README.md" not in p["tabs"] for p in z.dump()["panes"]["list"])
+            z.wait_for(lambda s: all(r["text"] == original for r in s["rendered"] if r["path"] == readme), timeout=10, interval=0.2)
+            a = reopened(z)
+            assert a["text"] == original and not a["dirty"], a["text"][:40]
+            z.run("keys cmd-s", "wait 200")
+            assert open(readme).read() == original
+            # Save writes it, and the preview has the saved text.
+            edit(z)
+            z.run("alert answer Save", "keys cmd-w", "wait 300")
+            assert open(readme).read() == "Unsaved." + original
+            assert all(r["text"] == "Unsaved." + original for r in previews(z))
+            a = reopened(z)
+            assert not a["dirty"], a
+            reset()
+            z.run("wait 300")
+
+        def save_on_close_over_a_change_on_disk():
+            # Save, then the file changed on disk: the tab waits for Keep or
+            # Revert, and Cancel keeps it.
+            edit(z)
+            time.sleep(1.1)
+            with open(readme, "a") as f:
+                f.write("Disk.\n")
+            z.run("alert answer Save", "alert answer Cancel", "keys cmd-w", "wait 300")
+            a = z.dump()["active"]
+            assert a["path"] == readme and a["dirty"], a["path"]
+            assert open(readme).read() == original + "Disk.\n"
+            z.run("alert answer Save", "alert answer Revert", "keys cmd-w", "wait 300")
+            assert all("README.md" not in p["tabs"] for p in z.dump()["panes"]["list"])
+            a = reopened(z)
+            assert a["text"] == original + "Disk.\n" and not a["dirty"], a["text"]
+            edit(z)
+            time.sleep(1.1)
+            reset()
+            z.run("alert answer Save", "alert answer Keep zcode Version", "keys cmd-w", "wait 300")
+            assert open(readme).read() == "Unsaved." + original + "Disk.\n"
+            assert all(r["text"] == "Unsaved." + original + "Disk.\n" for r in previews(z))
+            reset()
+            z.run("wait 300")
+
+        def pane_and_other_tabs():
+            # README.md alone in a pane, its preview in another: Close Editor
+            # Pane, Don't Save.
+            z.run("pane focus 0", f"open {readme}", "keys cmd-w", "wait 200", f"pane open-next {readme}", "wait 300")
+            s = z.dump()
+            assert [p["tabs"] for p in s["panes"]["list"]] == [["README.md (Preview)"], ["README.md"]], s["panes"]
+            assert s["active"]["path"] == readme, s["active"]["path"]
+            z.run("keys cmd-up", "type Unsaved.", "wait 300", "alert answer Don’t Save", "action zcode::CloseEditorPane", "wait 300")
+            s = z.dump()
+            assert [p["tabs"] for p in s["panes"]["list"]] == [["README.md (Preview)"]], s["panes"]
+            assert all(r["text"] == original for r in previews(z))
+            assert reopened(z)["text"] == original
+            # Close Other Tabs from notes.md, Don't Save for README.md only.
+            z.run(f"open {notes}", "keys cmd-up", "type x", f"open {readme}", "keys cmd-up", "type Unsaved.", f"open {notes}", "wait 300")
+            z.run("alert answer Don’t Save", "action zcode::CloseOtherTabs", "wait 300")
+            s = z.dump()
+            assert s["panes"]["list"][0]["tabs"] == ["notes.md"] and s["active"]["dirty"], s["panes"]
+            assert open(readme).read() == original
+            z.run("keys cmd-z", "wait 200")
+            assert not z.dump()["active"]["dirty"]
+
+        check("Closing: a tab's Cancel, Don't Save and Save with a preview keeping the buffer open (Don't Save puts the file's text back)", tab_answers)
+        check("Closing: Save on closing a file changed on disk asks Keep or Revert before the tab goes; Cancel keeps it", save_on_close_over_a_change_on_disk)
+        check("Closing: Close Editor Pane and Close Other Tabs, Don't Save with a preview keeping the buffer open", pane_and_other_tabs)
+    finally:
+        z.quit()
+
+    def closing(z, *commands):
+        # zcode quits before it logs the last command.
+        try:
+            z.run(*commands)
+        except RuntimeError:
+            pass
+        z.proc.wait(timeout=10)
+
+    def window_and_quit():
+        # Close Workspace asks: Cancel keeps the window, Don't Save closes it
+        # (a scripted zcode then quits) with the file as it was.
+        reset()
+        z = Zcode(folder)
+        try:
+            z.run(f"open {readme}", "keys cmd-up", "type Unsaved.", "wait 300", "alert answer Cancel", "action zcode::CloseProject", "wait 500")
+            assert z.dump()["active"]["dirty"]
+            closing(z, "alert answer Don’t Save", "action zcode::CloseProject")
+            assert open(readme).read() == original
+        finally:
+            z.quit()
+        # Quit asks too: Save writes the file, then zcode quits.
+        z = Zcode(folder)
+        try:
+            z.run(f"open {readme}", "keys cmd-up", "type Saved.", "wait 300", "alert answer Cancel", "action zcode::Quit", "wait 500")
+            assert z.dump()["active"]["dirty"], "Cancel stops the quit"
+            closing(z, "alert answer Save", "action zcode::Quit")
+            assert open(readme).read() == "Saved." + original
+        finally:
+            z.quit()
+
+    check("Closing: the window and Quit ask about unsaved changes (Cancel stays; Don't Save closes as it was; Save writes)", window_and_quit)
 
 
 def asset_catalog_checks(samples):
@@ -8416,6 +8558,9 @@ def main():
 
     print("Live previews (a folder of an SVG and Markdown):")
     rendered_checks()
+
+    print("Closing with unsaved changes (a folder of Markdown files):")
+    closing_checks()
 
     print("SwiftUI previews (a copy of HelloZ; Xcode's commands recorded, never run):")
     preview_checks(samples)

@@ -556,7 +556,7 @@ impl Workspace {
                 if !changed.is_empty() {
                     let ok = this.update(cx, |this, cx| {
                         for path in &changed {
-                            this.reload_from_disk(path, cx);
+                            this.reload_from_disk(path, None, cx);
                         }
                     });
                     if ok.is_err() {

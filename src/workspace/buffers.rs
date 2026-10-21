@@ -516,7 +516,11 @@ impl Workspace {
         }
     }
 
-    pub(super) fn reload_from_disk(&mut self, path: &Path, cx: &mut Context<Self>) {
+    /// Takes the file's text from disk (dropping unsaved changes). The
+    /// editor is set through the window: the caller's when it's inside the
+    /// window's update (`window.update` would fail there), else the
+    /// workspace's.
+    pub(super) fn reload_from_disk(&mut self, path: &Path, window: Option<&mut Window>, cx: &mut Context<Self>) {
         let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) else {
             return;
         };
@@ -540,20 +544,27 @@ impl Workspace {
         // Each pane's cursor stays where it was, as far as the text goes.
         let cursors: Vec<(Entity<EditorState>, usize)> =
             self.views_of(path).iter().map(|item| (item.editor.clone(), item.editor.read(cx).cursor())).collect();
-        let Some(window) = cx.windows().first().copied() else { return };
-        window
-            .update(cx, |_, window, cx| {
-                if *editor.read(cx).text() != text {
-                    editor.update(cx, |state, cx| state.set_value(text, window, cx));
-                    for (view, cursor) in cursors {
-                        view.update(cx, |state, cx| {
-                            let clamped = cursor.min(state.text().len());
-                            state.set_selected_range(clamped..clamped, cx);
-                        });
-                    }
+        let set_text = move |window: &mut Window, cx: &mut App| {
+            if *editor.read(cx).text() != text {
+                editor.update(cx, |state, cx| state.set_value(text, window, cx));
+                for (view, cursor) in cursors {
+                    view.update(cx, |state, cx| {
+                        let clamped = cursor.min(state.text().len());
+                        state.set_selected_range(clamped..clamped, cx);
+                    });
                 }
-            })
-            .ok();
+            }
+        };
+        match window {
+            Some(window) => set_text(window, cx),
+            None => {
+                let window = self.window;
+                if window.update(cx, |_, window, cx| set_text(window, cx)).is_err() {
+                    log::warn!("couldn’t reload {}: the window is being updated", path.display());
+                    return;
+                }
+            }
+        }
         let text = self.buffer(path).map(|b| b.editor.read(cx).text().clone());
         if let Some(text) = text {
             self.lsp.update(cx, |lsp, cx| lsp.document_changed(path, text, cx));
@@ -578,59 +589,43 @@ impl Workspace {
     /// or saved here: then it asks whether to keep this version or the
     /// file's, as Xcode does.
     pub fn save_buffer(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(buffer) = self.buffers.get(ix).filter(|b| !b.read_only) else { return };
-        if changed_on_disk(buffer) {
-            let path = buffer.path.clone();
-            self.ask_about_disk_change(path, window, cx);
-            return;
+        let Some(path) = self.buffers.get(ix).map(|b| b.path.clone()) else { return };
+        self.save_or_ask(&path, window, cx).detach();
+    }
+
+    /// Saves `path`'s buffer as `save_buffer` does; whether its unsaved
+    /// changes are dealt with: written, or dropped for the file's text
+    /// (Revert), not kept (Cancel, or the write failed).
+    pub(super) fn save_or_ask(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) -> Task<bool> {
+        let Some(ix) = self.buffers.iter().position(|b| b.path == path && !b.read_only) else { return Task::ready(true) };
+        if !changed_on_disk(&self.buffers[ix]) {
+            return Task::ready(self.write_buffer(ix, window, cx));
         }
-        self.write_buffer(ix, window, cx);
-    }
-
-    /// Keep zcode Version (the file is overwritten), Revert (the unsaved
-    /// changes are dropped for the file's text) or Cancel.
-    fn ask_about_disk_change(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let name = super::pane::file_title(&path);
-        let message = format!("The file “{name}” has been changed by another application.");
-        let buttons = ["Keep zcode Version", "Revert", "Cancel"];
-        let answer = match crate::debug::scripted_answer(&message, &buttons) {
-            Some(choice) => Task::ready(choice),
-            None => {
-                let answer = window.prompt(
-                    PromptLevel::Warning,
-                    &message,
-                    Some("Do you want to keep the version in zcode, or revert to the version on disk? Reverting loses your unsaved changes."),
-                    &[PromptButton::ok(buttons[0]), PromptButton::new(buttons[1]), PromptButton::cancel(buttons[2])],
-                    cx,
-                );
-                cx.background_spawn(async move { answer.await.unwrap_or(2) })
-            }
-        };
+        // Keep zcode Version (the file is overwritten), Revert (the unsaved
+        // changes are dropped for the file's text) or Cancel.
+        let message = format!("The file “{}” has been changed by another application.", super::pane::file_title(path));
+        let detail = "Do you want to keep the version in zcode, or revert to the version on disk? Reverting loses your unsaved changes.";
+        let answer = crate::debug::ask(&message, detail, &["Keep zcode Version", "Revert", "Cancel"], window, cx);
+        let path = path.to_path_buf();
         cx.spawn_in(window, async move |this, cx| {
-            match answer.await {
-                0 => {
-                    this.update_in(cx, |this, window, cx| {
-                        if let Some(ix) = this.buffers.iter().position(|b| b.path == path) {
-                            this.write_buffer(ix, window, cx);
-                        }
-                    })
-                    .ok();
-                }
+            let choice = answer.await;
+            this.update_in(cx, |this, window, cx| match choice {
+                0 => this.buffers.iter().position(|b| b.path == path).is_none_or(|ix| this.write_buffer(ix, window, cx)),
                 1 => {
-                    // Outside the window's update: the reload sets the
-                    // editor's text through the window.
-                    this.update(cx, |this, cx| this.discard_changes(&path, cx)).ok();
-                    this.update_in(cx, |this, window, _| window.set_window_edited(this.buffers.iter().any(|b| b.dirty))).ok();
+                    this.discard_changes(&path, window, cx);
+                    window.set_window_edited(this.buffers.iter().any(|b| b.dirty));
+                    true
                 }
-                _ => {}
-            }
+                _ => false,
+            })
+            .unwrap_or(false)
         })
-        .detach();
     }
 
-    fn write_buffer(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+    /// Writes a buffer to its file; whether it was written.
+    fn write_buffer(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let (trim, final_newline) = (self.settings.current.remove_trailing_whitespace_on_save, self.settings.current.ensure_final_newline_on_save);
-        let Some(buffer) = self.buffers.get_mut(ix).filter(|b| !b.read_only) else { return };
+        let Some(buffer) = self.buffers.get_mut(ix).filter(|b| !b.read_only) else { return false };
         if trim {
             // In the editor, so ⌘Z brings the spaces back.
             let ranges = trailing_whitespace(&buffer.editor.read(cx).text().to_string());
@@ -648,10 +643,11 @@ impl Workspace {
             Err(err) => {
                 let message = format!("Couldn’t save {}: {err:#}", buffer.path.display());
                 self.notify_error(message, window, cx);
-                return;
+                return false;
             }
         };
-        match std::fs::write(&buffer.path, &bytes) {
+        let written = std::fs::write(&buffer.path, &bytes);
+        match &written {
             Ok(()) => {
                 buffer.dirty = false;
                 buffer.saved_text = buffer.editor.read(cx).text().clone();
@@ -679,6 +675,7 @@ impl Workspace {
         }
         window.set_window_edited(self.buffers.iter().any(|b| b.dirty));
         cx.notify();
+        written.is_ok()
     }
 
     pub(super) fn save_path(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
