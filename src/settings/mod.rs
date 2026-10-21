@@ -161,7 +161,23 @@ pub struct SettingsStore {
     pub keymap_problems: Vec<String>,
     /// Bumped by every change, so windows can tell what they've applied.
     pub generation: u64,
+    /// The last settings zcode wrote (`set`), so a window with the file
+    /// open with unsaved changes makes the same change there.
+    pub writes: Vec<SettingWrite>,
 }
+
+/// A setting `set` wrote: in `file`, `path` set to `value`.
+#[derive(Clone, Debug)]
+pub struct SettingWrite {
+    /// The store's generation after it.
+    pub generation: u64,
+    pub file: PathBuf,
+    pub path: Vec<String>,
+    pub value: Value,
+}
+
+/// How many `SettingWrite`s are kept.
+const KEPT_WRITES: usize = 16;
 
 impl Global for SettingsStore {}
 
@@ -243,6 +259,7 @@ pub fn init(cx: &mut App) {
         user_settings: Settings::default(),
         keymap_problems: vec![],
         generation: 0,
+        writes: vec![],
     };
     store.resolve();
     cx.set_global(store);
@@ -373,6 +390,11 @@ pub fn set(root: Option<&Path>, path: &[&str], value: Value, cx: &mut App) -> Re
             state.update(now, Some(edited), is_project);
         }
         store.resolve();
+        let generation = store.generation;
+        store.writes.push(SettingWrite { generation, file, path: path.iter().map(|p| p.to_string()).collect(), value });
+        if store.writes.len() > KEPT_WRITES {
+            store.writes.remove(0);
+        }
     });
     themes::refresh(false, cx);
     crate::actions::refresh_menus(cx);

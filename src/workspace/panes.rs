@@ -977,7 +977,7 @@ impl Workspace {
 
     /// Don't Save on closing a file's last editor: a buffer still open (a
     /// preview keeps it) goes back to the saved text.
-    fn discard_changes(&mut self, path: &Path, cx: &mut Context<Self>) {
+    pub(super) fn discard_changes(&mut self, path: &Path, cx: &mut Context<Self>) {
         if !self.buffer(path).is_some_and(|b| b.dirty) {
             return;
         }

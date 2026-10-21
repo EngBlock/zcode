@@ -90,6 +90,8 @@
 //!                              toggle|menu (Open at Login; `ZCODE_LOGIN_ITEM_FILE`), updates check|status|
 //!                              restart (Check for Updates…; `ZCODE_UPDATE_FEED`), open-url <file-url>
 //!                              (what Finder hands over)
+//!   alert answer <button>      answer zcode's next alert with that button instead of showing it
+//!                              (alerts that go through `scripted_answer`); alert shown: the alerts so far
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -127,6 +129,7 @@ pub fn start(cx: &mut App, workspaces: impl Fn(&mut App) -> Vec<Entity<Workspace
                         cx.update(|cx| cx.quit());
                         Ok(String::new())
                     }
+                    "alert" => alert_command(&arg),
                     "type-latency" => type_latency(&arg, cx).await,
                     "bench" if !matches!(arg.as_str(), "status" | "index") => bench_frame(&arg, cx).await,
                     "file-drop" => file_drop(&arg, cx).await,
@@ -149,6 +152,34 @@ pub fn start(cx: &mut App, workspaces: impl Fn(&mut App) -> Vec<Entity<Workspace
         }
     })
     .detach();
+}
+
+/// Answers queued for zcode's next alerts, and the alerts asked so far.
+static ALERTS: std::sync::Mutex<(std::collections::VecDeque<String>, Vec<String>)> =
+    std::sync::Mutex::new((std::collections::VecDeque::new(), Vec::new()));
+
+fn alert_command(arg: &str) -> Result<String, String> {
+    let mut alerts = ALERTS.lock().unwrap();
+    match arg.split_once(' ').unwrap_or((arg, "")) {
+        ("answer", button) if !button.is_empty() => {
+            alerts.0.push_back(button.to_string());
+            Ok(String::new())
+        }
+        ("shown", _) => Ok(serde_json::json!(alerts.1).to_string()),
+        _ => Err("alert answer <button> | alert shown".into()),
+    }
+}
+
+/// For an alert with `message` and `buttons`: under the control channel,
+/// the button `alert answer` queued for it (it isn't shown), else `None`
+/// (show it). The alert is noted for `alert shown` either way.
+pub fn scripted_answer(message: &str, buttons: &[&str]) -> Option<usize> {
+    std::env::var_os("ZCODE_DEBUG_DIR")?;
+    let mut alerts = ALERTS.lock().unwrap();
+    alerts.1.push(message.to_string());
+    let answer = alerts.0.pop_front()?;
+    // A button it doesn't have: the last (Cancel).
+    Some(buttons.iter().position(|b| *b == answer).unwrap_or(buttons.len().saturating_sub(1)))
 }
 
 /// Types `text` a character at a time, timing each keystroke from its

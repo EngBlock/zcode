@@ -26,11 +26,13 @@ pub(super) struct SettingsState {
     generation: u64,
     problems: Vec<Problem>,
     theme: Option<String>,
+    /// The generation of the last `SettingWrite` applied to open files.
+    seen_write: u64,
 }
 
 impl SettingsState {
     pub fn new(current: Settings) -> Self {
-        Self { current, generation: 0, problems: vec![], theme: None }
+        Self { current, generation: 0, problems: vec![], theme: None, seen_write: 0 }
     }
 }
 
@@ -86,6 +88,7 @@ impl Workspace {
             return;
         }
         self.settings.generation = store.generation;
+        let writes: Vec<settings::SettingWrite> = store.writes.iter().filter(|w| w.generation > self.settings.seen_write).cloned().collect();
         let theme = store.themes.applied.clone();
         let problems = store.problems(Some(&self.project.root));
         let new = Settings::for_project(&self.project.root, cx);
@@ -105,7 +108,34 @@ impl Workspace {
         if problems != self.settings.problems {
             self.show_settings_problems(problems, window, cx);
         }
+        if let Some(last) = writes.last() {
+            self.settings.seen_write = last.generation;
+        }
+        for write in writes {
+            self.apply_setting_write(&write, window, cx);
+        }
         cx.notify();
+    }
+
+    /// A setting zcode just wrote (a menu's toggle) to a file open here
+    /// with unsaved changes: made in the editor as well, so saving keeps
+    /// both. If the unsaved text can't take it, saving asks
+    /// (`save_buffer`).
+    fn apply_setting_write(&mut self, write: &settings::SettingWrite, window: &mut Window, cx: &mut Context<Self>) {
+        let file = write.file.canonicalize().unwrap_or_else(|_| write.file.clone());
+        let Some(buffer) = self.buffers.iter_mut().find(|b| b.dirty && b.path.canonicalize().unwrap_or_else(|_| b.path.clone()) == file) else {
+            return;
+        };
+        let text = buffer.editor.read(cx).text().to_string();
+        let path: Vec<&str> = write.path.iter().map(String::as_str).collect();
+        let (Ok(edited), Ok(disk)) = (settings::jsonc::set(&text, &path, &write.value), std::fs::read_to_string(&buffer.path)) else { return };
+        // In step with the file again: what's unsaved is the user's edit.
+        buffer.saved_text = zcode_editor::Rope::from(disk.as_str());
+        buffer.mtime = std::fs::metadata(&buffer.path).and_then(|m| m.modified()).ok();
+        if edited != text {
+            let (range, replacement) = super::buffers::changed_range(&text, &edited);
+            buffer.editor.update(cx, |state, cx| state.edit([(range, replacement)], window, cx));
+        }
     }
 
     fn apply_settings(&mut self, old: &Settings, window: &mut Window, cx: &mut Context<Self>) {
