@@ -12,6 +12,7 @@ use zcode_editor::Editor;
 
 use super::pane::{AssistantMode, EditorItem, Item, PaneId};
 use super::pane_group::{Member, SplitAxis};
+use super::panes::MIN_PANE_SIZE;
 use super::pickers;
 use super::Workspace;
 use crate::actions::*;
@@ -29,12 +30,33 @@ impl Workspace {
             self.split_states.retain(|key, _| keys.iter().any(|k| k == key.as_ref()));
             self.render_member(&root, cx)
         };
-        // Its size, for how many panes fit (`split_fits`).
+        // Its size, for how many panes fit (`split_fits`); the window can't
+        // be made smaller than the rest of it and the panes at their
+        // minimum, so shrinking it never squeezes a pane below that.
         let size = self.editor_area_size.clone();
+        let (min_width, min_height) = match self.zoomed || self.panes.len() == 1 {
+            true => (MIN_PANE_SIZE, MIN_PANE_SIZE),
+            false => self.pane_group.min_size(MIN_PANE_SIZE),
+        };
+        let applied = self.window_min_size.clone();
+        let fit = move |bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App| {
+            size.set(bounds.size);
+            let (viewport, base) = (window.viewport_size(), crate::app::WINDOW_MIN_SIZE);
+            let min = gpui_kit::size(
+                (viewport.width - bounds.size.width + px(min_width)).max(base.width).round(),
+                (viewport.height - bounds.size.height + px(min_height)).max(base.height).round(),
+            );
+            if applied.get() != min
+                && let Some(ns) = crate::window_size::ns_window(window)
+            {
+                applied.set(min);
+                crate::window_size::set_content_min_size(ns, (f32::from(min.width).into(), f32::from(min.height).into()), cx);
+            }
+        };
         div()
             .relative()
             .size_full()
-            .child(canvas(move |bounds, _, _| size.set(bounds.size), |_, _, _, _| {}).absolute().inset_0())
+            .child(canvas(fit, |_, _, _, _| {}).absolute().inset_0())
             .child(panes)
             .into_any_element()
     }

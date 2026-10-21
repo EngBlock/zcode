@@ -95,6 +95,8 @@
 //!                              (what Finder hands over)
 //!   alert answer <button>      answer zcode's next alert with that button instead of showing it
 //!                              (alerts that go through `scripted_answer`); alert shown: the alerts so far
+//!   window size                the key window's content size and least size (JSON);
+//!   window resize <w> <h>      resize it as dragging its corner would (no smaller than its least size)
 //!   dump                       log workspace state as JSON
 //!   keymap                     log every command's key bindings as JSON
 //!   quit
@@ -863,6 +865,7 @@ fn run_command(
                 _ => Err("usage: app bundle|cli …|login-item …|updates …|about [close]|open-url <url>".into()),
             }
         }
+        "window" => window.update(cx, |_, window, cx| crate::window_size::command(arg, window, cx)).map_err(|e| e.to_string())?,
         "dump" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window

@@ -4585,6 +4585,39 @@ def navigation_checks(samples):
         z.run("keys ctrl-alt-shift-cmd-w", "wait 300")
         assert panes()["layout"] == "0"
 
+    def shrinking_the_window_keeps_panes_usable():
+        # The window can't be made smaller than its other parts and the
+        # panes at their minimum: shrinking it stops there (Xcode's
+        # windows do the same), and a panel shown grows it instead.
+        def window():
+            s = z.dump()
+            return s["window"], s["panes"]
+        z.run("keys ctrl-alt-shift-cmd-w", f"open {content}", "wait 300", *["keys ctrl-cmd-t"] * 4, "wait 600")
+        w, p = window()
+        assert len(p["list"]) == 5, p["layout"]
+        chrome = w["size"][0] - p["area"][0]
+        assert abs(w["min_size"][0] - max(720, chrome + 5 * 101)) <= 1, (w, p["area"])
+        z.run("window resize 500 500", "wait 800")
+        w, p = window()
+        assert w["size"][0] > 500 and p["area"][0] >= 5 * 100 and min(p["sizes"]) >= 100, (w, p["area"], p["sizes"])
+        z.run("action zcode::ToggleInspector", "wait 800")
+        w, p = window()
+        assert p["area"][0] >= 5 * 100 and min(p["sizes"]) >= 100, (w, p["area"], p["sizes"])
+        z.run("action zcode::ToggleInspector", "wait 300")
+        # Stacked: the height's least size follows.
+        z.run("keys ctrl-alt-shift-cmd-w", "wait 300", *["keys ctrl-alt-cmd-t"] * 3, "wait 600")
+        w, p = window()
+        assert len(p["list"]) == 4 and abs(w["min_size"][1] - max(420, w["size"][1] - p["area"][1] + 4 * 101)) <= 1, (w, p)
+        z.run("window resize 500 300", "wait 800")
+        w, p = window()
+        assert w["size"][1] > 300 and p["area"][1] >= 4 * 100 and min(p["sizes"]) >= 100, (w, p["area"], p["sizes"])
+        # One pane: as small as the window's other parts and one pane allow.
+        z.run("keys ctrl-alt-shift-cmd-w", "wait 600", "window resize 500 300", "wait 800")
+        w, p = window()
+        least = [max(720, w["size"][0] - p["area"][0] + 101), max(420, w["size"][1] - p["area"][1] + 101)]
+        assert all(abs(a - b) <= 1 for a, b in zip(w["min_size"] + w["size"], least + least)), (w, p["area"])
+        z.run("window resize 1440 900", "wait 800")
+
     def callers_menu_closes():
         # Show Callers' menu ("No Callers" here) goes with a tab switch.
         z.run(f"open {greeter}", f"open {content}", "wait 200")
@@ -4603,6 +4636,7 @@ def navigation_checks(samples):
         check("Navigation: the project navigator selects nothing for a file without a row or Project Settings", navigator_selection)
         check("Navigation: a file outside the project gets its type and location in the File inspector", outside_the_project)
         check("Navigation: splits that don't fit at the minimum width are refused; every pane stays on screen", splits_that_dont_fit)
+        check("Navigation: shrinking the window stops before a pane is under the minimum; a panel shown grows it", shrinking_the_window_keeps_panes_usable)
         check("Navigation: Show Callers' menu closes on a tab switch", callers_menu_closes)
     finally:
         z.quit()

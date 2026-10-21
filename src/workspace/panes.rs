@@ -16,7 +16,7 @@ use crate::session::{PaneLayout, PaneState, ProjectSession, SavedPreview};
 
 /// The narrowest (and lowest) a pane can be: the splits' minimum
 /// (`PANEL_MIN_SIZE`) and the divider beside it.
-const MIN_PANE_SIZE: f32 = 101.;
+pub(super) const MIN_PANE_SIZE: f32 = 101.;
 
 impl Workspace {
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {

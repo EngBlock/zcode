@@ -155,8 +155,17 @@ impl PaneGroup {
         if !after.split(at, new, axis) {
             return false;
         }
-        let fits = |axis, room: f32| after.root.panes_along(axis) as f32 * min <= room;
-        fits(SplitAxis::Horizontal, size.0) && fits(SplitAxis::Vertical, size.1)
+        let (width, height) = after.min_size(min);
+        width <= size.0 && height <= size.1
+    }
+
+    /// The smallest area (width, height) with every pane at least `min`
+    /// wide and high: as many panes as any line across the splits meets,
+    /// side by side and stacked. The window can't be made smaller than
+    /// its other parts and this.
+    pub fn min_size(&self, min: f32) -> (f32, f32) {
+        let along = |axis| self.root.panes_along(axis) as f32 * min;
+        (along(SplitAxis::Horizontal), along(SplitAxis::Vertical))
     }
 
     /// Removes a pane; the last one stays.
@@ -226,6 +235,25 @@ mod tests {
         assert!(!group.split_fits(PaneId(4), SplitAxis::Horizontal, (300., 200.), 100.));
         assert!(group.split_fits(PaneId(4), SplitAxis::Horizontal, (400., 200.), 100.));
         assert!(!group.split_fits(PaneId(9), SplitAxis::Horizontal, (900., 900.), 100.), "no such pane");
+    }
+
+    #[test]
+    fn the_least_area_holds_every_line_of_panes_at_the_minimum() {
+        let mut group = PaneGroup::new(PaneId(1));
+        assert_eq!(group.min_size(100.), (100., 100.));
+        // 1 | 2 | 3: three wide, one high.
+        group.split(PaneId(1), PaneId(2), SplitAxis::Horizontal);
+        group.split(PaneId(2), PaneId(3), SplitAxis::Horizontal);
+        assert_eq!(group.min_size(100.), (300., 100.));
+        // 1 | (2 / (3 | 4)) | …: the row under 2 adds a pane across, the
+        // stack two down.
+        group.split(PaneId(2), PaneId(4), SplitAxis::Vertical);
+        group.split(PaneId(4), PaneId(5), SplitAxis::Horizontal);
+        assert_eq!(group.min_size(100.), (400., 200.));
+        // Closing panes gives the room back.
+        group.remove(PaneId(5));
+        group.remove(PaneId(4));
+        assert_eq!(group.min_size(101.), (303., 101.));
     }
 
     #[test]

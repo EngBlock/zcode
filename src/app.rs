@@ -77,6 +77,10 @@ pub fn workspaces(cx: &mut App) -> Vec<Entity<Workspace>> {
     cx.default_global::<Workspaces>().0.iter().filter_map(|w| w.upgrade()).collect()
 }
 
+/// The least size of zcode's windows; a project window's grows with its
+/// panes (`Workspace::render_editor_area`).
+pub const WINDOW_MIN_SIZE: Size<Pixels> = size(px(720.), px(420.));
+
 fn window_options(title: &str, window_size: Size<Pixels>, cx: &App) -> WindowOptions {
     let bounds = Bounds::centered(None, window_size, cx);
     WindowOptions {
@@ -87,7 +91,7 @@ fn window_options(title: &str, window_size: Size<Pixels>, cx: &App) -> WindowOpt
             traffic_light_position: Some(point(px(12.), px(13.))),
         }),
         app_owns_titlebar_drag: true,
-        window_min_size: Some(size(px(720.), px(420.))),
+        window_min_size: Some(WINDOW_MIN_SIZE),
         // Created hidden and shown by `present` without AppKit's open
         // animation.
         show: false,

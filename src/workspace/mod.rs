@@ -146,6 +146,9 @@ pub struct Workspace {
     restored_split_sizes: std::collections::HashMap<SharedString, Vec<f32>>,
     /// The editor area's size at the last frame, for how many panes fit.
     editor_area_size: Rc<std::cell::Cell<Size<Pixels>>>,
+    /// The window's least content size, as last set from the panes
+    /// (`render_editor_area`).
+    window_min_size: Rc<std::cell::Cell<Size<Pixels>>>,
     /// The project editor, in whichever pane has its tab.
     pub project_settings: Option<Entity<ProjectSettings>>,
     project_settings_subscriptions: Vec<Subscription>,
@@ -334,6 +337,7 @@ impl Workspace {
             lsp_shown: vec![],
             split_states: Default::default(),
             editor_area_size: Default::default(),
+            window_min_size: Default::default(),
             restored_split_sizes: Default::default(),
             project_settings: None,
             project_settings_subscriptions: vec![],
@@ -1004,6 +1008,11 @@ impl Workspace {
         state["packages"] = self.packages_summary(cx);
         state["console"] = self.console_summary(cx);
         state["panes"] = self.panes_summary(cx);
+        // The window's content size and the least the panes leave it.
+        if let Some(ns) = crate::window_size::ns_window(window) {
+            let (size, min) = crate::window_size::content_sizes(&ns);
+            state["window"] = serde_json::json!({ "size": [size.0, size.1], "min_size": [min.0, min.1] });
+        }
         state["git"] = self.git_summary(cx);
         state["multibuffer"] = self.multibuffer_summary(cx);
         state["terminals"] = self.terminals_summary(window, cx);
