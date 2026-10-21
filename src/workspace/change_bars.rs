@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::*;
-use zcode_editor::{EditorState, GutterItem, GutterLane, GutterPlacement, RopeExt as _};
+use zcode_editor::{EditorState, GutterItem, GutterLane, GutterPlacement, RopeExt as _, TransactionId};
 
 use super::Workspace;
 use crate::git::diff::{self, Hunk, HunkKind, Staging};
@@ -46,7 +46,27 @@ pub struct BufferGit {
     pub blame_stale: bool,
     pub(super) diff_task: Option<Task<()>>,
     pub(super) blame_task: Option<Task<()>>,
+    /// The Discard Changes that unstaged what they discarded, latest last.
+    pub(super) discarded_stages: Vec<DiscardedStage>,
 }
+
+/// A Discard Change of a staged change: undoing its edit stages the change
+/// again, redoing it unstages it again (`index_follows_undo`).
+pub(super) struct DiscardedStage {
+    /// The editor's transaction the discard made.
+    transaction: TransactionId,
+    rel: String,
+    mode: Option<String>,
+    /// The index's text of the file before and after the discard (`None`:
+    /// not in the index).
+    staged: Option<String>,
+    unstaged: Option<String>,
+    /// Whether the edit is undone, so the index has `staged` again.
+    undone: bool,
+}
+
+/// How many discards a file keeps for undo.
+const KEPT_DISCARDS: usize = 16;
 
 impl Workspace {
     /// New versions of a buffer's file from git: compares again if they changed.
@@ -108,6 +128,75 @@ impl Workspace {
         self.schedule_diff(path, DIFF_DELAY, cx);
         self.buffer_edited_for_blame(path, cx);
         self.diff_views_edited(path, cx);
+        self.index_follows_undo(path, cx);
+    }
+
+    /// ⌘Z of a Discard Change that unstaged the change: the index gets
+    /// back what the discard took from it, and ⇧⌘Z takes it again. Only
+    /// while the index has what the step before left there: after a change
+    /// staged, unstaged or committed since, the index is left alone, the
+    /// user is told, and the discard's undo no longer touches it.
+    fn index_follows_undo(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path) else { return };
+        if buffer.git.discarded_stages.is_empty() {
+            return;
+        }
+        let editor = buffer.editor.read(cx);
+        let (last, next_redo) = (editor.last_transaction(), editor.next_redo_transaction());
+        // (the discard, rel, what the index should have, what it gets, mode)
+        let mut writes: Vec<(TransactionId, String, Option<String>, Option<String>, Option<String>)> = vec![];
+        for discard in &mut buffer.git.discarded_stages {
+            let (expected, text) = if !discard.undone && next_redo == Some(discard.transaction) {
+                (&discard.unstaged, &discard.staged)
+            } else if discard.undone && last == Some(discard.transaction) {
+                (&discard.staged, &discard.unstaged)
+            } else {
+                continue;
+            };
+            writes.push((discard.transaction, discard.rel.clone(), expected.clone(), text.clone(), discard.mode.clone()));
+            discard.undone = !discard.undone;
+        }
+        if writes.is_empty() {
+            return;
+        }
+        // After git's operation in progress, outside the window's update
+        // (undo runs in it).
+        let (window, path) = (self.window, path.to_path_buf());
+        cx.spawn(async move |this, cx| {
+            while this.update(cx, |this, _| this.git.busy.is_some()).unwrap_or(false) {
+                cx.background_executor().timer(Duration::from_millis(50)).await;
+            }
+            cx.update_window(window, |_, window, cx| {
+                this.update(cx, |this, cx| {
+                    let label = if writes.iter().any(|(_, _, _, text, _)| text.is_some()) { "Staging" } else { "Unstaging" };
+                    this.run_git(
+                        label,
+                        move |root| {
+                            let failed: Vec<(TransactionId, String)> = writes
+                                .iter()
+                                .filter_map(|(transaction, rel, expected, text, mode)| {
+                                    let written = git::write_index_if(root, rel, expected.as_deref(), text.as_deref(), mode.as_deref());
+                                    written.err().map(|err| (*transaction, format!("{err:#}")))
+                                })
+                                .collect();
+                            Ok(failed)
+                        },
+                        move |this, failed, window, cx| {
+                            let Some(buffer) = this.buffers.iter_mut().find(|b| b.path == path) else { return };
+                            buffer.git.discarded_stages.retain(|d| !failed.iter().any(|(t, _)| *t == d.transaction));
+                            if let Some((_, message)) = failed.into_iter().next_back() {
+                                this.git.last_error = Some(message.clone());
+                                this.notify_error(message, window, cx);
+                            }
+                        },
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The change bars in `editor`'s gutter, between the numbers and the
@@ -175,7 +264,8 @@ impl Workspace {
 
     /// Discard Change: the hunk's lines go back to `HEAD`'s, as one edit
     /// ⌘Z undoes. What of it is staged leaves the index too, or the next
-    /// commit would have the change the editor no longer shows.
+    /// commit would have the change the editor no longer shows; ⌘Z stages
+    /// it again (`index_follows_undo`).
     pub fn discard_hunk(&mut self, path: &Path, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some((hunk, head, index)) = self.hunk_with_bases(path, ix) else { return };
         let Some(buffer) = self.buffer(path).filter(|b| !b.read_only) else { return };
@@ -189,22 +279,35 @@ impl Workspace {
                     self.notify_error(format!("Wait for “{busy}” to finish."), window, cx);
                     return;
                 }
-                Some((rel, diff::unstage_hunk(&hunk.hunk, &index, &head)))
+                let unstaged = diff::unstage_hunk(&hunk.hunk, &index, &head);
+                Some((rel, (index, unstaged)))
             }
             _ => None,
         };
         let text = editor.read(cx).text().to_string();
         let (range, replacement) = diff::discard_edit(&head, &text, &hunk.hunk);
+        let before = editor.read(cx).last_transaction();
         editor.update(cx, |state, cx| {
             state.transact(window, cx, |state, window, cx| state.edit([(range, replacement.as_str())], window, cx));
         });
+        let transaction = editor.read(cx).last_transaction().filter(|t| Some(*t) != before);
         self.schedule_diff(path, Duration::ZERO, cx);
-        if let Some((rel, new_index)) = unstage {
+        if let Some((rel, (index, new_index))) = unstage {
             // A file new since HEAD leaves the index when nothing of it is left.
-            let remove = !has_head && new_index.is_empty();
+            let unstaged = (has_head || !new_index.is_empty()).then_some(new_index);
+            // Its undo stages it again.
+            if let Some(transaction) = transaction
+                && let Some(buffer) = self.buffers.iter_mut().find(|b| b.path == path)
+            {
+                let stages = &mut buffer.git.discarded_stages;
+                stages.push(DiscardedStage { transaction, rel: rel.clone(), mode: mode.clone(), staged: Some(index), unstaged: unstaged.clone(), undone: false });
+                if stages.len() > KEPT_DISCARDS {
+                    stages.remove(0);
+                }
+            }
             self.run_git(
                 "Unstaging",
-                move |root| git::write_index(root, &rel, (!remove).then_some(new_index.as_str()), mode.as_deref()),
+                move |root| git::write_index(root, &rel, unstaged.as_deref(), mode.as_deref()),
                 |_, _, _, _| {},
                 window,
                 cx,

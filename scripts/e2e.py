@@ -5056,6 +5056,31 @@ def git_checks(samples):
         s = z.wait_for(lambda s: settled(s) and hunks(s) == [] and not g(s)["staged"], timeout=15, interval=0.3)
         assert "// staged" not in s["active"]["text"]
         assert git(project, "diff", "--cached") == "", git(project, "diff", "--cached")
+        # ⌘Z brings the line back to the editor and the index; ⇧⌘Z takes it
+        # from both again.
+        z.run("keys cmd-z", "wait 300")
+        s = z.wait_for(lambda s: settled(s) and hunks(s) == [("Modified", line, "Staged")], timeout=15, interval=0.3)
+        assert "// staged" in s["active"]["text"] and not s["active"]["dirty"]
+        assert "// staged" in git(project, "diff", "--cached"), git(project, "diff", "--cached")
+        z.run("keys cmd-shift-z", "wait 300")
+        s = z.wait_for(lambda s: settled(s) and hunks(s) == [] and not g(s)["staged"], timeout=15, interval=0.3)
+        assert "// staged" not in s["active"]["text"]
+        assert git(project, "diff", "--cached") == "", git(project, "diff", "--cached")
+        # The index changed in between (here from a shell): the undo leaves
+        # it alone and says so, and the next redo and undo don't touch it.
+        elsewhere = git(project, "show", f"HEAD:{rel}") + "// elsewhere\n"
+        oid = subprocess.run(["git", "hash-object", "-w", "--stdin", "--path", rel], cwd=project, input=elsewhere,
+                             check=True, capture_output=True, text=True, env=GIT_ENV).stdout.strip()
+        git(project, "update-index", "--cacheinfo", f"100644,{oid},{rel}")
+        z.run("keys cmd-z", "wait 300")
+        s = z.wait_for(lambda s: settled(s) and "// staged" in s["active"]["text"] and g(s)["last_error"], timeout=15, interval=0.3)
+        assert "changed in the index since" in g(s)["last_error"], g(s)["last_error"]
+        cached = git(project, "diff", "--cached")
+        assert "// elsewhere" in cached and "// staged" not in cached, cached
+        z.run("keys cmd-shift-z", "wait 300", "keys cmd-z", "wait 300", "keys cmd-shift-z", "wait 300")
+        z.wait_for(lambda s: settled(s) and "// staged" not in s["active"]["text"], timeout=15, interval=0.3)
+        assert git(project, "diff", "--cached") == cached
+        git(project, "reset", "-q", "--", rel)
         z.run("keys cmd-s", "wait 300")
         z.wait_for(lambda s: settled(s) and not g(s)["unstaged"] and not g(s)["staged"], timeout=15, interval=0.3)
         assert git(project, "status", "--porcelain") == "", git(project, "status", "--porcelain")
@@ -5177,7 +5202,7 @@ def git_checks(samples):
         check("Git: New Branch, a commit, Push… to a new remote branch, Switch Branch back", branches_and_push)
         check("Git: Fetch Changes and Pull… (⌥⌘X) from a local origin; the open file reloads", fetch_and_pull)
         check("Git: a commit made outside zcode clears the bars; Discard Changes on a file", outside_changes)
-        check("Git: Discard Change on a staged hunk unstages it too (git diff --cached is empty)", discard_a_staged_hunk)
+        check("Git: Discard Change on a staged hunk unstages it too (git diff --cached is empty), ⌘Z stages it again and ⇧⌘Z unstages it", discard_a_staged_hunk)
         check("Git: Discard Change at the end of a file with no final newline doesn't add one", discard_without_a_final_newline)
         check("Git: a staged rename is compared with its old path, in the gutter and the commit sheet", renamed_file)
         check("Git: Authors (⌃⇧⌘A) on an untracked file says Not Committed Yet", authors_on_an_untracked_file)
