@@ -1490,6 +1490,44 @@ def png_bytes(w, h, rgba):
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
+def color_boxes(png, rgb, tolerance=12):
+    """The boxes of `rgb` in a screenshot, in pixels: (x, y, width, height)
+    for each run of columns in each band of rows that has the color. Read
+    through sips as a BMP (no PNG decoder needed)."""
+    import struct
+    bmp = png + ".bmp"
+    subprocess.run(["sips", "-s", "format", "bmp", png, "--out", bmp], check=True, capture_output=True)
+    data = open(bmp, "rb").read()
+    offset, = struct.unpack_from("<I", data, 10)
+    width, height = struct.unpack_from("<ii", data, 18)
+    bpp, = struct.unpack_from("<H", data, 28)
+    step, row_size = bpp // 8, ((bpp * width + 31) // 32) * 4
+    r0, g0, b0 = rgb
+
+    def hits(y):
+        row = (height - 1 - y) if height > 0 else y
+        base = offset + row * row_size
+        line = data[base:base + width * step]
+        return [x for x in range(width) if abs(line[x * step + 2] - r0) <= tolerance
+                and abs(line[x * step + 1] - g0) <= tolerance and abs(line[x * step] - b0) <= tolerance]
+
+    def runs(values):
+        out = []
+        for v in values:
+            if out and v - out[-1][1] <= 1:
+                out[-1][1] = v
+            else:
+                out.append([v, v])
+        return out
+
+    rows = {y: hits(y) for y in range(abs(height))}
+    boxes = []
+    for top, bottom in runs([y for y, xs in rows.items() if xs]):
+        columns = sorted({x for y in range(top, bottom + 1) for x in rows[y]})
+        boxes.extend((left, top, right - left + 1, bottom - top + 1) for left, right in runs(columns))
+    return boxes
+
+
 def tree_snapshot(root):
     """Every file under `root` with its bytes."""
     out = {}
@@ -1641,6 +1679,37 @@ def rendered_checks():
             assert r["scroll_top"]["item"] == 0, r["scroll_top"]
             z.run("wait 500", "screenshot " + os.path.join(WORK, "preview-markdown.png"))
 
+        def markdown_images_side_by_side_and_missing():
+            # Images on one line (with spaces between) at their own size, as
+            # one alone is, not at the text's height; images that can't be drawn
+            # show their alt text; a link to a file that isn't there says so.
+            gallery = os.path.join(folder, "Gallery.md")
+            open(os.path.join(folder, "img", "empty.png"), "wb").close()
+            open(os.path.join(folder, "img", "bad.png"), "w").write("not a PNG")
+            open(gallery, "w").write("# Gallery\n\n![a green dot](img/dot.png)\n\n![one](img/dot.png) ![two](img/dot.png)\n\n"
+                                     "![not there](img/none.png)\n\n![](img/empty.png)\n\n![corrupt](img/bad.png)\n")
+            z.run(f"open {gallery}", "action zcode::OpenPreviewToTheSide")
+            try:
+                r = preview(z, "markdown", lambda r: r["path"] == gallery and r["shown"] and r["items"] == 6)
+                assert [i["exists"] for i in r["images"]] == [True, False, True, True], r["images"]
+                shot = os.path.join(WORK, "preview-gallery.png")
+                z.run("wait 800", "screenshot " + shot)
+                boxes = color_boxes(shot, (52, 199, 89))
+                assert len(boxes) == 3, boxes
+                (_, _, w, h), row = boxes[0], boxes[1:]
+                assert all(abs(bw - w) <= 2 and abs(bh - h) <= 2 for _, _, bw, bh in row), boxes
+                assert row[0][1] == row[1][1] and row[0][0] + w < row[1][0], boxes
+                # preview-link follows a link as a click in the first Markdown preview does.
+                assert json.loads(z.run("preview-link nofile.md")[-1]) == {"followed": "missing"}
+                assert json.loads(z.run("preview-link docs")[-1]) == {"followed": "folder"}
+            finally:
+                panes = z.dump()["panes"]["list"]
+                for n, p in enumerate(panes):
+                    if "Gallery.md (Preview)" in p["tabs"]:
+                        z.run(f"pane close-tab {n} {p['tabs'].index('Gallery.md (Preview)')}")
+                z.run(f"open {gallery}", "action zcode::CloseTab", "wait 300")
+            assert not any(r["path"] == gallery for r in previews(z.dump())), previews(z.dump())
+
         def typing_rerenders_the_markdown():
             before = preview(z, "markdown")["items"]
             z.run(f"open {readme}:1", "type Typed first.", "keys enter enter")
@@ -1699,6 +1768,7 @@ def rendered_checks():
         check("live preview: typing in the SVG draws it again", typing_redraws_the_svg)
         check("live preview: an unreadable SVG edit keeps the last drawing and says why", unreadable_svg_keeps_its_last_drawing)
         check("live preview: a Markdown preview finds its relative image", markdown_preview_with_its_image)
+        check("live preview: Markdown images on one line are drawn at their own size, as one alone is; a link to a missing file or a folder says so", markdown_images_side_by_side_and_missing)
         check("live preview: typing in the Markdown renders it again", typing_rerenders_the_markdown)
         check("live preview: scrolling the editor scrolls the Markdown preview", scrolling_the_editor_scrolls_the_preview)
         check("live preview: opening the file shows its editor, not the preview", opening_the_file_shows_its_editor)
@@ -2644,6 +2714,32 @@ def package_checks(z, samples):
         z.run(f"open {main}:{loop_line}", "keys cmd-\\", "keys ctrl-cmd-y")
         z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=60)
 
+    greeter = os.path.join(kit, "Sources", "ZKit", "Greeter.swift")
+
+    def package_build_error():
+        # swiftbuild (Xcode 27's swift build) prints "error: /…/Greeter.swift:3:28
+        # message: FixIt(…)", severity first; older ones "/…:3:28: error: …".
+        original = open(greeter).read()
+        broken_line = line_of(greeter, "public let name")
+        try:
+            with open(greeter, "w") as f:
+                f.write(original.replace("public let name: String", "public let name: String let x = 1"))
+            z.run(f"open {greeter}", "wait 3500")  # reloads from disk
+            z.run("keys cmd-b")
+            s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=300)
+            assert "success: false" in s["phase"], s["phase"]
+            located = [i for i in s["issues"] if i.startswith(f"Error Greeter.swift:{broken_line} consecutive declarations")]
+            assert located and all("FixIt(" not in i for i in s["issues"]), s["issues"]
+            assert any(i.endswith("(fix-it: insert “;”)") for i in located), located
+            assert not any("/Greeter.swift" in i for i in s["issues"]), s["issues"]
+            z.run(f"open {main}", "wait 300", "keys cmd-'", "wait 300")
+            a = z.dump()["active"]
+            assert a["path"].endswith("Greeter.swift") and a["line"] == broken_line, a
+        finally:
+            with open(greeter, "w") as f:
+                f.write(original)
+        z.wait_for(lambda s: s["active"]["text"] == original, timeout=15, interval=0.5)
+
     tests_dir = os.path.join(kit, "Tests", "ZKitTests")
     swift_tests = os.path.join(tests_dir, "GreeterTests.swift")
     xctests = os.path.join(tests_dir, "GreeterXCTests.swift")
@@ -2710,6 +2806,7 @@ def package_checks(z, samples):
     check("Swift package: re-run failed tests", rerun_failed)
     check("Swift package: Run on My Mac (⌘R)", run_package)
     check("Swift package: Test (⌘U) → Test navigator", test_package)
+    check("Swift package: a swift build error is listed at its file and line, its fix-it said, ⌘' goes there", package_build_error)
     check("Swift package: breakpoint, variables, step over (F6)", debug_package)
 
     tick_line = line_of(main, 'print("tick')
@@ -7872,6 +7969,18 @@ def settings_checks(samples):
         write_settings("{}\n")
         wait_settings(lambda st: st["terminal_shell"] is None)
 
+    def unknown_font_family():
+        default = settings()["theme"]["mono_font"]
+        write_settings('{ "buffer_font_family": "NoSuchFontXYZ" }\n')
+        st = settings(wait_settings(lambda st: any("NoSuchFontXYZ" in p["message"] for p in st["problems"])))
+        assert [p["message"] for p in st["problems"]] == [f"settings.json: buffer_font_family: no font “NoSuchFontXYZ” is installed; using {default}"], st["problems"]
+        assert st["theme"]["mono_font"] == default, st["theme"]
+        write_settings('{ "buffer_font_family": "Courier New" }\n')
+        st = settings(wait_settings(lambda st: st["theme"]["mono_font"] == "Courier New"))
+        assert st["problems"] == [], st["problems"]
+        write_settings("{}\n")
+        wait_settings(lambda st: st["theme"]["mono_font"] == default and st["problems"] == [])
+
     def keymap_with_contexts():
         write(keymap_file, """[
   // Mine: a key for the Find navigator, one only in editors, one only in Vim's normal mode.
@@ -7910,6 +8019,13 @@ def settings_checks(samples):
         z.run("vim on", "wait 200", "keys escape space f", "wait 300")
         assert z.dump()["modal_open"], "space f opened Open Quickly in normal mode"
         z.run("keys escape", "vim off", "wait 200")
+        # A block that isn't one (bindings as a list, a bare string, a number for
+        # a context) is said; the other blocks' bindings still apply.
+        write(keymap_file, '[{"bindings":{"cmd-shift-8":"OpenSettings"}},{"context":"Editor","bindings":["oops"]},"bare",{"context":5,"bindings":{}}]\n')
+        st = settings(wait_settings(lambda st: st["user_bindings"] == 1 and len(st["problems"]) == 3))
+        messages = [p["message"] for p in st["problems"]]
+        assert [m.split(":")[1].strip() for m in messages] == ["block 2", "block 3", "block 4"], messages
+        assert all(m.endswith("its bindings aren’t used") for m in messages), messages
         write(keymap_file, "[]\n")
         wait_settings(lambda st: st["user_bindings"] == 0 and st["problems"] == [])
         z.run("keys cmd-1", "wait 200")
@@ -8010,6 +8126,16 @@ def settings_checks(samples):
         assert a["read_only"] and a["path"].endswith("default-keymap.json"), a
         z.run("keys cmd-w", "wait 200")
 
+    def about_in_quick_actions():
+        assert not json.loads(z.run("app about")[-1])["open"]
+        z.run("action zcode::QuickActions", "wait 300", "type About zcode", "wait 300", "keys enter", "wait 800")
+        about = json.loads(z.run("app about")[-1])
+        assert about == {"open": True, "icon": "about_icon.svg"}, about
+        z.run("screenshot " + os.path.join(WORK, "about.png"))
+        assert not json.loads(z.run("app about close")[-1])["open"]
+        z.run("wait 300")
+        assert not json.loads(z.run("app about")[-1])["open"]
+
     def user_config_untouched():
         after = sorted(os.listdir(user_config)) if os.path.isdir(user_config) else None
         assert after == before_user, (before_user, after)
@@ -8024,11 +8150,13 @@ def settings_checks(samples):
         check("Settings: the Editor menu's toggles and ⌘+ write settings.json, with checkmarks", toggles_write_the_file_with_checkmarks)
         check("Settings: trailing whitespace, final newline and format on save (sourcekit-lsp)", whitespace_and_format_on_save)
         check("Settings: terminal.shell starts the terminal's shell", terminal_shell_setting)
+        check("Settings: a buffer_font_family that isn't installed is said, and the editor and terminal keep a monospace font", unknown_font_family)
         check("Settings: keymap.json with contexts (Editor, vim_mode, Navigator), Unbind and null; mistakes reported", keymap_with_contexts)
         check("Settings: themes as JSON (gpui-component's and Zed's formats), live, and Select Theme…", json_themes_and_select_theme)
         check("Settings: Xcode themes import (a fixture, and Xcode's Midnight read in place)", xcode_theme_import)
         check("Settings: Xcode key bindings import into keymap.json (rebound, removed, text bindings; again replaces)", xcode_key_bindings_import)
         check("Settings: Open Default Settings and Default Key Bindings are read-only", default_files_read_only)
+        check("About zcode: in Quick Actions, it opens the About window with the app's icon", about_in_quick_actions)
     finally:
         z.quit()
     check("Settings: the user's ~/.config/zcode is never touched", user_config_untouched)

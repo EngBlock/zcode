@@ -17,7 +17,8 @@
 //!
 //! In a Markdown preview, images and links with relative paths are the
 //! file's folder's (a leading `/`, the project's root); a link to a file
-//! opens it in zcode, any other (http, mailto) in its app. Raw HTML isn't
+//! opens it in zcode (one to a file that isn't there, or a folder, says
+//! so), any other (http, mailto) in its app. Raw HTML isn't
 //! rendered. The preview beside an editor follows it: the block at the
 //! editor's top line goes to the top of the preview (as far into it as the
 //! line is into its source), and a cursor moved to a block the preview
@@ -295,14 +296,7 @@ impl Render for MarkdownView {
             {
                 return;
             }
-            match local_path(&dir, &root, url) {
-                Some(path) if path.is_file() => {
-                    workspace.update(cx, |this, cx| this.open_file(path, None, true, window, cx)).ok();
-                }
-                Some(_) => {}
-                None if url.starts_with('#') => {}
-                None => cx.open_url(url),
-            }
+            follow_link(&dir, &root, &workspace, url, window, cx);
         };
         v_flex()
             .id("markdown-view")
@@ -317,6 +311,51 @@ impl Render for MarkdownView {
                 ),
             )
     }
+}
+
+/// A link clicked in a preview: a file opens in zcode, a folder or a file
+/// that isn't there says so, a web or mail link opens in its app. Returns
+/// what it did, for the control channel.
+fn follow_link(dir: &Path, root: &Path, workspace: &WeakEntity<Workspace>, url: &str, window: &mut Window, cx: &mut App) -> &'static str {
+    match local_path(dir, root, url) {
+        Some(path) if path.is_file() => {
+            workspace.update(cx, |this, cx| this.open_file(path, None, true, window, cx)).ok();
+            "opened"
+        }
+        Some(path) => {
+            let shown = crate::paths::display_path(&path);
+            let (message, done) = if path.is_dir() { (format!("“{shown}” is a folder, not a file"), "folder") } else { (format!("There’s no file at “{shown}”"), "missing") };
+            workspace.update(cx, |this, cx| this.notify_error(message, window, cx)).ok();
+            done
+        }
+        None if url.starts_with('#') => "fragment",
+        None => {
+            cx.open_url(url);
+            "url"
+        }
+    }
+}
+
+/// The control channel's `preview-link <url>`: the first Markdown
+/// preview's link to `url` followed as a click would.
+pub fn preview_link(workspace: &Entity<Workspace>, url: &str, window: &mut Window, cx: &mut App) -> Result<String, String> {
+    let view = workspace
+        .read(cx)
+        .panes
+        .iter()
+        .flat_map(|pane| pane.items.iter())
+        .find_map(|item| match item {
+            Item::Rendered(item) => match &item.view {
+                RenderedView::Markdown(view) => Some(view.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .ok_or("no Markdown preview")?;
+    let view = view.read(cx);
+    let dir = view.path.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let (root, workspace) = (view.root.clone(), view.workspace.clone());
+    Ok(json!({ "followed": follow_link(&dir, &root, &workspace, url.trim(), window, cx) }).to_string())
 }
 
 /// The top-level blocks' lines and the images' URLs of Markdown `text`,

@@ -88,6 +88,7 @@ pub use navigator::NavigatorTab;
 pub use multibuffer::{MultiBufferKind, MultiBufferView};
 pub use pane::{AssistantMode, DiffItem, EditorItem, Item, MultiBufferItem, Pane, PaneId, TerminalItem};
 pub use remote_sheet::RemoteAction;
+pub use rendered_view::preview_link;
 pub use pane_group::SplitAxis;
 pub use panels::DebugTab;
 pub use plist_editor::{PlistEditor, PlistEditorEvent};

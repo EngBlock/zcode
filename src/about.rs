@@ -1,8 +1,14 @@
-//! zcode ▸ About zcode: a small window with the app's name and version.
+//! zcode ▸ About zcode: a small window with the app's icon, name and
+//! version.
 
-use gpui_kit::component::{ActiveTheme as _, Icon, v_flex};
+use std::sync::{Arc, LazyLock};
+
+use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::*;
-use gpui_kit::assets::IconName;
+
+/// The app icon (scripts/bundle/make_icon.swift's drawing as an SVG), drawn
+/// by GPUI in color: the same with or without the bundle around the binary.
+static ICON: LazyLock<Arc<Image>> = LazyLock::new(|| Arc::new(Image::from_bytes(ImageFormat::Svg, include_bytes!("about_icon.svg").to_vec())));
 
 /// The open About window, so choosing the item again brings it forward.
 #[derive(Default)]
@@ -30,17 +36,7 @@ impl Render for AboutView {
             .gap_2()
             .bg(theme.background)
             .text_color(theme.foreground)
-            .child(
-                div()
-                    .size(px(72.))
-                    .mb_2()
-                    .rounded(px(16.))
-                    .bg(theme.primary)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(Icon::new(IconName::Hammer).size(px(40.)).text_color(theme.primary_foreground)),
-            )
+            .child(img(ICON.clone()).id("app-icon").size(px(96.)))
             .child(div().text_xl().font_weight(FontWeight::BOLD).child("zcode"))
             .child(
                 div()
@@ -50,6 +46,20 @@ impl Render for AboutView {
             )
             .on_action(cx.listener(|_, _: &crate::actions::CloseTab, window, _| window.remove_window()))
     }
+}
+
+/// The control channel's `app about [close]`: whether the window is open
+/// (closing it first), and the icon it shows.
+pub fn command(arg: &str, cx: &mut App) -> Result<String, String> {
+    let window = cx.try_global::<AboutWindow>().and_then(|w| w.0).filter(|w| cx.windows().contains(w));
+    match (arg, window) {
+        ("", _) => {}
+        ("close", Some(window)) => window.update(cx, |_, window, _| window.remove_window()).map_err(|e| e.to_string())?,
+        ("close", None) => {}
+        _ => return Err("usage: app about [close]".into()),
+    }
+    let open = arg.is_empty() && window.is_some();
+    Ok(serde_json::json!({ "open": open, "icon": "about_icon.svg" }).to_string())
 }
 
 /// Opens the About window, or brings the open one forward.

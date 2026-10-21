@@ -32,6 +32,7 @@
 //!   console <command>          run a command at the LLDB console's prompt
 //!   bookmark <command>         a Bookmarks navigator command (see `Workspace::bookmark_command`)
 //!   pane <command>             editor panes: open-next <path>[:line] (⌥-click), focus <n>, tab / close-tab <n> <i>
+//!   preview-link <url>         follow a link as a click in the first Markdown preview does: {"followed": "opened"|"missing"|"folder"|"url"|"fragment"}
 //!                              (see `Workspace::pane_command`)
 //!   package <field> [<value>]  Add Package Dependencies: `open [query]`, `local <path>` (after Add
 //!                              Local…'s panel), or a field of the open sheet (see `AddPackageDialog::set_field`)
@@ -572,6 +573,12 @@ fn run_command(
                 .map_err(|e| e.to_string())?
                 .map(|_| String::new())
         }
+        "preview-link" => {
+            let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
+            window
+                .update(cx, |_, window, cx| crate::workspace::preview_link(&workspace, arg, window, cx))
+                .map_err(|e| e.to_string())?
+        }
         "pane" => {
             let workspace = workspaces(cx).into_iter().next().ok_or("no workspace")?;
             window
@@ -792,13 +799,14 @@ fn run_command(
                 "cli" => crate::cli::command(rest.trim(), cx),
                 "login-item" => crate::login_item::command(rest.trim(), cx),
                 "updates" => crate::updates::command(rest.trim(), cx),
+                "about" => crate::about::command(rest.trim(), cx),
                 "open-url" => {
                     let paths = rest.split(';').filter_map(|url| crate::bundle::path_of_file_url(url.trim())).collect();
                     crate::app::open_paths(paths, cx);
                     let open: Vec<String> = workspaces(cx).iter().map(|w| w.read(cx).project.root.display().to_string()).collect();
                     Ok(serde_json::json!({ "open": open }).to_string())
                 }
-                _ => Err("usage: app bundle|cli …|login-item …|updates …|open-url <url>".into()),
+                _ => Err("usage: app bundle|cli …|login-item …|updates …|about [close]|open-url <url>".into()),
             }
         }
         "dump" => {

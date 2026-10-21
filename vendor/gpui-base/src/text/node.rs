@@ -707,6 +707,45 @@ impl ImageNode {
     }
 }
 
+/// zcode patch: what an image that can't be drawn (missing, empty or corrupt) shows in
+/// its place: its alt text, else its file name, in a muted box.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ImagePlaceholder {
+    text: SharedString,
+    color: Hsla,
+    border: Hsla,
+}
+
+impl ImagePlaceholder {
+    pub(crate) fn new(image: &ImageNode, style: &TextViewStyle) -> Self {
+        let alt = image.alt.clone().filter(|alt| !alt.trim().is_empty());
+        let text = alt.unwrap_or_else(|| {
+            let url = image.url.as_ref().split(['?', '#']).next().unwrap_or_default();
+            let name = url.trim_end_matches('/').rsplit('/').next().unwrap_or_default();
+            SharedString::from(if name.is_empty() || url.starts_with("data:") { "image".to_string() } else { name.to_string() })
+        });
+        Self { text, color: style.muted_foreground(), border: style.border() }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self { text: "image".into(), color: Hsla::default(), border: Hsla::default() }
+    }
+
+    pub(crate) fn element(&self) -> AnyElement {
+        div()
+            .flex_none()
+            .px_1()
+            .rounded_sm()
+            .border_1()
+            .border_color(self.border)
+            .text_color(self.color)
+            .whitespace_nowrap()
+            .child(self.text.clone())
+            .into_any_element()
+    }
+}
+
 impl std::fmt::Debug for ImageNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ImageNode")
@@ -2545,9 +2584,13 @@ impl Paragraph {
                     );
                 }
                 let link_click_handler = node_cx.link_click_handler.clone();
-                child_nodes.push(
+                let placeholder = ImagePlaceholder::new(image, &node_cx.style);
+                // zcode patch: a placeholder for an image that can't be drawn, in a
+                // row of its own, so it's as wide as its text rather than the paragraph.
+                child_nodes.push(div().flex().child(
                     img(node_cx.image_source(image))
                         .id(ix)
+                        .with_fallback(move || placeholder.element())
                         .object_fit(ObjectFit::Contain)
                         .max_w(relative(1.))
                         .when_some(image.width, |this, width| this.w(width))
@@ -2578,9 +2621,8 @@ impl Paragraph {
                                         cx,
                                     );
                                 })
-                        })
-                        .into_any_element(),
-                );
+                        }),
+                ).into_any_element());
 
                 consumed += text.len();
                 text.clear();
@@ -2758,6 +2800,7 @@ impl Paragraph {
 
                 items.push(InlineFlowItem::Image {
                     source: node_cx.image_source(image),
+                    placeholder: ImagePlaceholder::new(image, &node_cx.style), // zcode patch
                     link: image.link.clone(),
                     title: image.title(),
                     width: image.width,

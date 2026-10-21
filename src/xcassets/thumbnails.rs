@@ -236,8 +236,49 @@ fn unpremultiply(rgba: &mut [u8]) {
     }
 }
 
+/// The installed fonts, for an SVG's text: read once, the first time an SVG
+/// with text is drawn (on the thread drawing it; a few tens of ms, its faces'
+/// names only, the files mapped), then shared by every drawing.
+fn system_fonts() -> Arc<resvg::usvg::fontdb::Database> {
+    static FONTS: std::sync::LazyLock<Arc<resvg::usvg::fontdb::Database>> = std::sync::LazyLock::new(|| {
+        let mut db = resvg::usvg::fontdb::Database::new();
+        db.load_system_fonts();
+        // CSS's generic families as Safari draws them, not fontdb's
+        // Windows defaults (Arial, Times New Roman, Courier New…).
+        db.set_sans_serif_family("Helvetica");
+        db.set_serif_family("Times");
+        db.set_monospace_family("Menlo");
+        db.set_cursive_family("Apple Chancery");
+        db.set_fantasy_family("Papyrus");
+        Arc::new(db)
+    });
+    FONTS.clone()
+}
+
+/// usvg's options for zcode's drawings: fonts loaded only once an SVG has
+/// text, and a family that isn't installed (or `system-ui`, which fontdb
+/// doesn't know) drawn in the sans-serif one rather than not at all.
+fn svg_options(resources: Option<&Path>) -> resvg::usvg::Options<'static> {
+    use resvg::usvg::{FontResolver, fontdb};
+    let select = FontResolver::default_font_selector();
+    let select_font = Box::new(move |font: &resvg::usvg::Font, db: &mut Arc<fontdb::Database>| {
+        if db.is_empty() {
+            *db = system_fonts();
+        }
+        select(font, db).or_else(|| {
+            let query = fontdb::Query { families: &[fontdb::Family::SansSerif], weight: fontdb::Weight(font.weight()), ..Default::default() };
+            db.query(&query).or_else(|| db.faces().next().map(|face| face.id))
+        })
+    });
+    resvg::usvg::Options {
+        resources_dir: resources.map(Path::to_path_buf),
+        font_resolver: FontResolver { select_font, select_fallback: FontResolver::default_fallback_selector() },
+        ..Default::default()
+    }
+}
+
 fn decode_svg(bytes: &[u8], max: u32) -> Result<Decoded, String> {
-    let tree = resvg::usvg::Tree::from_data(bytes, &resvg::usvg::Options::default()).map_err(|e| e.to_string())?;
+    let tree = resvg::usvg::Tree::from_data(bytes, &svg_options(None)).map_err(|e| e.to_string())?;
     let size = tree.size();
     let (width, height, scale) = fit(size.width(), size.height(), max);
     let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).ok_or("the SVG has no size")?;
@@ -251,8 +292,7 @@ fn decode_svg(bytes: &[u8], max: u32) -> Result<Decoded, String> {
 /// preview's pane), scaled up or down; files it refers to are looked up
 /// in `resources`.
 pub fn render_svg(text: &str, resources: Option<&Path>, width: u32, height: u32) -> Result<Decoded, String> {
-    let options = resvg::usvg::Options { resources_dir: resources.map(Path::to_path_buf), ..Default::default() };
-    let tree = resvg::usvg::Tree::from_str(text, &options).map_err(|e| e.to_string())?;
+    let tree = resvg::usvg::Tree::from_str(text, &svg_options(resources)).map_err(|e| e.to_string())?;
     let size = tree.size();
     let scale = (width as f32 / size.width().max(1.)).min(height as f32 / size.height().max(1.));
     let (w, h) = (((size.width() * scale).round() as u32).max(1), ((size.height() * scale).round() as u32).max(1));
@@ -386,6 +426,18 @@ mod tests {
         assert_eq!((d.width, d.height, d.source), (200, 100, (40, 20)));
         assert_eq!(pixel(&d, 199, 99), [255, 0, 0, 255]);
         assert!(super::render_svg("<svg", None, 200, 300).is_err());
+    }
+
+    #[test]
+    fn an_svgs_text_is_drawn() {
+        // Black text on white: some pixels inside the text's box are dark,
+        // for a named family, a generic one, one that isn't installed, none.
+        for family in [" font-family=\"Helvetica\"", " font-family=\"sans-serif\"", " font-family=\"monospace\"", " font-family=\"NoSuchFontXYZ\"", ""] {
+            let text = format!(r##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="#fff"/><text x="4" y="30" font-size="28"{family}>Hello</text></svg>"##);
+            let d = super::render_svg(&text, None, 120, 40).unwrap();
+            let dark = (0..d.height).flat_map(|y| (0..d.width).map(move |x| (x, y))).filter(|&(x, y)| pixel(&d, x, y)[0] < 100).count();
+            assert!(dark > 100, "{family}: {dark} dark pixels");
+        }
     }
 
     #[test]

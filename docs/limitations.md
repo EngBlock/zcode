@@ -279,9 +279,9 @@
   go nowhere. MDX is read as plain Markdown (JSX and expressions show as
   text). Scroll sync goes one way, editor to preview, by top-level block
   (a long list or table is one block, scrolled through in proportion);
-  scrolling the preview doesn't move the editor. An SVG's `<text>` isn't
-  drawn (resvg is built without fonts), nor are external images it
-  refers to by URL. The Editor menu's Open Preview items are enabled for
+  scrolling the preview doesn't move the editor. An SVG's external images
+  referred to by URL aren't drawn, and its `<text>` uses the installed
+  fonts only (no web fonts or `@font-face`). The Editor menu's Open Preview items are enabled for
   every file and do nothing for others (zcode's menus have no
   per-file state); Quick Actions hides them. A preview of a file whose
   last editor closed keeps the buffer open; Don't Save on that close

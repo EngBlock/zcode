@@ -526,6 +526,8 @@ pub fn commands() -> Vec<Command> {
         // Check for Updates… after About, Install CLI and Open at Login (the
         // login item: `zcode --background`) with the other app-wide items,
         // as Zed's app menu has them; Xcode updates through the App Store.
+        cmd!("zcode", "About zcode", About),
+        cmd!("zcode", "-", Quit),
         cmd!("zcode", "Check for Updates…", CheckForUpdates),
         cmd!("zcode", "-", Quit),
         cmd!("zcode", "Settings…", OpenSettings),
@@ -827,8 +829,7 @@ pub fn menu_checkmarks(cx: &App) -> Vec<&'static str> {
 pub fn set_menus(cx: &mut App) {
     let commands = commands();
     let checked = checked_actions(cx);
-    let mut app_menu = vec![MenuItem::action("About zcode", About), MenuItem::separator()];
-    app_menu.extend(commands.iter().filter(|c| c.menu == "zcode").map(|c| menu_item(c, &checked)));
+    let mut app_menu: Vec<MenuItem> = commands.iter().filter(|c| c.menu == "zcode").map(|c| menu_item(c, &checked)).collect();
     app_menu.extend([
         MenuItem::separator(),
         MenuItem::action("Performance…", ShowPerformance),
