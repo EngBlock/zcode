@@ -59,6 +59,7 @@ mod terminals;
 mod vim;
 mod test_gutter;
 mod testing;
+mod tree_watch;
 
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -287,6 +288,10 @@ impl Workspace {
             if active && this.git.root.is_some() {
                 this.refresh_scm(cx);
             }
+            // Files made or deleted meanwhile, should FSEvents have missed them.
+            if active {
+                this.scan(true, cx);
+            }
         }));
         // A settings, keymap or theme file changed, or a toggle wrote one.
         subscriptions.push(cx.observe_global_in::<crate::settings::SettingsStore>(window, |this, window, cx| this.settings_changed(window, cx)));
@@ -426,6 +431,7 @@ impl Workspace {
         this.refresh_scm(cx);
         this.follow_activity(cx);
         this.watch_files(cx);
+        this.watch_tree(cx);
         this.prune_missing_bookmarks(cx);
         mark("background tasks");
         this.restore_tabs(saved, opened_path, window, cx);
@@ -465,6 +471,12 @@ impl Workspace {
     // Files and the project tree
 
     pub fn rescan(&mut self, cx: &mut Context<Self>) {
+        self.scan(false, cx);
+    }
+
+    /// Scans the files again; the navigator and what follows it are only
+    /// redone if a file or project came or went (`only_if_changed`).
+    pub(super) fn scan(&mut self, only_if_changed: bool, cx: &mut Context<Self>) {
         let root = self.project.root.clone();
         let kind = self.project.kind.clone();
         let task = cx.spawn(async move |this, cx| {
@@ -476,6 +488,9 @@ impl Workspace {
                 })
                 .await;
             this.update(cx, |this, cx| {
+                if only_if_changed && *this.files == files && this.xcode_projects == xcode_projects {
+                    return;
+                }
                 // Tree items are !Send, so they are built here (fast).
                 let started = std::time::Instant::now();
                 this.file_items = project::build_tree(&root, &files);
