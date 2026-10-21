@@ -868,6 +868,12 @@ impl Workspace {
 
 }
 
+/// An issue as the dump lists it: `Error Greeter.swift:3 message`.
+fn issue_line(i: &crate::build::log::Issue) -> String {
+    let file = i.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    format!("{:?} {file}:{} {}", i.severity, i.line.unwrap_or(0), i.message)
+}
+
 impl Workspace {
     /// A JSON summary of UI state for the debug harness and tests.
     /// A debug-channel command for the property list editor on screen: the
@@ -953,7 +959,7 @@ impl Workspace {
             "destination_menu": build.destinations.iter().map(|d| format!("{} | {} | {}", d.group(), d.menu_label(), d.detail())).collect::<Vec<_>>(),
             "phase": format!("{:?}", build.phase),
             "indexing": build.indexing,
-            "issues": issues.iter().map(|i| format!("{:?} {}:{} {}", i.severity, i.path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), i.line.unwrap_or(0), i.message)).collect::<Vec<_>>(),
+            "issues": issues.iter().map(issue_line).collect::<Vec<_>>(),
             "tests": build.tests.iter().map(|t| format!("{:?} {}", t.status, t.full_name())).collect::<Vec<_>>(),
             "testing": testing,
             "console_tail": build.console.iter().rev().take(40).rev().cloned().collect::<Vec<_>>(),
@@ -978,6 +984,12 @@ impl Workspace {
         // this Mac, else what Run started (the app, simctl or devicectl).
         state["run_pid"] = self.debugger.read(cx).local_debuggee_pid().or(build.run_pid()).into();
         state["debugger"]["thread"] = self.debugger.read(cx).stopped_thread_label().into();
+        // The build's own issues, before those the live check has too are
+        // merged; the toolbar's counts; the issue ⌘' went to last.
+        state["build_issues"] = build.issues.iter().map(issue_line).collect::<Vec<_>>().into();
+        let count = |severity| issues.iter().filter(|i| i.severity == severity).count();
+        state["issue_counts"] = serde_json::json!([count(crate::build::log::Severity::Error), count(crate::build::log::Severity::Warning)]);
+        state["issue_cursor"] = self.issue_cursor.into();
         state["timings"] = perf.timings_json();
         state["popup_menu_open"] = self.popup_menu.is_some().into();
         // The project navigator's selected row (its path).

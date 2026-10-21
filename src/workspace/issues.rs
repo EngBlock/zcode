@@ -18,6 +18,47 @@ pub(super) struct FileDiagnostic {
     pub source: &'static str,
 }
 
+/// Whether two issues are one: the same file and line, the same column
+/// when both have one, and the same message but for case, punctuation and
+/// a fix-it suffix. sourcekit-lsp's live check and the build report most
+/// errors both, worded a little differently ("Consecutive declarations on a
+/// line must be separated by ';'" against the build's "consecutive
+/// declarations on a line must be separated by ';' (fix-it: insert “;”)");
+/// Xcode lists them once.
+pub(super) fn same_issue(a: &Issue, b: &Issue) -> bool {
+    a.path == b.path
+        && a.line == b.line
+        && (a.column.is_none() || b.column.is_none() || a.column == b.column)
+        && message_key(&a.message) == message_key(&b.message)
+}
+
+/// A message's first line without its fix-its (`build::log`'s suffix), in
+/// lowercase words with no punctuation between them.
+fn message_key(message: &str) -> String {
+    let line = message.lines().next().unwrap_or("");
+    let line = line.rfind(" (fix-it: ").map_or(line, |at| &line[..at]);
+    let words: String = line.chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect::<String>().to_lowercase();
+    words.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A live diagnostic of `path` as an issue (1-based line and column);
+/// `None` for hints and information, which aren't issues.
+fn live_issue(path: &Path, d: &lsp_types::Diagnostic) -> Option<Issue> {
+    let severity = match d.severity {
+        Some(lsp_types::DiagnosticSeverity::ERROR) => Severity::Error,
+        Some(lsp_types::DiagnosticSeverity::WARNING) => Severity::Warning,
+        _ => return None,
+    };
+    Some(Issue {
+        severity,
+        message: d.message.lines().next().unwrap_or("").to_string(),
+        path: Some(path.to_path_buf()),
+        line: Some(d.range.start.line + 1),
+        column: Some(d.range.start.character + 1),
+        source: IssueSource::Live,
+    })
+}
+
 impl Workspace {
     /// Test failures name only the file; map such paths into the project.
     pub(super) fn resolve_issue_path(&self, path: &Path) -> PathBuf {
@@ -32,25 +73,13 @@ impl Workspace {
     }
 
     /// Combined, de-duplicated issues: live (LSP) diagnostics plus the last
-    /// build's issues.
+    /// build's issues, a build issue the live check reports too listed once
+    /// (as the live one, which follows edits; the build's comes back if the
+    /// live one goes before the next build).
     pub fn all_issues(&self, cx: &App) -> Vec<Issue> {
         let mut issues: Vec<Issue> = vec![];
         for (path, diagnostics) in self.lsp.read(cx).diagnostics() {
-            for d in diagnostics {
-                let severity = match d.severity {
-                    Some(lsp_types::DiagnosticSeverity::ERROR) => Severity::Error,
-                    Some(lsp_types::DiagnosticSeverity::WARNING) => Severity::Warning,
-                    _ => continue,
-                };
-                issues.push(Issue {
-                    severity,
-                    message: d.message.lines().next().unwrap_or("").to_string(),
-                    path: Some(path.clone()),
-                    line: Some(d.range.start.line + 1),
-                    column: Some(d.range.start.character + 1),
-                    source: IssueSource::Live,
-                });
-            }
+            issues.extend(diagnostics.iter().filter_map(|d| live_issue(path, d)));
         }
         issues.extend(self.packages.issues.iter().cloned());
         for issue in &self.build.read(cx).issues {
@@ -59,12 +88,8 @@ impl Workspace {
             }
             let mut issue = issue.clone();
             issue.path = issue.path.as_deref().map(|p| self.resolve_issue_path(p));
-            let issue = &issue;
-            let duplicate = issues.iter().any(|i| {
-                i.path == issue.path && i.line == issue.line && i.message == issue.message
-            });
-            if !duplicate {
-                issues.push(issue.clone());
+            if !issues.iter().any(|i| same_issue(i, &issue)) {
+                issues.push(issue);
             }
         }
         issues.sort_by(|a, b| {
@@ -111,7 +136,10 @@ impl Workspace {
                 Severity::Warning => DiagnosticSeverity::Warning,
                 Severity::Note => DiagnosticSeverity::Info,
             };
-            let duplicate = live.iter().any(|d| d.range.start.line == line && d.message == issue.message);
+            // One mark for an issue the live check has too.
+            let mut resolved = issue.clone();
+            resolved.path = Some(path.to_path_buf());
+            let duplicate = live.iter().filter_map(|d| live_issue(path, d)).any(|d| same_issue(&d, &resolved));
             if !duplicate {
                 let start = lsp_types::Position::new(line, col);
                 let range = lsp_types::Range::new(start, lsp_types::Position::new(line, col + 1));
@@ -196,5 +224,42 @@ impl Workspace {
         self.issue_cursor = Some(next);
         let issue = issues[next].clone();
         self.open_issue(&issue, window, cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Issue, IssueSource, Severity, same_issue};
+
+    fn issue(source: IssueSource, line: u32, column: Option<u32>, message: &str) -> Issue {
+        Issue { severity: Severity::Error, message: message.into(), path: Some("/p/Greeter.swift".into()), line: Some(line), column, source }
+    }
+
+    #[test]
+    fn a_build_issue_matches_the_live_one_worded_differently() {
+        let live = issue(IssueSource::Live, 3, Some(28), "Consecutive declarations on a line must be separated by ';'");
+        let build = issue(IssueSource::Build, 3, Some(28), "consecutive declarations on a line must be separated by ';' (fix-it: insert “;”)");
+        assert!(same_issue(&live, &build) && same_issue(&build, &live));
+        // A build issue without a column matches on the line.
+        assert!(same_issue(&live, &issue(IssueSource::Build, 3, None, "consecutive declarations on a line must be separated by ';'")));
+        // Only the first line of a message counts, and spacing doesn't.
+        assert!(same_issue(&live, &issue(IssueSource::Build, 3, Some(28), "Consecutive  declarations on a line must be separated by ';'.\nnote: here")));
+        let use_of = issue(IssueSource::Live, 7, Some(5), "Cannot find 'oops' in scope");
+        assert!(same_issue(&use_of, &issue(IssueSource::Build, 7, Some(5), "cannot find 'oops' in scope")));
+    }
+
+    #[test]
+    fn issues_elsewhere_or_saying_something_else_stay_apart() {
+        let live = issue(IssueSource::Live, 3, Some(28), "Consecutive declarations on a line must be separated by ';'");
+        assert!(!same_issue(&live, &issue(IssueSource::Build, 4, Some(28), "consecutive declarations on a line must be separated by ';'")));
+        assert!(!same_issue(&live, &issue(IssueSource::Build, 3, Some(9), "consecutive declarations on a line must be separated by ';'")));
+        assert!(!same_issue(&live, &issue(IssueSource::Build, 3, Some(28), "expected declaration")));
+        let mut other_file = issue(IssueSource::Build, 3, Some(28), "consecutive declarations on a line must be separated by ';'");
+        other_file.path = Some("/p/Other.swift".into());
+        assert!(!same_issue(&live, &other_file));
+        // Words matter, not just letters: 'a b' isn't 'ab'.
+        assert!(!same_issue(&issue(IssueSource::Live, 1, None, "use of 'a b'"), &issue(IssueSource::Build, 1, None, "use of 'ab'")));
+        // The fix-it suffix is the build's; text in parentheses otherwise counts.
+        assert!(!same_issue(&issue(IssueSource::Live, 1, None, "unused (x)"), &issue(IssueSource::Build, 1, None, "unused")));
     }
 }

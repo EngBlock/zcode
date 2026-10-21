@@ -3008,13 +3008,26 @@ def package_checks(z, samples):
             z.run("keys cmd-b")
             s = z.wait_for(lambda s: s["phase"].startswith("Finished"), timeout=300)
             assert "success: false" in s["phase"], s["phase"]
-            located = [i for i in s["issues"] if i.startswith(f"Error Greeter.swift:{broken_line} consecutive declarations")]
-            assert located and all("FixIt(" not in i for i in s["issues"]), s["issues"]
-            assert any(i.endswith("(fix-it: insert “;”)") for i in located), located
-            assert not any("/Greeter.swift" in i for i in s["issues"]), s["issues"]
+            built = [i for i in s["build_issues"] if i.startswith(f"Error Greeter.swift:{broken_line} consecutive declarations")]
+            assert built and all("FixIt(" not in i for i in s["build_issues"]), s["build_issues"]
+            assert any(i.endswith("(fix-it: insert “;”)") for i in built), built
+            assert not any("/Greeter.swift" in i for i in s["build_issues"]), s["build_issues"]
+            # sourcekit-lsp reports it too ("Consecutive declarations … ';'"):
+            # one row, one mark in the gutter, counted once, as in Xcode.
+            def merged(s):
+                return [i for i in s["issues"] if i.lower().startswith(f"error greeter.swift:{broken_line} consecutive declarations")]
+            s = z.wait_for(lambda s: s["active"]["diagnostics"] >= 1 and any("Consecutive" in i for i in merged(s)), timeout=60, interval=0.5)
+            assert len(merged(s)) == 1, s["issues"]
+            assert s["issue_counts"][0] == len([i for i in s["issues"] if i.startswith("Error")]) == len([i for i in s["build_issues"] if i.startswith("Error")]), (s["issue_counts"], s["issues"])
+            assert s["active"]["diagnostics"] == 1, s["active"]["diagnostics"]
+            # ⌘' goes to it, and again to it: it's the only issue in a file.
             z.run(f"open {main}", "wait 300", "keys cmd-'", "wait 300")
-            a = z.dump()["active"]
+            s = z.dump()
+            a = s["active"]
             assert a["path"].endswith("Greeter.swift") and a["line"] == broken_line, a
+            z.run(f"open {main}", "wait 300", "keys cmd-'", "wait 300")
+            s = z.dump()
+            assert s["active"]["path"].endswith("Greeter.swift") and s["issue_cursor"] == 0, (s["issue_cursor"], s["issues"])
         finally:
             with open(greeter, "w") as f:
                 f.write(original)
@@ -3086,7 +3099,7 @@ def package_checks(z, samples):
     check("Swift package: re-run failed tests", rerun_failed)
     check("Swift package: Run on My Mac (⌘R)", run_package)
     check("Swift package: Test (⌘U) → Test navigator", test_package)
-    check("Swift package: a swift build error is listed at its file and line, its fix-it said, ⌘' goes there", package_build_error)
+    check("Swift package: a swift build error is listed at its file and line, its fix-it said, once with sourcekit-lsp's (one row, one gutter mark, counted once), ⌘' goes there", package_build_error)
     check("Swift package: breakpoint, variables, step over (F6)", debug_package)
 
     tick_line = line_of(main, 'print("tick')
