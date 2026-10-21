@@ -2,7 +2,7 @@
 //! file: its name, type and location, and Target Membership, the targets
 //! that build it, which can be edited in group-based projects.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -12,7 +12,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::Workspace;
-use crate::xcodeproj::files::{FileInfo, Tracking};
+use crate::xcodeproj::files::{FileInfo, Tracking, file_type_for};
 
 /// The inspected file, the index generation it was computed from, and what
 /// the project that knows it says.
@@ -94,9 +94,24 @@ impl Workspace {
             .find(|(_, info)| !matches!(info.tracking, Tracking::NotInProject { .. }))
     }
 
+    /// Whether `path` is the project's (or one of its packages'), for what
+    /// the inspector says of a file no Xcode project knows.
+    fn in_project(&self, path: &Path) -> bool {
+        path.starts_with(&self.project.root) || self.package_path(path).is_some()
+    }
+
+    /// The Type and Location of a file no Xcode project knows (a Swift
+    /// package's, or one outside the project), from the file itself.
+    fn unindexed_type_and_location(&self, path: &Path) -> (String, String) {
+        let file_type = type_label(file_type_for(path, path.is_dir()));
+        let location = if self.in_project(path) { "Relative to Group" } else { "Absolute Path" };
+        (file_type, location.to_string())
+    }
+
     pub fn inspector_summary(&self) -> serde_json::Value {
         let path = self.inspected_path();
         let info = path.as_ref().and_then(|p| self.look_up_file(p)).map(|(project, info)| (PathBuf::new(), project, info));
+        let unindexed = path.as_ref().filter(|_| info.is_none()).map(|p| self.unindexed_type_and_location(p));
         let tracking = info.as_ref().map(|(_, _, info)| match &info.tracking {
             Tracking::Synchronized { folder, targets } => serde_json::json!({ "synchronized": folder, "targets": targets }),
             Tracking::Referenced { referenced, targets } => serde_json::json!({
@@ -110,6 +125,8 @@ impl Workspace {
             "shown": self.show_inspector,
             "path": path,
             "type": info.as_ref().map(|(_, _, i)| i.file_type.clone()),
+            "type_label": info.as_ref().map(|(_, _, i)| type_label(&i.file_type)).or_else(|| unindexed.as_ref().map(|u| u.0.clone())),
+            "location": info.as_ref().map(|(_, _, i)| i.location.clone()).or_else(|| unindexed.map(|u| u.1)),
             "tracking": tracking,
         })
     }
@@ -152,8 +169,14 @@ impl Workspace {
                 .child(div().flex_1().min_w_0().child(value))
         };
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let file_type = info.as_ref().map(|(_, _, i)| type_label(&i.file_type));
-        let location = info.as_ref().map(|(_, _, i)| i.location.clone()).filter(|l| !l.is_empty());
+        let (file_type, location) = match &info {
+            Some((_, _, i)) => (Some(type_label(&i.file_type)), Some(i.location.clone()).filter(|l| !l.is_empty())),
+            None if loading => (None, None),
+            None => {
+                let (file_type, location) = self.unindexed_type_and_location(&path);
+                (Some(file_type), Some(location))
+            }
+        };
 
         let reveal = path.clone();
         let mut body = v_flex()
@@ -186,6 +209,7 @@ impl Workspace {
             None if loading => body = body.child(section("TARGET MEMBERSHIP")).child(note("Loading…".into())),
             None => {
                 let text = match self.project.kind {
+                    _ if !self.in_project(&path) => "This file isn’t part of the project.",
                     crate::project::ProjectKind::SwiftPackage => "Swift packages define their targets in Package.swift.",
                     _ => "This file isn’t part of an Xcode project.",
                 };

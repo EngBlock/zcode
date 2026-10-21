@@ -14,6 +14,10 @@ use super::{ProjectSettings, Target, Workspace};
 use crate::lsp;
 use crate::session::{PaneLayout, PaneState, ProjectSession, SavedPreview};
 
+/// The narrowest (and lowest) a pane can be: the splits' minimum
+/// (`PANEL_MIN_SIZE`) and the divider beside it.
+const MIN_PANE_SIZE: f32 = 101.;
+
 impl Workspace {
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {
         self.panes.iter().find(|p| p.id == id)
@@ -219,6 +223,10 @@ impl Workspace {
 
     /// After the focused pane, or the tab it shows, changed.
     fn activated(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A menu (Show Callers', a context menu) was about what was shown.
+        // Focus leaving it closes it too, but an inactive window gets no
+        // focus events.
+        self.popup_menu = None;
         window.set_window_title(&self.title());
         window.set_window_edited(self.buffers.iter().any(|b| b.dirty));
         self.release_hidden_layouts(cx);
@@ -268,18 +276,29 @@ impl Workspace {
         }
     }
 
+    /// Focus was on something no longer drawn (a navigator, the debug
+    /// area, the inspector or the coding assistant was hidden or switched
+    /// away): it goes to the focused pane's tab, or the workspace.
+    pub(super) fn restore_lost_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let shown = self.pane(self.active_pane).and_then(Pane::active_item).map(|item| item.focus_handle(cx));
+        shown.unwrap_or_else(|| self.focus_handle.clone()).focus(window, cx);
+        cx.notify();
+    }
+
+    /// Selects the shown file's row in the project navigator; nothing is
+    /// selected when it has no row on show (its folder is collapsed, it's
+    /// outside the project, or the tab isn't a file), rather than the file
+    /// shown before. Reveal in Project Navigator (⇧⌘J) expands to it.
     pub(super) fn reveal_active_in_tree(&mut self, cx: &mut Context<Self>) {
         // A file's tab, or an asset catalog's.
         let shown = self.pane(self.active_pane).and_then(Pane::active_item).and_then(Item::path);
-        let Some(path) = shown.map(|path| path.to_string_lossy().to_string()) else {
-            return;
-        };
-        let id: SharedString = path.into();
-        self.tree.update(cx, |tree, cx| {
-            if let Some(ix) = tree.index_of(&id) {
+        let id: Option<SharedString> = shown.map(|path| path.to_string_lossy().to_string().into());
+        self.tree.update(cx, |tree, cx| match id.and_then(|id| tree.index_of(&id)) {
+            Some(ix) => {
                 tree.set_selected_index(Some(ix), cx);
                 tree.scroll_to_item(ix, ScrollStrategy::Nearest);
             }
+            None => tree.set_selected_index(None, cx),
         });
     }
 
@@ -371,6 +390,7 @@ impl Workspace {
     }
 
     pub(super) fn force_close_item(&mut self, pane: PaneId, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let closed = self.pane(pane).is_some_and(|p| p.active == ix).then(|| self.current_location(pane, cx)).flatten();
         let Some(p) = self.pane_mut(pane).filter(|p| ix < p.items.len()) else { return };
         let item = p.remove(ix);
         let emptied = p.items.is_empty();
@@ -378,6 +398,9 @@ impl Workspace {
         if emptied && self.panes.len() > 1 && self.pane(pane).is_some_and(|p| p.assistant.is_none_or(|a| a.mode == AssistantMode::Manual)) {
             self.remove_pane(pane, window, cx);
             return;
+        }
+        if let Some(closed) = closed {
+            self.shown_tab_closed(pane, closed, cx);
         }
         if pane == self.active_pane {
             self.focus_active(window, cx);
@@ -481,6 +504,9 @@ impl Workspace {
     /// after the focused one, showing its file where it is, focused.
     pub fn split_pane(&mut self, axis: SplitAxis, window: &mut Window, cx: &mut Context<Self>) {
         let from = self.active_pane;
+        if !self.split_fits(from, axis, window, cx) {
+            return;
+        }
         let shown = self.active_item().map(|item| (item.path.clone(), item.editor.read(cx).cursor(), item.plist.as_ref().map(|p| p.as_source)));
         let new = self.add_pane();
         self.pane_group.split(from, new, axis);
@@ -499,6 +525,30 @@ impl Workspace {
                 self.focus_active(window, cx);
             }
         }
+    }
+
+    /// Whether another pane fits beside (or below) `pane` with every pane
+    /// at least the splits' minimum size; if not, the user is told. Panes
+    /// past the editor area's edge would be off screen, the focused one too.
+    fn split_fits(&self, pane: PaneId, axis: SplitAxis, window: &mut Window, cx: &mut App) -> bool {
+        let size = self.editor_area_size.get();
+        // Not laid out yet: nothing to go by.
+        if size.width <= px(0.) {
+            return true;
+        }
+        // Zoomed, the other panes come back as the split shows.
+        let fits = self.pane_group.split_fits(pane, axis, (f32::from(size.width), f32::from(size.height)), MIN_PANE_SIZE);
+        if !fits {
+            let message = match axis {
+                SplitAxis::Horizontal => "There’s no room for another editor pane on the right. Make the window wider, or close a pane.",
+                SplitAxis::Vertical => "There’s no room for another editor pane below. Make the window taller, or close a pane.",
+            };
+            // One notice however many times it's tried.
+            struct NoRoomForPane;
+            let notice = gpui_kit::component::notification::Notification::warning(message).id::<NoRoomForPane>();
+            gpui_kit::component::WindowExt::push_notification(window, notice, cx);
+        }
+        fits
     }
 
     /// File ▸ Close Editor Pane (⌃⇧⌘W). The only pane stays.
@@ -602,6 +652,9 @@ impl Workspace {
         }
         if let Some(assistant) = self.assistant_of(focused) {
             self.close_pane(assistant, window, cx);
+            return;
+        }
+        if !self.split_fits(focused, SplitAxis::Horizontal, window, cx) {
             return;
         }
         let new = self.add_pane();
@@ -943,11 +996,14 @@ impl Workspace {
                 })
             })
             .collect();
+        let area = self.editor_area_size.get();
         serde_json::json!({
             "list": panes,
             "layout": layout_string(&self.pane_group.root, &order),
             "focused": order.iter().position(|p| *p == self.active_pane),
             "zoomed": self.zoomed,
+            // The editor area's width and height at the last frame.
+            "area": [f32::from(area.width), f32::from(area.height)],
             "sizes": match self.pane_layout(cx) {
                 PaneLayout::Split { sizes, .. } => sizes,
                 PaneLayout::Pane(_) => vec![],

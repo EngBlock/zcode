@@ -282,11 +282,14 @@ pub struct Pane {
     /// Navigation history, per pane as in Xcode.
     pub(super) back: Vec<HistoryEntry>,
     pub(super) forward: Vec<HistoryEntry>,
+    /// The tab strip's scrolling, and the tab it last scrolled to.
+    pub(super) tab_scroll: ScrollHandle,
+    pub(super) revealed_tab: Option<EntityId>,
 }
 
 impl Pane {
     pub fn new(id: PaneId) -> Self {
-        Self { id, items: vec![], active: 0, assistant: None, back: vec![], forward: vec![] }
+        Self { id, items: vec![], active: 0, assistant: None, back: vec![], forward: vec![], tab_scroll: ScrollHandle::new(), revealed_tab: None }
     }
 
     pub fn active_item(&self) -> Option<&Item> {

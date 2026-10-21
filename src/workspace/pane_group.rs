@@ -60,6 +60,18 @@ impl Member {
         }
     }
 
+    /// How many panes this member puts side by side (`Horizontal`) or
+    /// stacked (`Vertical`): the most along any line across it.
+    fn panes_along(&self, axis: SplitAxis) -> usize {
+        match self {
+            Member::Pane(_) => 1,
+            Member::Split { axis: own, members } => {
+                let counts = members.iter().map(|m| m.panes_along(axis));
+                if *own == axis { counts.sum() } else { counts.max().unwrap_or(1) }
+            }
+        }
+    }
+
     /// Splits `at`: `new` goes after it along `axis`, as a sibling when the
     /// split around `at` already runs along `axis`.
     fn split(&mut self, at: PaneId, new: PaneId, axis: SplitAxis) -> bool {
@@ -135,6 +147,18 @@ impl PaneGroup {
         !self.contains(new) && self.root.split(at, new, axis)
     }
 
+    /// Whether splitting `at` along `axis` leaves every pane at least
+    /// `min` wide and high in an area of `size` (width, height).
+    pub fn split_fits(&self, at: PaneId, axis: SplitAxis, size: (f32, f32), min: f32) -> bool {
+        let mut after = self.clone();
+        let new = PaneId(self.panes().iter().map(|p| p.0).max().unwrap_or(0) + 1);
+        if !after.split(at, new, axis) {
+            return false;
+        }
+        let fits = |axis, room: f32| after.root.panes_along(axis) as f32 * min <= room;
+        fits(SplitAxis::Horizontal, size.0) && fits(SplitAxis::Vertical, size.1)
+    }
+
     /// Removes a pane; the last one stays.
     pub fn remove(&mut self, pane: PaneId) -> bool {
         self.root.remove(pane)
@@ -183,6 +207,25 @@ mod tests {
         assert_eq!(group.next(PaneId(3), true), PaneId(1));
         assert_eq!(group.next(PaneId(1), false), PaneId(3));
         assert_eq!(group.next(PaneId(1), true), PaneId(2));
+    }
+
+    #[test]
+    fn a_split_fits_while_each_line_of_panes_has_room_at_the_minimum() {
+        let mut group = PaneGroup::new(PaneId(1));
+        // 300 wide: three panes side by side at 100, not four.
+        assert!(group.split_fits(PaneId(1), SplitAxis::Horizontal, (300., 200.), 100.));
+        group.split(PaneId(1), PaneId(2), SplitAxis::Horizontal);
+        group.split(PaneId(2), PaneId(3), SplitAxis::Horizontal);
+        assert!(!group.split_fits(PaneId(3), SplitAxis::Horizontal, (300., 200.), 100.));
+        // Stacking under one of them doesn't widen the row; two high fit
+        // in 200, three don't.
+        assert!(group.split_fits(PaneId(2), SplitAxis::Vertical, (300., 200.), 100.));
+        group.split(PaneId(2), PaneId(4), SplitAxis::Vertical);
+        assert!(!group.split_fits(PaneId(4), SplitAxis::Vertical, (300., 200.), 100.));
+        // A row inside the stack counts with the panes beside it.
+        assert!(!group.split_fits(PaneId(4), SplitAxis::Horizontal, (300., 200.), 100.));
+        assert!(group.split_fits(PaneId(4), SplitAxis::Horizontal, (400., 200.), 100.));
+        assert!(!group.split_fits(PaneId(9), SplitAxis::Horizontal, (900., 900.), 100.), "no such pane");
     }
 
     #[test]
