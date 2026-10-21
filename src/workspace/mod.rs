@@ -640,7 +640,12 @@ impl Workspace {
         let path = path.canonicalize().unwrap_or(path);
         let Some(parent) = path.parent() else { return };
         let target = crate::xcodeproj::files::normalize(&parent.join(&new_name));
-        if target.exists() {
+        if target == path {
+            return;
+        }
+        // On a case-insensitive volume a name that differs only in case is
+        // the file itself, not another one.
+        if target.exists() && target.canonicalize().ok().as_ref() != Some(&path) {
             self.notify_error(format!("“{new_name}” already exists."), window, cx);
             return;
         }
